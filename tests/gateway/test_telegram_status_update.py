@@ -129,6 +129,26 @@ async def test_edit_failure_falls_back_to_fresh_send(adapter):
 
 
 @pytest.mark.asyncio
+async def test_repeated_edit_failures_do_not_send_multiple_fallbacks(adapter):
+    """After one fresh fallback, repeated edit failures must not spam status messages."""
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="100"),
+        SendResult(success=True, message_id="200"),
+    ]
+    adapter.edit_message.return_value = SendResult(
+        success=False, error="Bad Request: message to edit not found",
+    )
+
+    await adapter.send_or_update_status("chat-1", "lifecycle", "step 1")
+    await adapter.send_or_update_status("chat-1", "lifecycle", "step 2")
+    result = await adapter.send_or_update_status("chat-1", "lifecycle", "step 3")
+
+    assert result.success is False
+    assert adapter.send.await_count == 2
+    assert adapter.edit_message.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_distinct_status_keys_do_not_collide(adapter):
     """A different status_key gets its own message; the original isn't touched."""
     adapter.send.side_effect = [

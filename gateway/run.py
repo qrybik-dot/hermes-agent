@@ -14578,16 +14578,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for queued in pending:
                     _deliver_bg_review_message(queued)
 
-            # Background review delivery — send "💾 Memory updated" etc. to user
+            # Background review delivery is intentionally internal-only for
+            # Telegram UX: users should not receive "Self-improvement review:
+            # Skill ... updated" system messages after the final answer.
             def _bg_review_send(message: str) -> None:
-                if not _status_adapter or not _run_still_current():
-                    return
-                if not _bg_review_release.is_set():
-                    with _bg_review_pending_lock:
-                        if not _bg_review_release.is_set():
-                            _bg_review_pending.append(message)
-                            return
-                _deliver_bg_review_message(message)
+                logger.info("Background review summary suppressed from user delivery: %s", message)
 
             agent.background_review_callback = _bg_review_send
             # Register the release hook on the adapter so base.py's finally

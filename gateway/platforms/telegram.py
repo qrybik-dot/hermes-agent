@@ -511,6 +511,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Tracks keys that already used the one allowed fresh-message fallback
+        # after editMessageText failed. Prevents status spam when editing stays
+        # broken for the same long-running task.
+        self._status_fallback_sent: Set[tuple] = set()
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -2225,35 +2229,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
 
         try:
-            # Bot API 10.1 rich fast-path: send the raw agent markdown via
-            # sendRichMessage so tables/task lists/etc. render natively. Falls
-            # through to the legacy MarkdownV2 path on permanent/capability
-            # errors or DM-topic routing skips; returns directly on success or
-            # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
-                rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
-                if rich_result is not None:
-                    if rich_result.success:
-                        # Re-trigger typing like the legacy success path does.
-                        try:
-                            await self.send_typing(chat_id, metadata=metadata)
-                        except Exception:
-                            pass  # Typing failures are non-fatal
-                    return rich_result
-
-            # Format and split message if needed
-            formatted = self.format_message(content)
+            # Telegram user-facing messages intentionally use plain text.
+            # Rich messages and MarkdownV2 made live/final reports hard to copy
+            # and caused layout drift across clients.
+            formatted = content
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
-                chunks = [
-                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    for chunk in chunks
-                ]
 
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
@@ -2321,33 +2303,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
-                        try:
-                            msg = await self._bot.send_message(
-                                chat_id=int(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=reply_to_id,
-                                **thread_kwargs,
-                                **self._link_preview_kwargs(),
-                                **self._notification_kwargs(metadata),
-                            )
-                        except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
-                                msg = await self._bot.send_message(
-                                    chat_id=int(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
-                                    reply_to_message_id=reply_to_id,
-                                    **thread_kwargs,
-                                    **self._link_preview_kwargs(),
-                                    **self._notification_kwargs(metadata),
-                                )
-                            else:
-                                raise
+                        msg = await self._bot.send_message(
+                            chat_id=int(chat_id),
+                            text=chunk,
+                            parse_mode=None,
+                            reply_to_message_id=reply_to_id,
+                            **thread_kwargs,
+                            **self._link_preview_kwargs(),
+                            **self._notification_kwargs(metadata),
+                        )
                         break  # success
                     except _NetErr as send_err:
                         # BadRequest is a subclass of NetworkError in
@@ -2517,6 +2481,17 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         key = (str(chat_id), str(status_key))
         cached_id = self._status_message_ids.get(key)
+        fallback_sent = getattr(self, "_status_fallback_sent", None)
+        if fallback_sent is None:
+            fallback_sent = set()
+            self._status_fallback_sent = fallback_sent
+        if cached_id is None and key in fallback_sent:
+            logger.warning(
+                "[%s] Status fallback already used for %s; suppressing fresh status send",
+                self.name,
+                key,
+            )
+            return SendResult(success=False, error="status_edit_fallback_already_used")
         if cached_id is not None:
             result = await self.edit_message(
                 chat_id, cached_id, content, finalize=True, metadata=metadata,
@@ -2525,8 +2500,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 if result.message_id:
                     self._status_message_ids[key] = str(result.message_id)
                 return result
-            # Edit failed — clear the cached id and fall through to a fresh send.
+            # Edit failed — Telegram live-status may send at most one fresh
+            # fallback message per key; repeated edit failures must not spam.
             self._status_message_ids.pop(key, None)
+            if key in fallback_sent:
+                logger.warning(
+                    "[%s] Status edit failed for %s and fallback was already used: %s",
+                    self.name,
+                    key,
+                    result.error,
+                )
+                return result
+            fallback_sent.add(key)
         result = await self.send(chat_id, content, metadata=metadata)
         if result.success and result.message_id:
             self._status_message_ids[key] = str(result.message_id)
@@ -2570,30 +2555,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=message_id)
 
-            formatted = self.format_message(content)
-            try:
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=formatted,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                )
-            except Exception as fmt_err:
-                # "Message is not modified" is a no-op, not an error
-                if "not modified" in str(fmt_err).lower():
-                    return SendResult(success=True, message_id=message_id)
-                # Fallback: strip MarkdownV2 escapes and retry as clean plain text
-                logger.warning(
-                    "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
-                    self.name,
-                    fmt_err,
-                )
-                _plain = _strip_mdv2(content) if content else content
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=_plain,
-                )
+            await self._bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=content,
+                parse_mode=None,
+            )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -2707,35 +2674,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
         try:
-            if finalize:
-                # Use format_message + parse_mode for the final chunk;
-                # mirror edit_message's main happy-path.
-                formatted = self.format_message(first_chunk)
-                try:
-                    await self._bot.edit_message_text(
-                        chat_id=int(chat_id),
-                        message_id=int(message_id),
-                        text=formatted,
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                    )
-                except Exception as fmt_err:
-                    if "not modified" not in str(fmt_err).lower():
-                        logger.warning(
-                            "[%s] Overflow split: MarkdownV2 first-chunk edit "
-                            "failed, falling back to plain text: %s",
-                            self.name, fmt_err,
-                        )
-                        await self._bot.edit_message_text(
-                            chat_id=int(chat_id),
-                            message_id=int(message_id),
-                            text=_strip_mdv2(first_chunk),
-                        )
-            else:
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=first_chunk,
-                )
+            await self._bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=first_chunk,
+                parse_mode=None,
+            )
         except Exception as e:
             err_str = str(e).lower()
             if "not modified" in err_str:
@@ -2751,10 +2695,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Step 2 — send each remaining chunk as a continuation message,
         # threaded as a reply to the previous so the user sees them as a
-        # contiguous block.  We call self._bot.send_message directly so the
-        # continuation skips ``self.send``'s own pre-chunking pass (chunks
-        # are already correctly sized).  Best-effort MarkdownV2 with plain
-        # fallback, mirroring send().
+        # contiguous block. Continuations stay plain text for copy-friendly
+        # Telegram output.
         continuation_ids: list[str] = []
         delivered_chunks = [first_chunk]
         prev_id = message_id
@@ -2768,20 +2710,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 metadata,
                 reply_to_message_id=reply_to_id,
             )
-            for use_markdown in (True, False) if finalize else (False,):
+            for use_markdown in (False,):
                 try:
-                    if use_markdown:
-                        text = self.format_message(chunk)
-                    else:
-                        # Plain attempt: on finalize the MarkdownV2 attempt
-                        # failed, so degrade to clean stripped text, never
-                        # the raw chunk (raw ** / ``` markers would render
-                        # literally); streaming previews stay raw.
-                        text = _strip_mdv2(chunk) if finalize else chunk
+                    text = chunk
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
-                        parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
+                        parse_mode=None,
                         reply_to_message_id=reply_to_id,
                         **thread_kwargs,
                         **self._link_preview_kwargs(),
@@ -2924,27 +2859,11 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Stream a partial message via Telegram's native draft API.
 
-        Uses ``sendRichMessageDraft`` (Bot API 10.1) with the raw markdown when
-        rich messages are enabled and supported, otherwise the plain-text
-        ``sendMessageDraft``. The Bot API animates the preview when the same
-        ``draft_id`` is reused across consecutive calls in the same chat.  When
-        the response finishes, the caller sends the final text via the normal
-        ``send`` path; the draft preview clears naturally on the client
-        (Telegram has no Bot API to "promote" a draft to a real message — the
-        final ``sendMessage``/``sendRichMessage`` is what the user receives in
-        their history).
+        Draft previews are sent as plain text so live-status/final-report UX
+        stays copy-friendly and does not snap between rich/MarkdownV2 layouts.
         """
         if not self._bot:
             return SendResult(success=False, error="not_connected")
-
-        # Rich draft fast-path (Bot API 10.1 sendRichMessageDraft): render the
-        # streaming preview with the same raw markdown the final
-        # sendRichMessage will persist, so the animated draft matches the final
-        # message. Any failure degrades to the legacy plain-text draft below.
-        if self._should_attempt_rich_draft(content):
-            if await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
-                # Drafts have no message_id; report success without one.
-                return SendResult(success=True, message_id=None)
 
         if not hasattr(self._bot, "send_message_draft"):
             return SendResult(success=False, error="api_unavailable")
@@ -2956,51 +2875,27 @@ class TelegramAdapter(BasePlatformAdapter):
 
         thread_id = self._metadata_thread_id(metadata)
 
-        # Apply the same MarkdownV2 conversion the regular ``send`` path uses
-        # so the animated draft preview renders with identical formatting to
-        # the final message.  Without this, the draft streams as raw text and
-        # the final ``sendMessage`` (which DOES use MarkdownV2) snaps into
-        # formatted output, producing a jarring visual shift at the end of the
-        # response.  We try MarkdownV2 first and fall back to plain text if a
-        # malformed escape would be rejected — mirroring the (True, False)
-        # retry the streaming send loop uses — so a single bad token never
-        # kills draft streaming for the whole response.
-        for use_markdown in (True, False):
-            kwargs: Dict[str, Any] = {
-                "chat_id": int(chat_id),
-                "draft_id": int(draft_id),
-                "text": self.format_message(text) if use_markdown else text,
-            }
-            if use_markdown:
-                kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
-            if thread_id is not None:
-                kwargs["message_thread_id"] = thread_id
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "draft_id": int(draft_id),
+            "text": text,
+        }
+        if thread_id is not None:
+            kwargs["message_thread_id"] = thread_id
 
-            try:
-                ok = await self._bot.send_message_draft(**kwargs)
-                if ok:
-                    # Drafts have no message_id; we report success without one
-                    # so the caller knows the animation frame landed.
-                    return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
-            except Exception as e:
-                # A MarkdownV2 parse failure (BadRequest "can't parse entities")
-                # is recoverable: retry once as plain text.  Any other failure
-                # (chat doesn't allow drafts, transient hiccup) — or a failure
-                # on the plain-text attempt — propagates to the caller, which
-                # treats it as "fall back to edit-based for this response".
-                if use_markdown and self._is_bad_request_error(e):
-                    logger.debug(
-                        "[%s] sendMessageDraft MarkdownV2 rejected, retrying "
-                        "as plain text (chat=%s draft_id=%s): %s",
-                        self.name, chat_id, draft_id, e,
-                    )
-                    continue
-                logger.debug(
-                    "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
-                    self.name, chat_id, draft_id, e,
-                )
-                return SendResult(success=False, error=str(e))
+        try:
+            ok = await self._bot.send_message_draft(**kwargs)
+            if ok:
+                # Drafts have no message_id; we report success without one
+                # so the caller knows the animation frame landed.
+                return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error="draft_rejected")
+        except Exception as e:
+            logger.debug(
+                "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                self.name, chat_id, draft_id, e,
+            )
+            return SendResult(success=False, error=str(e))
 
         return SendResult(success=False, error="draft_rejected")
 

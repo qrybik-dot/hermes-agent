@@ -1,19 +1,19 @@
-"""Tests for Bot API 10.1 Rich Messages (sendRichMessage) on Telegram.
+"""Legacy tests for Bot API 10.1 Rich Messages on Telegram.
 
-Final / new-message replies opportunistically use ``sendRichMessage`` with the
-RAW agent markdown so tables, task lists, etc. render natively. The legacy
-MarkdownV2 ``send_message`` path stays as the fallback for unsupported /
-oversized content and for transports that lack the endpoint.
-
-The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
-(:func:`_ensure_telegram_mock`), so these tests construct a real
-``TelegramAdapter`` and wire a mock bot.
+Telegram user-facing live/final reports now intentionally bypass Rich Messages
+and MarkdownV2 in favor of copy-friendly plain text. This file is kept as a
+reference for the disabled rich helpers, but the end-to-end send/draft rich
+behavior is no longer active.
 """
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="Telegram rich-message delivery is disabled; user-facing output is plain text."
+)
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
