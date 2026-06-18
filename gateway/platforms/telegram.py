@@ -2232,7 +2232,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # Telegram user-facing messages intentionally use plain text.
             # Rich messages and MarkdownV2 made live/final reports hard to copy
             # and caused layout drift across clients.
-            formatted = content
+            formatted = self.format_message(content)
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
@@ -2303,11 +2303,38 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
+                        # --- ПАТЧ: ИНЛАЙН КНОПКИ ДЛЯ СЕМЕЙНОГО КАНБАНА ---
+                        custom_reply_markup = None
+                        cleaned_chunk = chunk
+                        
+                        # Формат: [ДОСТУПНЫ КНОПКИ: id1:Название1, id2:Название2] или [ДОСТУПНЫЕ КНОПКИ: ...]
+                        if "[ДОСТУПНЫ КНОПКИ:" in chunk or "[ДОСТУПНЫЕ КНОПКИ:" in chunk:
+                            match = re.search(r'\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*([^\]]+)\]', chunk)
+                            if match:
+                                button_defs = match.group(1).split(",")
+                                keyboard_buttons = []
+                                row = []
+                                for btn_def in button_defs:
+                                    btn_def = btn_def.strip()
+                                    if ":" in btn_def:
+                                        tid, tlabel = btn_def.split(":", 1)
+                                        # Используем callback_data с префиксом kb:
+                                        row.append(InlineKeyboardButton(tlabel.strip(), callback_data=f"kb:done:{tid.strip()}"))
+                                        if len(row) == 2:
+                                            keyboard_buttons.append(row)
+                                            row = []
+                                if row:
+                                    keyboard_buttons.append(row)
+                                custom_reply_markup = InlineKeyboardMarkup(keyboard_buttons)
+                                # Вырезаем триггер из сообщения
+                                cleaned_chunk = re.sub(r'\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*[^\]]+\]', '', chunk).strip()
+
                         msg = await self._bot.send_message(
                             chat_id=int(chat_id),
-                            text=chunk,
-                            parse_mode=None,
+                            text=cleaned_chunk,
+                            parse_mode=ParseMode.MARKDOWN_V2,
                             reply_to_message_id=reply_to_id,
+                            reply_markup=custom_reply_markup,
                             **thread_kwargs,
                             **self._link_preview_kwargs(),
                             **self._notification_kwargs(metadata),
@@ -2541,9 +2568,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.
-        if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+        formatted_content = self.format_message(content)
+        if utf16_len(formatted_content) > self.MAX_MESSAGE_LENGTH:
             return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                chat_id, message_id, formatted_content, finalize=finalize, metadata=metadata,
             )
 
         try:
@@ -2551,15 +2579,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
-                    text=content,
+                    text=formatted_content,
+                    parse_mode=ParseMode.MARKDOWN_V2,
                 )
                 return SendResult(success=True, message_id=message_id)
 
             await self._bot.edit_message_text(
                 chat_id=int(chat_id),
                 message_id=int(message_id),
-                text=content,
-                parse_mode=None,
+                text=formatted_content,
+                parse_mode=ParseMode.MARKDOWN_V2,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -3648,6 +3677,88 @@ class TelegramAdapter(BasePlatformAdapter):
         if not query or not query.data:
             return
         data = query.data
+        
+        # --- ПАТЧ: ОБРАБОТКА НАЖАТИЙ КНОПОК КАНБАНА ---
+        if data.startswith("kb:done:"):
+            # Выполняем SQLite операцию закрытия задачи прямо в gateway процессе
+            tid = data.split(":", 2)[2]
+            try:
+                import sqlite3
+                import datetime as dt
+                from pathlib import Path
+                db_path = Path.home() / ".hermes" / "kanban.db"
+                if db_path.exists():
+                    conn = sqlite3.connect(db_path)
+                    now = int(dt.datetime.now().timestamp())
+                    # Проверим сначала, есть ли такая задача
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT title FROM tasks WHERE id = ?", (tid,))
+                    row = cursor.fetchone()
+                    if row:
+                        title = row[0]
+                        # Обновляем статус
+                        conn.execute("UPDATE tasks SET status='done', completed_at=? WHERE id=?", (now, tid))
+                        conn.commit()
+                        conn.close()
+                        
+                        await query.answer(text=f"Задача выполнена: {title}")
+                        
+                        # Обновляем сообщение: убираем кнопку и зачеркиваем/помечаем выполненную задачу
+                        msg = query.message
+                        if msg and msg.text:
+                            # Попробуем заменить строку с этой задачей
+                            lines = msg.text.split("\n")
+                            new_lines = []
+                            target_id_short = tid.replace("fam-", "")
+                            for line in lines:
+                                if tid in line or target_id_short in line:
+                                    # Помечаем галочкой
+                                    if not line.endswith("✅") and "· done" not in line:
+                                        new_lines.append(f"~~{line}~~ ✅")
+                                    else:
+                                        new_lines.append(line)
+                                else:
+                                    new_lines.append(line)
+                            
+                            # Пересчитываем оставшиеся кнопки
+                            # Получаем текущую клавиатуру
+                            reply_markup = msg.reply_markup
+                            new_rows = []
+                            if reply_markup and reply_markup.inline_keyboard:
+                                for btn_row in reply_markup.inline_keyboard:
+                                    new_row = []
+                                    for btn in btn_row:
+                                        if btn.callback_data != data:
+                                            new_row.append(btn)
+                                    if new_row:
+                                        new_rows.append(new_row)
+                            
+                            from telegram import InlineKeyboardMarkup
+                            new_markup = InlineKeyboardMarkup(new_rows) if new_rows else None
+                            
+                            try:
+                                await query.edit_message_text(
+                                    text=self.format_message("\n".join(new_lines)),
+                                    parse_mode=ParseMode.MARKDOWN_V2,
+                                    reply_markup=new_markup
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to edit message text: {e}")
+                        else:
+                            # Если текст прочитать не удалось, просто удалим кнопки
+                            try:
+                                await query.edit_message_reply_markup(reply_markup=None)
+                            except Exception:
+                                pass
+                    else:
+                        conn.close()
+                        await query.answer(text="Задача не найдена в базе.")
+                else:
+                    await query.answer(text="База данных Kanban не найдена.")
+            except Exception as e:
+                logger.error(f"Error resolving inline done: {e}")
+                await query.answer(text=f"Ошибка: {str(e)[:40]}")
+            return
         query_message = getattr(query, "message", None)
         query_chat_id = getattr(query_message, "chat_id", None)
         query_chat = getattr(query_message, "chat", None)
