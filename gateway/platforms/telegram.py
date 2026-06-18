@@ -2232,7 +2232,27 @@ class TelegramAdapter(BasePlatformAdapter):
             # Telegram user-facing messages intentionally use plain text.
             # Rich messages and MarkdownV2 made live/final reports hard to copy
             # and caused layout drift across clients.
-            formatted = self.format_message(content)
+            # --- ПАТЧ: ИНЛАЙН КНОПКИ ДЛЯ СЕМЕЙНОГО КАНБАНА ---
+            custom_reply_markup = None
+            cleaned_content = content
+            
+            # Формат: [ДОСТУПНЫ КНОПКИ: id1:Название1, id2:Название2] или [ДОСТУПНЫЕ КНОПКИ: ...]
+            if "[ДОСТУПНЫ КНОПКИ:" in content or "[ДОСТУПНЫЕ КНОПКИ:" in content:
+                match = re.search(r'\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*([^\]]+)\]', content)
+                if match:
+                    button_defs = match.group(1).split(",")
+                    keyboard_buttons = []
+                    for btn_def in button_defs:
+                        btn_def = btn_def.strip()
+                        if ":" in btn_def:
+                            tid, tlabel = btn_def.split(":", 1)
+                            # Кнопки по одной на строку для мобильной читаемости по референсу
+                            keyboard_buttons.append([InlineKeyboardButton(tlabel.strip(), callback_data=f"kb:done:{tid.strip()}")])
+                    custom_reply_markup = InlineKeyboardMarkup(keyboard_buttons)
+                    # Вырезаем триггер из сообщения
+                    cleaned_content = re.sub(r'\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*[^\]]+\]', '', content).strip()
+
+            formatted = self.format_message(cleaned_content)
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
@@ -2303,38 +2323,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # --- ПАТЧ: ИНЛАЙН КНОПКИ ДЛЯ СЕМЕЙНОГО КАНБАНА ---
-                        custom_reply_markup = None
-                        cleaned_chunk = chunk
-                        
-                        # Формат: [ДОСТУПНЫ КНОПКИ: id1:Название1, id2:Название2] или [ДОСТУПНЫЕ КНОПКИ: ...]
-                        if "[ДОСТУПНЫ КНОПКИ:" in chunk or "[ДОСТУПНЫЕ КНОПКИ:" in chunk:
-                            match = re.search(r'\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*([^\]]+)\]', chunk)
-                            if match:
-                                button_defs = match.group(1).split(",")
-                                keyboard_buttons = []
-                                row = []
-                                for btn_def in button_defs:
-                                    btn_def = btn_def.strip()
-                                    if ":" in btn_def:
-                                        tid, tlabel = btn_def.split(":", 1)
-                                        # Используем callback_data с префиксом kb:
-                                        row.append(InlineKeyboardButton(tlabel.strip(), callback_data=f"kb:done:{tid.strip()}"))
-                                        if len(row) == 2:
-                                            keyboard_buttons.append(row)
-                                            row = []
-                                if row:
-                                    keyboard_buttons.append(row)
-                                custom_reply_markup = InlineKeyboardMarkup(keyboard_buttons)
-                                # Вырезаем триггер из сообщения
-                                cleaned_chunk = re.sub(r'\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*[^\]]+\]', '', chunk).strip()
+                        # Привязываем custom_reply_markup только к последнему чанку, если их несколько
+                        chunk_reply_markup = custom_reply_markup if i == len(chunks) - 1 else None
 
                         msg = await self._bot.send_message(
                             chat_id=int(chat_id),
-                            text=cleaned_chunk,
+                            text=chunk,
                             parse_mode=ParseMode.MARKDOWN_V2,
                             reply_to_message_id=reply_to_id,
-                            reply_markup=custom_reply_markup,
+                            reply_markup=chunk_reply_markup,
                             **thread_kwargs,
                             **self._link_preview_kwargs(),
                             **self._notification_kwargs(metadata),
