@@ -1431,6 +1431,7 @@ def _build_gateway_request_metrics(
         "provider": agent_result.get("provider"),
         "llm_call_count": _safe_int_metric(agent_result.get("api_calls", 0)),
         "llm_total_ms": _safe_int_metric(agent_result.get("llm_total_ms", 0)),
+        "llm_timing_source": diagnostics.get("llm_timing_source"),
         "tool_call_count": _safe_int_metric(diagnostics.get("tool_call_count", 0)),
         "tool_total_ms": _safe_int_metric(diagnostics.get("tool_total_ms", 0)),
         "agent_cache_status": diagnostics.get("agent_cache_status"),
@@ -13773,6 +13774,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "agent_prepare_ms": 0,
             "agent_init_ms": 0,
             "agent_post_ms": 0,
+            "llm_timing_source": "unavailable",
         }
         task_status_state = {
             "enabled": False,
@@ -14420,6 +14422,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
+                return
+            if task_status_state["enabled"] and not str(event_type).startswith("task:"):
+                logger.debug(
+                    "status_callback suppressed by deterministic task status: %s",
+                    event_type,
+                )
                 return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
@@ -15246,9 +15254,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 _llm_before_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0)
                 _emit_task_status(25, "анализ и выполнение")
+                _conversation_started = time.monotonic()
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                _conversation_wall_ms = int(
+                    (time.monotonic() - _conversation_started) * 1000
+                )
                 _llm_after_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0)
-                request_metrics["llm_turn_ms"] = max(0, _llm_after_ms - _llm_before_ms)
+                _llm_delta_ms = max(0, _llm_after_ms - _llm_before_ms)
+                if _llm_delta_ms > 0:
+                    request_metrics["llm_turn_ms"] = _llm_delta_ms
+                    request_metrics["llm_timing_source"] = "agent_session_delta"
+                elif int(result.get("api_calls", 0) or 0) > 0:
+                    request_metrics["llm_turn_ms"] = max(
+                        0,
+                        _conversation_wall_ms - request_metrics["tool_total_ms"],
+                    )
+                    request_metrics["llm_timing_source"] = "conversation_wall_estimate"
                 _agent_returned_at = time.monotonic()
                 _emit_task_status(90, "подготовка ответа")
             finally:
