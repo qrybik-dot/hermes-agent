@@ -437,6 +437,14 @@ _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
 _agent_browser_resolved = False
 
+_BROWSER_USE_BILLING_RETRY_AFTER_SECONDS = 6 * 60 * 60
+_browser_use_billing_unavailable: Dict[str, Any] = {
+    "available": True,
+    "reason": "",
+    "timestamp": 0.0,
+    "retry_after": 0.0,
+}
+
 # Lightpanda engine support — cached like _get_cloud_provider().
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
 _cached_browser_engine: Optional[str] = None
@@ -484,6 +492,80 @@ def _ensure_browser_plugins_loaded() -> None:
         _ensure_plugins_discovered()
     except Exception as exc:
         logger.debug("Browser plugin discovery failed (non-fatal): %s", exc)
+
+
+def _provider_is_browser_use(provider: Any) -> bool:
+    name = type(provider).__name__.replace("_", "").replace("-", "").lower()
+    return "browseruse" in name
+
+
+def _is_browser_use_billing_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        "402" in text
+        or "billing_error" in text
+        or "insufficient_funds" in text
+        or "insufficient funds" in text
+    )
+
+
+def _mark_browser_use_billing_unavailable(
+    exc: BaseException,
+    *,
+    retry_after_seconds: int = _BROWSER_USE_BILLING_RETRY_AFTER_SECONDS,
+) -> Dict[str, Any]:
+    now = time.time()
+    state = {
+        "available": False,
+        "reason": "billing_insufficient",
+        "timestamp": now,
+        "retry_after": now + max(1, int(retry_after_seconds)),
+        "error": str(exc),
+    }
+    _browser_use_billing_unavailable.update(state)
+    return dict(_browser_use_billing_unavailable)
+
+
+def _browser_use_billing_blocked() -> Optional[Dict[str, Any]]:
+    state = _browser_use_billing_unavailable
+    if state.get("available", True):
+        return None
+    retry_after = float(state.get("retry_after") or 0.0)
+    if retry_after <= 0 or time.time() < retry_after:
+        return dict(state)
+    state.update({
+        "available": True,
+        "reason": "",
+        "timestamp": 0.0,
+        "retry_after": 0.0,
+    })
+    return None
+
+
+def _browser_use_billing_error_message(state: Optional[Dict[str, Any]] = None) -> str:
+    state = state or dict(_browser_use_billing_unavailable)
+    retry_after = float(state.get("retry_after") or 0.0)
+    if retry_after > 0:
+        retry_text = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(retry_after))
+    else:
+        retry_text = "after Hermes restart"
+    return (
+        "Cloud Browser Use is unavailable: billing_insufficient. "
+        f"Retry after {retry_text}. Local Chromium fallback was not started."
+    )
+
+
+def _reset_browser_use_billing_circuit_for_tests() -> None:
+    _browser_use_billing_unavailable.update({
+        "available": True,
+        "reason": "",
+        "timestamp": 0.0,
+        "retry_after": 0.0,
+    })
+
+
+def _browser_use_billing_circuit_state() -> Dict[str, Any]:
+    return dict(_browser_use_billing_unavailable)
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
@@ -633,6 +715,8 @@ def _is_local_backend() -> bool:
 
 _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
+_cloud_fallback_to_local_resolved = False
+_cached_cloud_fallback_to_local: bool = True
 
 
 def _get_browser_engine() -> str:
@@ -995,6 +1079,30 @@ def _auto_local_for_private_urls() -> bool:
     except Exception as e:
         logger.debug("Could not read auto_local_for_private_urls from config: %s", e)
     return _cached_auto_local_for_private_urls
+
+
+def _cloud_fallback_to_local() -> bool:
+    """Return whether cloud-browser failures may start a local browser.
+
+    Defaults to True for backward compatibility. Set
+    ``browser.fallback_to_local_on_cloud_error: false`` on constrained hosts
+    to fail closed instead of spawning Chromium.
+    """
+    global _cloud_fallback_to_local_resolved, _cached_cloud_fallback_to_local
+    if _cloud_fallback_to_local_resolved:
+        return _cached_cloud_fallback_to_local
+    _cloud_fallback_to_local_resolved = True
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict) and "fallback_to_local_on_cloud_error" in browser_cfg:
+            _cached_cloud_fallback_to_local = bool(
+                browser_cfg.get("fallback_to_local_on_cloud_error")
+            )
+    except Exception as e:
+        logger.debug("Could not read fallback_to_local_on_cloud_error: %s", e)
+    return _cached_cloud_fallback_to_local
 
 
 def _url_is_private(url: str) -> bool:
@@ -1699,6 +1807,9 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
         if provider is None:
             session_info = _create_local_session(task_id)
         else:
+            billing_block = _browser_use_billing_blocked() if _provider_is_browser_use(provider) else None
+            if billing_block:
+                raise RuntimeError(_browser_use_billing_error_message(billing_block))
             try:
                 session_info = provider.create_session(task_id)
                 # Validate cloud provider returned a usable session
@@ -1711,6 +1822,21 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
                     session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
             except Exception as e:
                 provider_name = type(provider).__name__
+                if _provider_is_browser_use(provider) and _is_browser_use_billing_error(e):
+                    state = _mark_browser_use_billing_unavailable(e)
+                    logger.warning(
+                        "Cloud Browser Use disabled by billing circuit: reason=%s retry_after=%s task=%s",
+                        state.get("reason"), state.get("retry_after"), task_id,
+                    )
+                    raise RuntimeError(_browser_use_billing_error_message(state)) from e
+                if not _cloud_fallback_to_local():
+                    logger.warning(
+                        "Cloud provider %s failed (%s); local browser fallback is disabled for task %s",
+                        provider_name, e, task_id,
+                    )
+                    raise RuntimeError(
+                        f"Cloud provider {provider_name} failed ({e}); local browser fallback is disabled"
+                    ) from e
                 logger.warning(
                     "Cloud provider %s failed (%s); attempting fallback to local "
                     "Chromium for task %s",
