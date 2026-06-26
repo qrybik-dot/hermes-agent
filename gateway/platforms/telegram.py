@@ -2527,6 +2527,10 @@ class TelegramAdapter(BasePlatformAdapter):
             if result.success:
                 if result.message_id:
                     self._status_message_ids[key] = str(result.message_id)
+                logger.info(
+                    "[%s] Status updated: chat=%s key=%s message_id=%s",
+                    self.name, chat_id, status_key, result.message_id or cached_id,
+                )
                 return result
             # Edit failed — Telegram live-status may send at most one fresh
             # fallback message per key; repeated edit failures must not spam.
@@ -2543,6 +2547,10 @@ class TelegramAdapter(BasePlatformAdapter):
         result = await self.send(chat_id, content, metadata=metadata)
         if result.success and result.message_id:
             self._status_message_ids[key] = str(result.message_id)
+            logger.info(
+                "[%s] Status created: chat=%s key=%s message_id=%s",
+                self.name, chat_id, status_key, result.message_id,
+            )
         return result
 
     async def edit_message(
