@@ -588,3 +588,139 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+
+# ===========================================================================
+# Memory approval buttons
+# ===========================================================================
+
+class _RecordingButton:
+    def __init__(self, text, callback_data=None):
+        self.text = text
+        self.callback_data = callback_data
+
+
+class _RecordingMarkup:
+    def __init__(self, rows):
+        self.inline_keyboard = rows
+
+
+@pytest.fixture
+def memory_approval_home(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    yield home
+
+
+def _stage_memory(content):
+    from tools import write_approval as wa
+    return wa.stage_write(
+        wa.MEMORY,
+        {"action": "add", "target": "memory", "content": content, "old_text": None},
+        summary=f"add to memory: {content}",
+        origin="foreground",
+    )
+
+
+class TestTelegramMemoryApproval:
+    @pytest.mark.asyncio
+    async def test_send_attaches_memory_approval_buttons(self, monkeypatch, memory_approval_home):
+        import gateway.platforms.telegram as tg
+
+        monkeypatch.setattr(tg, "InlineKeyboardButton", _RecordingButton)
+        monkeypatch.setattr(tg, "InlineKeyboardMarkup", _RecordingMarkup)
+        rec = _stage_memory("Для простых бытовых задач отвечать максимум в трёх строках")
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=77))
+
+        result = await adapter.send(
+            "12345",
+            "Запомнил. Запрос на изменение памяти отправлен на подтверждение.",
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert "Запомнил" not in kwargs["text"]
+        assert "Подготовил запись в память" in kwargs["text"]
+        assert "Сохранение требует подтверждения" in kwargs["text"]
+        buttons = kwargs["reply_markup"].inline_keyboard[0]
+        assert buttons[0].text == "Подтвердить"
+        assert buttons[0].callback_data == f"ma:approve:{rec['id']}"
+        assert buttons[1].text == "Отклонить"
+        assert buttons[1].callback_data == f"ma:deny:{rec['id']}"
+
+    @pytest.mark.asyncio
+    async def test_memory_deny_discards_without_writing(self, monkeypatch, memory_approval_home):
+        import gateway.platforms.telegram as tg
+        from tools import write_approval as wa
+        from tools.memory_tool import MemoryStore
+
+        monkeypatch.setattr(tg, "InlineKeyboardButton", _RecordingButton)
+        monkeypatch.setattr(tg, "InlineKeyboardMarkup", _RecordingMarkup)
+        rec = _stage_memory("deny fact")
+        store = MemoryStore(); store.load_from_disk()
+        assert store.memory_entries == []
+
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = f"ma:deny:{rec['id']}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat = MagicMock()
+        query.message.chat.type = "private"
+        query.message.message_thread_id = None
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "Norbert"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch.object(adapter, "_is_callback_user_authorized", return_value=True):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        assert wa.get_pending(wa.MEMORY, rec["id"]) is None
+        store2 = MemoryStore(); store2.load_from_disk()
+        assert store2.memory_entries == []
+        query.edit_message_text.assert_called()
+        assert "Не сохранял это в память" in query.edit_message_text.call_args[1]["text"]
+
+    @pytest.mark.asyncio
+    async def test_memory_approve_writes_once(self, monkeypatch, memory_approval_home):
+        import gateway.platforms.telegram as tg
+        from tools import write_approval as wa
+        from tools.memory_tool import MemoryStore
+
+        monkeypatch.setattr(tg, "InlineKeyboardButton", _RecordingButton)
+        monkeypatch.setattr(tg, "InlineKeyboardMarkup", _RecordingMarkup)
+        rec = _stage_memory("approved fact")
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = f"ma:approve:{rec['id']}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat = MagicMock()
+        query.message.chat.type = "private"
+        query.message.message_thread_id = None
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "Norbert"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch.object(adapter, "_is_callback_user_authorized", return_value=True):
+            await adapter._handle_callback_query(update, MagicMock())
+            await adapter._handle_callback_query(update, MagicMock())
+
+        store = MemoryStore(); store.load_from_disk()
+        assert store.memory_entries == ["approved fact"]
+        assert wa.get_pending(wa.MEMORY, rec["id"]) is None
+        query.edit_message_text.assert_called()
+        assert "Сохранено в память: approved fact" in query.edit_message_text.call_args_list[0][1]["text"]

@@ -48,6 +48,17 @@ def test_invalid_subsystem_is_off(hermes_home):
     assert wa.write_approval_enabled("bogus") is False
 
 
+
+def test_write_approval_config_load_failure_requires_approval(monkeypatch):
+    from tools import write_approval as wa
+
+    def boom():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", boom)
+    assert wa.write_approval_enabled("memory") is True
+    assert wa.write_approval_enabled("skills") is True
+
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
     # Real bools pass through.
@@ -85,6 +96,8 @@ def test_memory_gate_on_no_interactive_stages(hermes_home):
     _set_approval("memory", True)
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "stage me", store=store))
+    assert r["success"] is False
+    assert r.get("approval_required") is True
     assert r.get("staged") is True
     assert r.get("pending_id")
     # Not written to the live store yet.
@@ -333,6 +346,8 @@ def test_memory_inline_callback_error_stages(hermes_home, approval_callback_clea
 
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "fallback fact", store=store))
+    assert r["success"] is False
+    assert r.get("approval_required") is True
     assert r.get("staged") is True
     assert wa.pending_count("memory") == 1
 
@@ -349,6 +364,8 @@ def test_gateway_context_stages_not_prompts(hermes_home, monkeypatch):
 
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "gateway fact", store=store))
+    assert r["success"] is False
+    assert r.get("approval_required") is True
     assert r.get("staged") is True
     assert store.memory_entries == []
     assert wa.pending_count("memory") == 1

@@ -84,8 +84,9 @@ def write_approval_enabled(subsystem: str) -> bool:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
         raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
-    except Exception:
-        return False
+    except Exception as exc:
+        logger.error("Failed to resolve %s.write_approval; requiring approval by default: %s", subsystem, exc)
+        return True
     return _normalize_enabled(raw)
 
 
@@ -283,8 +284,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
         return GateDecision(
             stage=True,
             message=(
-                f"Staged for approval ({subsystem}.write_approval is on). "
-                f"Not yet saved — review with {where}."
+                f"Approval required ({subsystem}.write_approval is on). "
+                f"Not saved yet — review with {where}."
             ),
         )
 
@@ -306,8 +307,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     return GateDecision(
         stage=True,
         message=(
-            "Staged for approval (memory.write_approval is on). "
-            "Not yet saved — review with /memory pending."
+            "Approval required (memory.write_approval is on). "
+            "Not saved yet — review with /memory pending."
         ),
     )
 

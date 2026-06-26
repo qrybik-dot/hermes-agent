@@ -619,10 +619,11 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
 
     try:
         from tools import write_approval as wa
-    except Exception:
-        # If the gate module can't load, fail open (current behaviour) rather
-        # than blocking all memory writes.
-        return None
+    except Exception as exc:
+        return tool_error(
+            f"Memory write approval guard is unavailable; the change was not saved: {exc}",
+            success=False,
+        )
 
     # Build a small inline summary/detail for the foreground approval prompt.
     label = "user profile" if target == "user" else "memory"
@@ -656,9 +657,17 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         summary=f"{summary}: {detail[:120]}",
         origin=wa.current_origin(),
     )
+    if action == "add" and content:
+        user_message = (
+            f"Подготовил запись в память:\n«{content}».\n\n"
+            "Сохранение требует подтверждения."
+        )
+    else:
+        user_message = decision.message
     return json.dumps(
-        {"success": True, "staged": True, "pending_id": record["id"],
-         "message": decision.message},
+        {"success": False, "approval_required": True, "staged": True,
+         "pending_id": record["id"], "message": user_message,
+         "approval_message": user_message},
         ensure_ascii=False,
     )
 
@@ -743,7 +752,7 @@ MEMORY_SCHEMA = {
         "Save durable information to persistent memory that survives across sessions. "
         "Memory is injected into future turns, so keep it compact and focused on facts "
         "that will still matter later.\n\n"
-        "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
+        "WHEN TO PROPOSE SAVING (do this proactively, don't wait to be asked):\n"
         "- User corrects you or says 'remember this' / 'don't do that again'\n"
         "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
         "- You discover something about the environment (OS, installed tools, project structure)\n"
@@ -760,6 +769,9 @@ MEMORY_SCHEMA = {
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
         "remove (delete -- old_text identifies it).\n\n"
+        "APPROVAL: when memory.write_approval is enabled, add/replace/remove requests are "
+        "not saved immediately. They are staged for approval and must not be described as "
+        "saved until the user approves them.\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {

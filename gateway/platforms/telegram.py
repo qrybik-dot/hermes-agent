@@ -2236,8 +2236,12 @@ class TelegramAdapter(BasePlatformAdapter):
             custom_reply_markup = None
             cleaned_content = content
             
+            memory_approval_prompt = self._latest_memory_approval_prompt(content)
+            if memory_approval_prompt is not None:
+                cleaned_content, custom_reply_markup = memory_approval_prompt
+
             # Формат: [ДОСТУПНЫ КНОПКИ: id1:Название1, id2:Название2] или [ДОСТУПНЫЕ КНОПКИ: ...]
-            if "[ДОСТУПНЫ КНОПКИ:" in content or "[ДОСТУПНЫЕ КНОПКИ:" in content:
+            if custom_reply_markup is None and ("[ДОСТУПНЫ КНОПКИ:" in content or "[ДОСТУПНЫЕ КНОПКИ:" in content):
                 match = re.search(r'\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*([^\]]+)\]', content)
                 if match:
                     button_defs = match.group(1).split(",")
@@ -2999,6 +3003,82 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
+
+    def _latest_memory_approval_prompt(self, content: str):
+        """Return (text, reply_markup) when an outgoing message needs memory approval buttons."""
+        text = content or ""
+        lower = text.lower()
+        if "памят" not in lower:
+            return None
+        if "подтверж" not in lower and "approval_required" not in lower:
+            return None
+        try:
+            from tools import write_approval as wa
+            records = wa.list_pending(wa.MEMORY)
+        except Exception as exc:
+            logger.warning("[%s] Cannot list pending memory approvals: %s", self.name, exc)
+            return None
+        if not records:
+            return None
+        rec = records[-1]
+        payload = rec.get("payload") or {}
+        entry = (payload.get("content") or payload.get("old_text") or rec.get("summary") or "").strip()
+        if not entry:
+            return None
+        prompt_text = (
+            f"Подготовил запись в память:\n«{entry}».\n\n"
+            "Сохранение требует подтверждения."
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Подтвердить", callback_data=f"ma:approve:{rec['id']}"),
+                InlineKeyboardButton("Отклонить", callback_data=f"ma:deny:{rec['id']}"),
+            ]
+        ])
+        return prompt_text, keyboard
+
+    async def send_memory_approval_prompt(
+        self,
+        chat_id: str,
+        pending_id: str,
+        entry: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a memory-write approval prompt with Telegram inline buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        text = (
+            f"Подготовил запись в память:\n«{entry}».\n\n"
+            "Сохранение требует подтверждения."
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Подтвердить", callback_data=f"ma:approve:{pending_id}"),
+                InlineKeyboardButton("Отклонить", callback_data=f"ma:deny:{pending_id}"),
+            ]
+        ])
+        try:
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=int(chat_id),
+                text=self.format_message(text),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as exc:
+            logger.warning("[%s] send_memory_approval_prompt failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -3780,6 +3860,90 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Memory approval callbacks (ma:approve|deny:id) ---
+        if data.startswith("ma:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3 or parts[1] not in {"approve", "deny"}:
+                await query.answer(text="Некорректные данные подтверждения.")
+                return
+            choice = parts[1]
+            pending_id = parts[2]
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ Нет прав для подтверждения.")
+                return
+
+            try:
+                from tools import write_approval as wa
+                rec = wa.get_pending(wa.MEMORY, pending_id)
+            except Exception as exc:
+                logger.error("Failed to load pending memory approval %s: %s", pending_id, exc)
+                await query.answer(text="Сохранение без подтверждения невозможно.")
+                return
+
+            if not rec:
+                await query.answer(text="Этот запрос уже обработан.")
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                return
+
+            payload = rec.get("payload") or {}
+            entry = (payload.get("content") or payload.get("old_text") or rec.get("summary") or "").strip()
+
+            if choice == "deny":
+                wa.discard_pending(wa.MEMORY, pending_id)
+                await query.answer(text="Отклонено.")
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message("Не сохранял это в память."),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+
+            try:
+                from tools.memory_tool import MemoryStore, apply_memory_pending
+                store = MemoryStore()
+                store.load_from_disk()
+                result = apply_memory_pending(payload, store)
+            except Exception as exc:
+                logger.error("Failed to apply pending memory approval %s: %s", pending_id, exc)
+                result = {"success": False, "error": str(exc)}
+
+            if result.get("success"):
+                wa.discard_pending(wa.MEMORY, pending_id)
+                await query.answer(text="Сохранено.")
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(f"Сохранено в память: {entry}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            else:
+                await query.answer(text="Сохранение без подтверждения невозможно.")
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message("Сохранение без подтверждения невозможно."),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
