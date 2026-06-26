@@ -15663,7 +15663,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _parts = []
                         if _want_iteration_detail:
                             _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
+                                f"шаг {_a['api_call_count']}/{_a['max_iterations']}"
                             )
                         _action = _a.get("current_tool") or _a.get("last_activity_desc")
                         if _action:
@@ -15672,7 +15672,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                _blocks = min(10, max(1, int((_elapsed_mins * 10) / 10)))
+                _bar = "█" * _blocks + "░" * (10 - _blocks)
+                _heartbeat_text = f"⏳ В работе: задача Hermes\n[{_bar}] идёт {_elapsed_mins} мин{_status_detail}"
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
