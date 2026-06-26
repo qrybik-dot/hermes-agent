@@ -25,6 +25,7 @@ piecemeal, the footer is sent as a separate trailing message via
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Iterable, Optional
 
@@ -51,6 +52,23 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _format_elapsed_seconds(elapsed_seconds: float | None) -> str:
+    """Return a Russian elapsed-time field, or "" for invalid values."""
+    if elapsed_seconds is None:
+        return ""
+    try:
+        seconds_f = float(elapsed_seconds)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(seconds_f) or seconds_f < 0:
+        return ""
+    total = int(seconds_f + 0.5)
+    minutes, seconds = divmod(total, 60)
+    if minutes <= 0:
+        return f"Время: {seconds} сек"
+    return f"Время: {minutes} мин {seconds:02d} сек"
 
 
 def resolve_footer_config(
@@ -95,6 +113,9 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    elapsed_seconds: float | None = None,
+    llm_call_count: int | None = None,
+    tool_call_count: int | None = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -102,6 +123,7 @@ def format_runtime_footer(
     partially-populated footer is better than a line with ``?%`` or empty slots.
     """
     parts: list[str] = []
+    elapsed_lines: list[str] = []
     for field in fields:
         if field == "model":
             m = _model_short(model)
@@ -115,14 +137,27 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field in {"duration", "elapsed", "elapsed_time", "time"}:
+            elapsed = _format_elapsed_seconds(elapsed_seconds)
+            if elapsed:
+                counters: list[str] = []
+                if llm_call_count is not None:
+                    counters.append(f"модель: {max(0, int(llm_call_count))}")
+                if tool_call_count is not None:
+                    counters.append(f"инструменты: {max(0, int(tool_call_count))}")
+                if counters:
+                    elapsed = f"{elapsed}{_SEP}{_SEP.join(counters)}"
+                elapsed_lines.append(elapsed)
         # Unknown field names are silently ignored.
 
-    if not parts:
-        return ""
-    return _SEP.join(parts)
+    lines: list[str] = []
+    if parts:
+        lines.append(_SEP.join(parts))
+    lines.extend(elapsed_lines)
+    return "\n".join(lines)
 
 
-def build_footer_line(
+def build_runtime_footer(
     *,
     user_config: dict[str, Any] | None,
     platform_key: str | None,
@@ -130,6 +165,9 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    elapsed_seconds: float | None = None,
+    llm_call_count: int | None = None,
+    tool_call_count: int | None = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -140,10 +178,42 @@ def build_footer_line(
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+    fields = cfg.get("fields") or _DEFAULT_FIELDS
+    if platform_key == "telegram" and elapsed_seconds is not None:
+        fields = ("model", "duration")
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
-        fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        fields=fields,
+        elapsed_seconds=elapsed_seconds,
+        llm_call_count=llm_call_count,
+        tool_call_count=tool_call_count,
+    )
+
+
+def build_footer_line(
+    *,
+    user_config: dict[str, Any] | None,
+    platform_key: str | None,
+    model: Optional[str],
+    context_tokens: int,
+    context_length: Optional[int],
+    cwd: Optional[str] = None,
+    elapsed_seconds: float | None = None,
+    llm_call_count: int | None = None,
+    tool_call_count: int | None = None,
+) -> str:
+    """Backward-compatible wrapper for the runtime footer builder."""
+    return build_runtime_footer(
+        user_config=user_config,
+        platform_key=platform_key,
+        model=model,
+        context_tokens=context_tokens,
+        context_length=context_length,
+        cwd=cwd,
+        elapsed_seconds=elapsed_seconds,
+        llm_call_count=llm_call_count,
+        tool_call_count=tool_call_count,
     )

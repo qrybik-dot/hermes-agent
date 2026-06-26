@@ -38,6 +38,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
@@ -1377,6 +1378,70 @@ from gateway.whatsapp_identity import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_int_metric(value: Any, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return default
+
+
+def _gateway_final_status(agent_result: Dict[str, Any]) -> str:
+    if agent_result.get("interrupted"):
+        return "interrupted"
+    if agent_result.get("failed"):
+        return "failed"
+    if agent_result.get("partial"):
+        return "partial"
+    return "success"
+
+
+def _build_gateway_request_metrics(
+    *,
+    request_id: str,
+    received_at: str,
+    completed_at: str,
+    total_ms: int,
+    agent_result: Dict[str, Any],
+    telegram_send_ms: Optional[int] = None,
+) -> Dict[str, Any]:
+    diagnostics = agent_result.get("diagnostics") or {}
+    fallback_reason = agent_result.get("fallback_reason")
+    if not fallback_reason and _gateway_final_status(agent_result) != "success":
+        fallback_reason = agent_result.get("error") or agent_result.get("interrupt_message")
+    return {
+        "request_id": request_id,
+        "received_at": received_at,
+        "completed_at": completed_at,
+        "total_ms": _safe_int_metric(total_ms),
+        "gateway_overhead_ms": max(
+            0,
+            _safe_int_metric(total_ms)
+            - _safe_int_metric(agent_result.get("llm_total_ms", 0))
+            - _safe_int_metric(diagnostics.get("tool_total_ms", 0)),
+        ),
+        "task_level": agent_result.get("task_level"),
+        "routing_reason": agent_result.get("routing_reason"),
+        "selected_toolsets": list(agent_result.get("selected_toolsets") or []),
+        "resolved_model": agent_result.get("model"),
+        "provider": agent_result.get("provider"),
+        "llm_call_count": _safe_int_metric(agent_result.get("api_calls", 0)),
+        "llm_total_ms": _safe_int_metric(agent_result.get("llm_total_ms", 0)),
+        "tool_call_count": _safe_int_metric(diagnostics.get("tool_call_count", 0)),
+        "tool_total_ms": _safe_int_metric(diagnostics.get("tool_total_ms", 0)),
+        "agent_cache_status": diagnostics.get("agent_cache_status"),
+        "agent_prepare_ms": _safe_int_metric(diagnostics.get("agent_prepare_ms", 0)),
+        "agent_init_ms": _safe_int_metric(diagnostics.get("agent_init_ms", 0)),
+        "agent_post_ms": _safe_int_metric(diagnostics.get("agent_post_ms", 0)),
+        "browser_call_count": _safe_int_metric(diagnostics.get("browser_call_count", 0)),
+        "browser_total_ms": _safe_int_metric(diagnostics.get("browser_total_ms", 0)),
+        "self_improvement_call_count": _safe_int_metric(diagnostics.get("self_improvement_call_count", 0)),
+        "self_improvement_total_ms": _safe_int_metric(diagnostics.get("self_improvement_total_ms", 0)),
+        "telegram_send_ms": telegram_send_ms,
+        "fallback_reason": fallback_reason,
+        "final_status": _gateway_final_status(agent_result),
+    }
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -2997,14 +3062,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
-        """Build the effective model/runtime config for a single turn.
-
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
-        """
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        role: str | None = None,
+        routing_reason: str | None = None,
+        user_config: dict | None = None,
+    ) -> dict:
+        """Build the effective model/runtime config for a single turn."""
         from hermes_cli.models import resolve_fast_mode_overrides
 
         runtime = {
@@ -3017,9 +3085,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+        fallback_used = False
+        selected_role = role or "simple"
+        if selected_role and selected_role != "no_llm" and isinstance(user_config, dict):
+            role_cfg = (user_config.get("model_roles") or {}).get(selected_role)
+            if isinstance(role_cfg, dict):
+                role_provider = str(role_cfg.get("provider") or "").strip()
+                role_model = str(role_cfg.get("model") or "").strip()
+                if role_model:
+                    try:
+                        role_runtime = dict(runtime)
+                        if role_provider and role_provider not in {"", "none"}:
+                            from hermes_cli.runtime_provider import resolve_runtime_provider
+                            role_runtime = resolve_runtime_provider(requested=role_provider)
+                        for key in ("api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "max_tokens"):
+                            if role_runtime.get(key) is not None:
+                                runtime[key] = role_runtime.get(key)
+                        model = role_model
+                    except Exception as exc:
+                        fallback_used = True
+                        logger.warning(
+                            "task routing fallback: role=%s provider=%s model=%s error=%s",
+                            selected_role, role_provider, role_model, exc,
+                        )
         route = {
             "model": model,
             "runtime": runtime,
+            "task_role": selected_role,
+            "routing_reason": routing_reason or "",
+            "fallback_used": fallback_used,
             "signature": (
                 model,
                 runtime["provider"],
@@ -3027,6 +3121,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                selected_role,
             ),
         }
 
@@ -7462,6 +7557,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
+        if canonical == "memory_search":
+            return await self._handle_memory_search_command(event)
+
         if canonical == "memory":
             return await self._handle_memory_command(event)
 
@@ -8182,11 +8280,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
-        _msg_start_time = time.time()
+        _msg_start_time = time.monotonic()
+        _request_id = uuid.uuid4().hex[:12]
+        _received_at = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r",
+            "inbound message: request_id=%s platform=%s user=%s chat=%s msg=%r",
+            _request_id,
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview,
         )
@@ -8906,12 +9007,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
-            _response_time = time.time() - _msg_start_time
+            _response_time = time.monotonic() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
+            _diagnostics = agent_result.get("diagnostics") or {}
+            _tool_call_count = _safe_int_metric(_diagnostics.get("tool_call_count", 0))
             _resp_len = len(response)
             logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-                _platform_name, source.chat_id or "unknown",
+                "response ready: request_id=%s platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                _request_id, _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len,
             )
 
@@ -9003,12 +9106,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    elapsed_seconds=_response_time,
+                    llm_call_count=_api_calls,
+                    tool_call_count=_tool_call_count,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+
+            try:
+                _metric_record = _build_gateway_request_metrics(
+                    request_id=_request_id,
+                    received_at=_received_at,
+                    completed_at=datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+                    total_ms=int(_response_time * 1000),
+                    agent_result=agent_result,
+                    telegram_send_ms=None,
+                )
+                logger.info(
+                    "gateway_request_metrics %s",
+                    json.dumps(_metric_record, ensure_ascii=False, sort_keys=True),
+                )
+            except Exception as _metrics_err:
+                logger.debug("gateway request metrics build failed: %s", _metrics_err)
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -10419,7 +10541,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            from gateway.task_router import route_turn
+            _task_route = route_turn(prompt, command=None, platform_key=platform_key, user_config=user_config)
+            enabled_toolsets = _task_route.toolsets
+            max_iterations = _task_route.max_iterations
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                role=_task_route.role,
+                routing_reason=_task_route.reason,
+                user_config=user_config,
+            )
+            logger.info(
+                "task routing: task_role=%s selected_provider=%s selected_model=%s routing_reason=%s fallback_used=%s toolsets=%s",
+                turn_route.get("task_role"), turn_route["runtime"].get("provider"), turn_route.get("model"),
+                turn_route.get("routing_reason"), turn_route.get("fallback_used"), enabled_toolsets,
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -10447,6 +10585,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
+                    skip_context_files=_task_route.skip_context_files,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -13620,9 +13759,88 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+        request_metrics = {
+            "tool_call_count": 0,
+            "tool_total_ms": 0,
+            "browser_call_count": 0,
+            "browser_total_ms": 0,
+            "self_improvement_call_count": 0,
+            "self_improvement_total_ms": 0,
+            "agent_cache_status": "unknown",
+            "agent_prepare_ms": 0,
+            "agent_init_ms": 0,
+            "agent_post_ms": 0,
+        }
+        task_status_state = {
+            "enabled": False,
+            "key": "",
+            "title": "",
+            "started": time.monotonic(),
+            "last_percent": -1,
+        }
+
+        def _task_elapsed_text() -> str:
+            elapsed = max(0, int(time.monotonic() - task_status_state["started"]))
+            minutes, seconds = divmod(elapsed, 60)
+            if minutes:
+                return f"{minutes} мин {seconds:02d} сек"
+            return f"{seconds} сек"
+
+        def _emit_task_status(percent: int, stage: str, *, done: bool = False) -> None:
+            if not task_status_state["enabled"]:
+                return
+            percent = max(0, min(100, int(percent)))
+            if not done and percent == task_status_state["last_percent"]:
+                return
+            task_status_state["last_percent"] = percent
+            if done:
+                content = (
+                    f"✅ Готово: {task_status_state['title']}\n"
+                    f"Идёт: {_task_elapsed_text()}"
+                )
+            else:
+                filled = max(0, min(10, round(percent / 10)))
+                bar = "█" * filled + "░" * (10 - filled)
+                content = (
+                    f"⏳ В работе: {task_status_state['title']}\n"
+                    f"[{bar}] {percent}%\n"
+                    f"Этап: {stage}\n"
+                    f"Идёт: {_task_elapsed_text()}"
+                )
+            _status_callback_sync(task_status_state["key"], content)
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            if event_type == "tool.completed":
+                try:
+                    duration_ms = int(float(kwargs.get("duration") or 0) * 1000)
+                except Exception:
+                    duration_ms = 0
+                request_metrics["tool_call_count"] += 1
+                request_metrics["tool_total_ms"] += max(0, duration_ms)
+                if str(tool_name or "").startswith("browser"):
+                    request_metrics["browser_call_count"] += 1
+                    request_metrics["browser_total_ms"] += max(0, duration_ms)
+            if task_status_state["enabled"]:
+                if event_type == "tool.started":
+                    stage_map = {
+                        "web": "поиск и проверка источников",
+                        "terminal": "выполнение изменений",
+                        "file": "проверка файлов",
+                        "code_execution": "выполнение и проверка кода",
+                        "memory": "поиск по памяти",
+                        "session_search": "поиск по истории",
+                        "skills": "подготовка метода",
+                    }
+                    stage = stage_map.get(str(tool_name or ""), "выполнение")
+                    pct = min(75, 30 + request_metrics["tool_call_count"] * 10)
+                    _emit_task_status(pct, stage)
+                elif event_type == "tool.completed":
+                    pct = min(85, 55 + request_metrics["tool_call_count"] * 6)
+                    _emit_task_status(pct, "проверка результата")
+                if event_type in {"tool.started", "tool.completed"}:
+                    return
+
             if not progress_queue or not _run_still_current():
                 return
 
@@ -14232,6 +14450,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cleanup_msg_ids.append(str(mid))
                 _fut.add_done_callback(_track_status_id)
 
+        platform_allowed_toolsets = list(enabled_toolsets or [])
+
         def run_sync():
             # The conditional re-assignment of `message` further below
             # (prepending model-switch notes) makes Python treat it as a
@@ -14240,6 +14460,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
+            routed_toolsets = list(platform_allowed_toolsets)
+            _run_sync_started = time.monotonic()
+            _agent_returned_at = None
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -14395,7 +14618,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            from gateway.task_router import route_turn
+            _command_for_route = None
+            if isinstance(message, str):
+                _route_text = message.lstrip()
+                if _route_text.startswith("/"):
+                    _command_for_route = _route_text.split(None, 1)[0].lstrip("/").split("@", 1)[0]
+            _task_route = route_turn(
+                message,
+                command=_command_for_route,
+                platform_key=platform_key,
+                user_config=user_config,
+                platform_toolsets=platform_allowed_toolsets,
+            )
+            routed_toolsets = _task_route.toolsets
+            max_iterations = _task_route.max_iterations
+            if _task_route.operational_context:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + _task_route.operational_context).strip()
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                role=_task_route.role,
+                routing_reason=_task_route.reason,
+                user_config=user_config,
+            )
+            logger.info(
+                "task routing: task_role=%s selected_provider=%s selected_model=%s routing_reason=%s fallback_used=%s toolsets=%s max_iterations=%s",
+                turn_route.get("task_role"), turn_route["runtime"].get("provider"), turn_route.get("model"),
+                turn_route.get("routing_reason"), turn_route.get("fallback_used"), routed_toolsets, max_iterations,
+            )
+
+            _live_status_roles = {"research", "planning", "coding", "long_context", "server_debug"}
+            if platform_key == "telegram" and _task_route.role in _live_status_roles:
+                _title = re.sub(r"\s+", " ", str(message or "")).strip()
+                if len(_title) > 72:
+                    _title = _title[:69].rstrip() + "..."
+                task_status_state.update({
+                    "enabled": True,
+                    "key": f"task:{session_key}:{run_generation}",
+                    "title": _title or "задача Hermes",
+                    "started": time.monotonic(),
+                    "last_percent": -1,
+                })
+                _emit_task_status(0, "подготовка плана")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -14403,7 +14669,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
-                enabled_toolsets,
+                routed_toolsets,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
                 user_id=getattr(source, "user_id", None),
@@ -14431,6 +14697,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
+                    if cached and cached[1] != _sig:
+                        request_metrics["agent_cache_status"] = "signature_miss"
                     if cached and cached[1] == _sig:
                         # cached[2] is the message_count at cache time;
                         # stale when a second process appended rows.
@@ -14448,12 +14716,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "possible cross-process write",
                                 session_key, _cached_mc, _current_msg_count,
                             )
+                            request_metrics["agent_cache_status"] = "invalidated_message_count"
                             evicted = self._agent_cache.pop(session_key, None)
                             _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
                             if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
                                 self._cleanup_agent_resources(_ev_agent)
                         else:
                             agent = cached[0]
+                            request_metrics["agent_cache_status"] = "hit"
                             # Refresh LRU order so the cap enforcement evicts
                             # truly-oldest entries, not the one we just used.
                             if hasattr(_cache, "move_to_end"):
@@ -14466,14 +14736,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                if request_metrics["agent_cache_status"] == "unknown":
+                    request_metrics["agent_cache_status"] = "miss"
+                _agent_init_started = time.monotonic()
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
+                    enabled_toolsets=routed_toolsets,
                     disabled_toolsets=disabled_toolsets,
+                    skip_context_files=_task_route.skip_context_files,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
                     reasoning_config=reasoning_config,
@@ -14498,6 +14772,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                request_metrics["agent_init_ms"] = int(
+                    (time.monotonic() - _agent_init_started) * 1000
+                )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig, _current_msg_count)
@@ -14506,7 +14783,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            agent.tool_progress_callback = progress_callback
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
@@ -14582,6 +14859,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Telegram UX: users should not receive "Self-improvement review:
             # Skill ... updated" system messages after the final answer.
             def _bg_review_send(message: str) -> None:
+                request_metrics["self_improvement_call_count"] += 1
                 logger.info("Background review summary suppressed from user delivery: %s", message)
 
             agent.background_review_callback = _bg_review_send
@@ -14952,7 +15230,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_message"] = _persist_user_message_override
                 elif observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
+                request_metrics["agent_prepare_ms"] = int(
+                    (time.monotonic() - _run_sync_started) * 1000
+                )
+                _emit_task_status(25, "анализ и выполнение")
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                _agent_returned_at = time.monotonic()
+                _emit_task_status(90, "подготовка ответа")
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -15042,6 +15326,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
             if not final_response:
+                if _agent_returned_at is not None:
+                    request_metrics["agent_post_ms"] = int(
+                        (time.monotonic() - _agent_returned_at) * 1000
+                    )
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
                     "final_response": error_msg,
@@ -15061,6 +15349,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "provider": getattr(_agent, "provider", None) if _agent else None,
+                    "task_level": turn_route.get("task_role"),
+                    "routing_reason": turn_route.get("routing_reason"),
+                    "selected_toolsets": list(routed_toolsets or []),
+                    "llm_total_ms": getattr(_agent, "session_llm_total_ms", 0) if _agent else 0,
+                    "diagnostics": dict(request_metrics),
                     "context_length": _context_length,
                 }
             
@@ -15144,6 +15438,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+            if _agent_returned_at is not None:
+                request_metrics["agent_post_ms"] = int(
+                    (time.monotonic() - _agent_returned_at) * 1000
+                )
+            _emit_task_status(100, "завершено", done=True)
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
@@ -15160,6 +15459,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": getattr(agent, "provider", None) if agent else None,
+                "task_level": turn_route.get("task_role"),
+                "routing_reason": turn_route.get("routing_reason"),
+                "selected_toolsets": list(routed_toolsets or []),
+                "llm_total_ms": getattr(agent, "session_llm_total_ms", 0) if agent else 0,
+                "diagnostics": dict(request_metrics),
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),

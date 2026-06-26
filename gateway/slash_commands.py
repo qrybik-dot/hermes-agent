@@ -2106,6 +2106,43 @@ class GatewaySlashCommandsMixin:
                    "reject <id>, approval <on|off>.")
         return out
 
+    async def _handle_memory_search_command(self, event: MessageEvent) -> str:
+        """Handle /memory_search through the local FTS index without an LLM."""
+        raw_args = event.get_command_args().strip()
+        if not raw_args:
+            return "Usage: /memory_search <query> [--limit N]"
+        try:
+            import shlex
+            from hermes_cli.memory_search import search
+            parts = shlex.split(raw_args)
+            limit = 5
+            cleaned = []
+            i = 0
+            while i < len(parts):
+                if parts[i] == "--limit" and i + 1 < len(parts):
+                    try:
+                        limit = max(1, min(10, int(parts[i + 1])))
+                    except Exception:
+                        limit = 5
+                    i += 2
+                    continue
+                cleaned.append(parts[i])
+                i += 1
+            query = " ".join(cleaned).strip()
+            results = search(query, limit=limit)
+        except Exception as exc:
+            logger.warning("/memory_search failed: %s", exc)
+            return f"Memory search failed: {exc}"
+        if not results:
+            return "Ничего не найдено."
+        lines = ["Memory search:"]
+        for idx, item in enumerate(results[:limit], 1):
+            heading = item.get("heading") or item.get("path") or "Без заголовка"
+            path = item.get("path") or ""
+            snippet = item.get("snippet") or ""
+            lines.append(f"{idx}. {heading}\n{path}\n{snippet}")
+        return "\n\n".join(lines)
+
     async def _handle_skills_command(self, event: MessageEvent) -> str:
         """Handle /skills on the gateway — pending skill-write review only.
 

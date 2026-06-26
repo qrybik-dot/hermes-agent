@@ -8,6 +8,7 @@ import os
 import pytest
 
 from gateway.runtime_footer import (
+    _format_elapsed_seconds,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -260,3 +261,126 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+# ---------------------------------------------------------------------------
+# elapsed time
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "elapsed,expected",
+    [
+        (None, ""),
+        (0, "Время: 0 сек"),
+        (8, "Время: 8 сек"),
+        (65, "Время: 1 мин 05 сек"),
+        (134, "Время: 2 мин 14 сек"),
+        (-1, ""),
+        (float("nan"), ""),
+        (float("inf"), ""),
+        ("bad", ""),
+    ],
+)
+def test_format_elapsed_seconds(elapsed, expected):
+    assert _format_elapsed_seconds(elapsed) == expected
+
+
+def test_format_footer_includes_elapsed_only_when_field_requested():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50,
+        context_length=100,
+        cwd="",
+        fields=("model", "context_pct", "duration"),
+        elapsed_seconds=65,
+    )
+    assert out == "gpt-5.4 · 50%\nВремя: 1 мин 05 сек"
+    assert " · Время" not in out
+    assert "\n\n" not in out
+
+
+def test_format_footer_model_and_elapsed_are_adjacent_lines():
+    out = format_runtime_footer(
+        model="google/gemini-3.5-flash-low",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        fields=("model", "duration"),
+        elapsed_seconds=14,
+    )
+    assert out == "gemini-3.5-flash-low\nВремя: 14 сек"
+    assert " · Время" not in out
+    assert "\n\n" not in out
+
+
+def test_format_footer_elapsed_with_call_counters():
+    out = format_runtime_footer(
+        model="google/gemini-3.5-flash-low",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        fields=("model", "duration"),
+        elapsed_seconds=36,
+        llm_call_count=2,
+        tool_call_count=5,
+    )
+    assert out == "gemini-3.5-flash-low\nВремя: 36 сек · модель: 2 · инструменты: 5"
+
+
+def test_format_footer_skips_invalid_elapsed():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50,
+        context_length=100,
+        cwd="",
+        fields=("model", "duration"),
+        elapsed_seconds=-1,
+    )
+    assert out == "gpt-5.4"
+
+
+def test_build_footer_accepts_elapsed_seconds():
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["duration"]}}},
+        platform_key="telegram",
+        model="openai/gpt-5.4",
+        context_tokens=25,
+        context_length=100,
+        cwd="",
+        elapsed_seconds=8,
+    )
+    assert out == "gpt-5.4\nВремя: 8 сек"
+
+
+def test_build_footer_telegram_uses_compact_runtime_summary():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "context_pct", "cwd", "duration"],
+                }
+            }
+        },
+        platform_key="telegram",
+        model="google/gemini-3.5-flash-low",
+        context_tokens=25,
+        context_length=100,
+        cwd="/tmp/hermes",
+        elapsed_seconds=36,
+        llm_call_count=1,
+        tool_call_count=3,
+    )
+    assert out == "gemini-3.5-flash-low\nВремя: 36 сек · модель: 1 · инструменты: 3"
+
+
+def test_build_footer_elapsed_suppressed_when_disabled():
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": False, "fields": ["duration"]}}},
+        platform_key="telegram",
+        model="openai/gpt-5.4",
+        context_tokens=25,
+        context_length=100,
+        cwd="",
+        elapsed_seconds=8,
+    )
+    assert out == ""

@@ -1097,6 +1097,10 @@ def run_conversation(
                 )
                 
                 api_duration = time.time() - api_start_time
+                try:
+                    agent.session_llm_total_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0) + int(api_duration * 1000)
+                except Exception:
+                    pass
                 
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
