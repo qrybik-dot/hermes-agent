@@ -1424,6 +1424,9 @@ def _build_gateway_request_metrics(
         "task_level": agent_result.get("task_level"),
         "routing_reason": agent_result.get("routing_reason"),
         "selected_toolsets": list(agent_result.get("selected_toolsets") or []),
+        "selected_model": agent_result.get("selected_model"),
+        "selected_provider": agent_result.get("selected_provider"),
+        "fallback_used": bool(agent_result.get("fallback_used")),
         "resolved_model": agent_result.get("model"),
         "provider": agent_result.get("provider"),
         "llm_call_count": _safe_int_metric(agent_result.get("api_calls", 0)),
@@ -14650,6 +14653,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             _live_status_roles = {"research", "planning", "coding", "long_context", "server_debug"}
+            _selected_provider = turn_route["runtime"].get("provider")
+            _selected_model = turn_route.get("model")
+            _quality_locked_roles = {"planning", "coding", "long_context", "server_debug"}
+            _turn_fallback_model = (
+                None
+                if _task_route.role in _quality_locked_roles and _selected_provider == "openai-codex"
+                else self._fallback_model
+            )
             if platform_key == "telegram" and _task_route.role in _live_status_roles:
                 _title = re.sub(r"\s+", " ", str(message or "")).strip()
                 if len(_title) > 72:
@@ -14770,7 +14781,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     session_db=self._session_db,
-                    fallback_model=self._fallback_model,
+                    fallback_model=_turn_fallback_model,
                 )
                 request_metrics["agent_init_ms"] = int(
                     (time.monotonic() - _agent_init_started) * 1000
@@ -15233,8 +15244,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 request_metrics["agent_prepare_ms"] = int(
                     (time.monotonic() - _run_sync_started) * 1000
                 )
+                _llm_before_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0)
                 _emit_task_status(25, "анализ и выполнение")
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                _llm_after_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0)
+                request_metrics["llm_turn_ms"] = max(0, _llm_after_ms - _llm_before_ms)
                 _agent_returned_at = time.monotonic()
                 _emit_task_status(90, "подготовка ответа")
             finally:
@@ -15269,6 +15283,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _resolved_provider = getattr(_agent, "provider", None) if _agent else None
+            _runtime_fallback_used = bool(
+                (_resolved_model and _selected_model and _resolved_model != _selected_model)
+                or (_resolved_provider and _selected_provider and _resolved_provider != _selected_provider)
+            )
+            _runtime_fallback_reason = None
+            if _runtime_fallback_used:
+                _runtime_fallback_reason = (
+                    f"{_selected_provider}/{_selected_model} -> "
+                    f"{_resolved_provider}/{_resolved_model}"
+                )
 
             # Sync session_id immediately after run_conversation(). Compression
             # can rotate before a follow-up model call fails; the failure return
@@ -15349,11 +15374,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
-                    "provider": getattr(_agent, "provider", None) if _agent else None,
+                    "provider": _resolved_provider,
+                    "selected_model": _selected_model,
+                    "selected_provider": _selected_provider,
+                    "fallback_used": _runtime_fallback_used,
+                    "fallback_reason": _runtime_fallback_reason,
                     "task_level": turn_route.get("task_role"),
                     "routing_reason": turn_route.get("routing_reason"),
                     "selected_toolsets": list(routed_toolsets or []),
-                    "llm_total_ms": getattr(_agent, "session_llm_total_ms", 0) if _agent else 0,
+                    "llm_total_ms": request_metrics.get("llm_turn_ms", 0),
                     "diagnostics": dict(request_metrics),
                     "context_length": _context_length,
                 }
@@ -15459,11 +15488,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
-                "provider": getattr(agent, "provider", None) if agent else None,
+                "provider": _resolved_provider,
+                "selected_model": _selected_model,
+                "selected_provider": _selected_provider,
+                "fallback_used": _runtime_fallback_used,
+                "fallback_reason": _runtime_fallback_reason,
                 "task_level": turn_route.get("task_role"),
                 "routing_reason": turn_route.get("routing_reason"),
                 "selected_toolsets": list(routed_toolsets or []),
-                "llm_total_ms": getattr(agent, "session_llm_total_ms", 0) if agent else 0,
+                "llm_total_ms": request_metrics.get("llm_turn_ms", 0),
                 "diagnostics": dict(request_metrics),
                 "context_length": _context_length,
                 "session_id": effective_session_id,
