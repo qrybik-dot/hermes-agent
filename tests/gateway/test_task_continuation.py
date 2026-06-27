@@ -112,3 +112,22 @@ def test_prepare_task_turn_restores_role_and_tools(tmp_path, monkeypatch):
     assert prepared.route.role == "server_debug"
     assert "terminal" in prepared.route.toolsets
     assert "Saved task" in prepared.message
+
+
+
+def test_reply_context_continuation_command(tmp_path):
+    store = _store(tmp_path)
+    task = store.create(
+        platform="telegram", chat_id="1", session_key="s", title="Git audit",
+        original_request="Проверь Git", role="server_debug", toolsets=["terminal"],
+        required_toolsets=["terminal"], requires_execution=True, status="paused",
+    )
+    decision = store.resolve('[Replying to: "old report"]\nГотов продолжить', "telegram", "1")
+    assert decision.kind == "selected"
+    assert decision.task.task_id == task.task_id
+
+
+def test_continuation_without_active_tasks_is_deterministic(tmp_path):
+    store = _store(tmp_path)
+    decision = store.resolve('[Replying to: "old report"]\nГотов продолжить', "telegram", "1")
+    assert decision.kind == "empty"

@@ -13,7 +13,7 @@ from typing import Iterable, Optional
 
 _ACTIVE = ("running", "paused", "blocked", "incomplete", "awaiting_delivery", "delivery_failed")
 _CONTINUE_RE = re.compile(
-    r"^\s*(?:готов\s+продолжить|продолж(?:ай|ить|им)|дальше|возобнов(?:и|ить)|"
+    r"(?:^|\n)\s*(?:готов\s+продолжить|продолж(?:ай|ить|им)|дальше|возобнов(?:и|ить)|"
     r"можно\s+продолжить|давай\s+продолжим)(?:\s+(\d+|[0-9a-f]{6,32}))?[\s.!?]*$", re.I)
 _PAUSE_RE = re.compile(
     r"\b(?:повторим\s+(?:утром|позже)|продолжим\s+(?:утром|позже)|"
@@ -24,20 +24,36 @@ _EXECUTION_RE = re.compile(
     r"обнови|синхрониз|отправь|запиши|сохрани|скачай|проанализируй\s+на\s+vps)\w*\b", re.I)
 _PLAN_ONLY_RE = re.compile(r"\b(?:составь|подготовь)\s+план\b", re.I)
 
+
 @dataclass(frozen=True)
 class TaskRecord:
-    task_id: str; platform: str; chat_id: str; session_key: str; title: str
-    original_request: str; role: str; toolsets: tuple[str, ...]
-    required_toolsets: tuple[str, ...]; requires_execution: bool; status: str
-    source_request_id: str; source_session_id: str; status_message_id: Optional[str]
-    created_at: float; updated_at: float; expires_at: float
-    last_error: Optional[str]; metadata: dict
+    task_id: str
+    platform: str
+    chat_id: str
+    session_key: str
+    title: str
+    original_request: str
+    role: str
+    toolsets: tuple[str, ...]
+    required_toolsets: tuple[str, ...]
+    requires_execution: bool
+    status: str
+    source_request_id: str
+    source_session_id: str
+    status_message_id: Optional[str]
+    created_at: float
+    updated_at: float
+    expires_at: float
+    last_error: Optional[str]
+    metadata: dict
+
 
 @dataclass(frozen=True)
 class ContinuationDecision:
     kind: str
     task: Optional[TaskRecord] = None
     candidates: tuple[TaskRecord, ...] = ()
+
 
 class TaskStateStore:
     def __init__(self, db_path: Path | str | None = None):
@@ -72,19 +88,26 @@ class TaskStateStore:
     @staticmethod
     def _record(row: sqlite3.Row) -> TaskRecord:
         def _list(name: str) -> tuple[str, ...]:
-            try: return tuple(str(x) for x in json.loads(row[name] or "[]") if x)
-            except Exception: return ()
+            try:
+                return tuple(str(x) for x in json.loads(row[name] or "[]") if x)
+            except Exception:
+                return ()
+
         try:
             metadata = json.loads(row["metadata_json"] or "{}")
-            if not isinstance(metadata, dict): metadata = {}
-        except Exception: metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except Exception:
+            metadata = {}
+
         return TaskRecord(
             row["task_id"], row["platform"], row["chat_id"], row["session_key"] or "",
             row["title"], row["original_request"], row["role"], _list("toolsets_json"),
             _list("required_toolsets_json"), bool(row["requires_execution"]), row["status"],
             row["source_request_id"] or "", row["source_session_id"] or "", row["status_message_id"],
             float(row["created_at"]), float(row["updated_at"]), float(row["expires_at"]),
-            row["last_error"], metadata)
+            row["last_error"], metadata,
+        )
 
     def get(self, task_id: str) -> Optional[TaskRecord]:
         with self._connect() as conn:
@@ -97,14 +120,27 @@ class TaskStateStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM gateway_tasks WHERE platform=? AND chat_id=? AND status IN ({placeholders}) "
-                f"AND expires_at>? ORDER BY updated_at DESC LIMIT ?", params).fetchall()
-        return [self._record(row) for row in rows]
+                f"AND expires_at>? ORDER BY updated_at DESC LIMIT ?", params,
+            ).fetchall()
+        records = [self._record(row) for row in rows]
+        return [
+            task for task in records
+            if not (
+                task.status == "incomplete"
+                and task.last_error in {
+                    "execution task completed without tool calls",
+                    "iteration_budget_exhausted",
+                }
+                and _CONTINUE_RE.search(task.original_request or "")
+            )
+        ]
 
     def latest_awaiting_delivery(self, platform: str, chat_id: str) -> Optional[TaskRecord]:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM gateway_tasks WHERE platform=? AND chat_id=? AND status='awaiting_delivery' "
-                "ORDER BY updated_at DESC LIMIT 1", (platform, str(chat_id))).fetchone()
+                "ORDER BY updated_at DESC LIMIT 1", (platform, str(chat_id)),
+            ).fetchone()
         return self._record(row) if row else None
 
     def create(self, *, platform: str, chat_id: str, session_key: str, title: str,
@@ -113,10 +149,13 @@ class TaskStateStore:
                source_request_id: str = "", source_session_id: str = "", status: str = "running",
                metadata: Optional[dict] = None, ttl_days: int = 14,
                task_id: Optional[str] = None) -> TaskRecord:
-        now = time.time(); task_id = task_id or uuid.uuid4().hex[:12]
+        now = time.time()
+        task_id = task_id or uuid.uuid4().hex[:12]
         with self._connect() as conn:
             if source_request_id:
-                existing = conn.execute("SELECT task_id FROM gateway_tasks WHERE source_request_id=?", (source_request_id,)).fetchone()
+                existing = conn.execute(
+                    "SELECT task_id FROM gateway_tasks WHERE source_request_id=?", (source_request_id,),
+                ).fetchone()
                 if existing:
                     self.update(existing["task_id"], status=status, original_request=original_request)
                     return self.get(existing["task_id"])
@@ -136,45 +175,71 @@ class TaskStateStore:
                    "status_message_id", "last_error", "expires_at"}
         fields, values = [], []
         for key, value in changes.items():
-            if key in allowed: fields.append(f"{key}=?"); values.append(value)
-        if not fields: return
-        fields.append("updated_at=?"); values.extend([time.time(), task_id])
+            if key in allowed:
+                fields.append(f"{key}=?")
+                values.append(value)
+        if not fields:
+            return
+        fields.append("updated_at=?")
+        values.extend([time.time(), task_id])
         with self._connect() as conn:
             conn.execute(f"UPDATE gateway_tasks SET {', '.join(fields)} WHERE task_id=?", values)
 
     def set_status_message_id(self, task_id: str, message_id: str | int | None) -> None:
-        if message_id is not None: self.update(task_id, status_message_id=str(message_id))
+        if message_id is not None:
+            self.update(task_id, status_message_id=str(message_id))
 
     def resolve(self, text: str, platform: str, chat_id: str) -> ContinuationDecision:
-        match = _CONTINUE_RE.match(text or "")
-        if not match: return ContinuationDecision("none")
-        tasks = self.active(platform, str(chat_id)); selector = match.group(1)
+        match = _CONTINUE_RE.search(text or "")
+        if not match:
+            return ContinuationDecision("none")
+        tasks = self.active(platform, str(chat_id))
+        selector = match.group(1)
         if selector:
             if selector.isdigit() and 0 <= int(selector) - 1 < len(tasks):
                 return ContinuationDecision("selected", task=tasks[int(selector) - 1])
-            selected = [t for t in tasks if t.task_id.lower().startswith(selector.lower())]
-            if len(selected) == 1: return ContinuationDecision("selected", task=selected[0])
-        if len(tasks) == 1: return ContinuationDecision("selected", task=tasks[0])
-        if tasks: return ContinuationDecision("choice", candidates=tuple(tasks))
-        return ContinuationDecision("none")
+            selected = [task for task in tasks if task.task_id.lower().startswith(selector.lower())]
+            if len(selected) == 1:
+                return ContinuationDecision("selected", task=selected[0])
+            stored = self.get(selector)
+            if stored is not None and stored.platform == platform and stored.chat_id == str(chat_id):
+                return ContinuationDecision("selected", task=stored)
+        if len(tasks) == 1:
+            return ContinuationDecision("selected", task=tasks[0])
+        if tasks:
+            return ContinuationDecision("choice", candidates=tuple(tasks))
+        return ContinuationDecision("empty")
 
-def is_pause_request(text: str) -> bool: return bool(_PAUSE_RE.search(text or ""))
-def is_progress_only(text: str) -> bool: return bool(_PROGRESS_ONLY_RE.match(text or ""))
+
+def is_pause_request(text: str) -> bool:
+    return bool(_PAUSE_RE.search(text or ""))
+
+
+def is_progress_only(text: str) -> bool:
+    return bool(_PROGRESS_ONLY_RE.match(text or ""))
+
 
 def infer_execution_contract(text: str, role: str, toolsets: Iterable[str]) -> tuple[bool, tuple[str, ...]]:
     execution = bool(_EXECUTION_RE.search(text or "")) and not bool(_PLAN_ONLY_RE.search(text or ""))
-    required: set[str] = set(); lowered = (text or "").lower()
-    if execution and any(term in lowered for term in ("git", "vps", "systemd", "сервис", "лог")): required.add("terminal")
-    if execution and any(term in lowered for term in ("календар", "напомин", "письм", "почт")): required.update({"skills", "terminal"})
-    if execution and role in {"coding", "server_debug"}: required.add("terminal")
+    required: set[str] = set()
+    lowered = (text or "").lower()
+    if execution and any(term in lowered for term in ("git", "vps", "systemd", "сервис", "лог")):
+        required.add("terminal")
+    if execution and any(term in lowered for term in ("календар", "напомин", "письм", "почт")):
+        required.update({"skills", "terminal"})
+    if execution and role in {"coding", "server_debug"}:
+        required.add("terminal")
     return execution, tuple(sorted(required))
+
 
 def should_track_task(text: str, role: str, toolsets: Iterable[str]) -> bool:
     execution, _ = infer_execution_contract(text, role, toolsets)
     return execution or role in {"planning", "coding", "server_debug", "long_context"}
 
+
 def format_choice(tasks: Iterable[TaskRecord]) -> str:
     rows = ["Есть несколько незавершённых задач. Выберите, какую продолжить:"]
-    for index, task in enumerate(tasks, 1): rows.append(f"{index}. {task.title} [{task.status}]")
+    for index, task in enumerate(tasks, 1):
+        rows.append(f"{index}. {task.title} [{task.status}]")
     rows.append("\nОтветьте: «Продолжить 1» или «Продолжить 2»")
     return "\n".join(rows)

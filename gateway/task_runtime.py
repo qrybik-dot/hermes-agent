@@ -66,6 +66,15 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             early_response(format_choice(decision.candidates), reason="continuation choice required"),
             False,
         )
+    if decision.kind == "empty":
+        return PreparedTaskTurn(
+            original, None, None,
+            early_response(
+                "Незавершённых задач нет",
+                reason="continuation requested without active tasks",
+            ),
+            False,
+        )
 
     task = decision.task if decision.kind == "selected" else None
     continued = task is not None

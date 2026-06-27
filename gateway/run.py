@@ -15360,23 +15360,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.task_continuation import TaskStateStore, is_progress_only
                 _task_store = TaskStateStore()
                 _task_tool_calls = int(request_metrics.get("tool_call_count", 0) or 0)
-                if (
-                    _active_task.requires_execution and _task_tool_calls == 0
-                ) or (final_response and is_progress_only(final_response) and _task_tool_calls == 0):
-                    final_response = (
-                        "INCOMPLETE\nФактическая работа не была выполнена: обязательные "
-                        "инструменты не запускались. Задача сохранена и может быть продолжена"
-                    )
+                _turn_exit_reason = str(result.get("turn_exit_reason") or "")
+                _budget_exhausted = _turn_exit_reason.startswith("max_iterations_reached")
+                _no_execution_tools = _active_task.requires_execution and _task_tool_calls == 0
+                _progress_without_tools = bool(
+                    final_response and is_progress_only(final_response) and _task_tool_calls == 0
+                )
+                if _budget_exhausted or _no_execution_tools or _progress_without_tools:
+                    if _budget_exhausted:
+                        _reject_reason = "iteration_budget_exhausted"
+                        final_response = (
+                            "INCOMPLETE\nЛимит шагов исчерпан до подтверждения фактического результата. "
+                            "Задача сохранена и может быть продолжена"
+                        )
+                    else:
+                        _reject_reason = "no_tool_calls"
+                        final_response = (
+                            "INCOMPLETE\nФактическая работа не была выполнена: обязательные "
+                            "инструменты не запускались. Задача сохранена и может быть продолжена"
+                        )
                     result["partial"] = True
                     result["completed"] = False
                     _task_store.update(
                         _active_task.task_id,
                         status="incomplete",
-                        last_error="execution task completed without tool calls",
+                        last_error=_reject_reason,
                     )
                     logger.warning(
-                        "task completion rejected: task_id=%s reason=no_tool_calls",
+                        "task completion rejected: task_id=%s reason=%s",
                         _active_task.task_id,
+                        _reject_reason,
                     )
                 elif not final_response:
                     _task_store.update(
