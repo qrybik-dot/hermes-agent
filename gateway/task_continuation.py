@@ -185,6 +185,20 @@ class TaskStateStore:
         with self._connect() as conn:
             conn.execute(f"UPDATE gateway_tasks SET {', '.join(fields)} WHERE task_id=?", values)
 
+    def merge_metadata(self, task_id: str, values: Optional[dict] = None, **changes) -> None:
+        task = self.get(task_id)
+        if task is None:
+            return
+        merged = dict(task.metadata)
+        if values:
+            merged.update(values)
+        merged.update(changes)
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE gateway_tasks SET metadata_json=?, updated_at=? WHERE task_id=?",
+                (json.dumps(merged, ensure_ascii=False), time.time(), task_id),
+            )
+
     def set_status_message_id(self, task_id: str, message_id: str | int | None) -> None:
         if message_id is not None:
             self.update(task_id, status_message_id=str(message_id))

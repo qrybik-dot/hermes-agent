@@ -16,9 +16,11 @@ from gateway.task_continuation import (
 from gateway.task_router import TaskRoute, route_turn
 
 _IMAGE_DEPENDENCY_RE = re.compile(
-    r"\b(?:по|из|с|со)\s+(?:картинк|изображен|фото|скриншот)\w*|"
-    r"\b(?:на|в)\s+скриншот\w*|"
-    r"\b(?:распознай|прочитай|извлеки)\w*.*(?:картинк|изображен|фото|скриншот)\w*",
+    r"\b(?:по|из|с|со)\s+(?:(?:присланн|приложенн|прикрепл[её]нн|этом|этому|данн)\w*\s+){0,3}"
+    r"(?:картинк|изображен|фото|скриншот)\w*|"
+    r"\b(?:на|в)\s+(?:(?:присланн|приложенн|прикрепл[её]нн|этом|этому|данн)\w*\s+){0,3}"
+    r"(?:картинк|изображен|фото|скриншот)\w*|"
+    r"\b(?:распознай|прочитай|извлеки|определи)\w*.*(?:картинк|изображен|фото|скриншот)\w*",
     re.I | re.S,
 )
 _IMAGE_CONTEXT_RE = re.compile(
@@ -26,10 +28,12 @@ _IMAGE_CONTEXT_RE = re.compile(
     re.I,
 )
 _CALENDAR_CREATE_RE = re.compile(
-    r"\b(?:создай|добавь|запиши|поставь|назначь|запланируй)\w*\b.*"
-    r"\b(?:календар|событи|встреч)\w*\b|"
-    r"\b(?:календар|событи|встреч)\w*\b.*"
-    r"\b(?:создай|добавь|запиши|поставь|назначь|запланируй)\w*\b",
+    r"\b(?:созда(?:й|ть)|добав(?:ь|ить)|запиш(?:и|ите|ем)|записать|постав(?:ь|ить)|"
+    r"назнач(?:ь|ить)|запланиру(?:й|йте|ем|ть))\w*\b.*"
+    r"\b(?:календар|событи|встреч|напоминан)\w*\b|"
+    r"\b(?:календар|событи|встреч|напоминан)\w*\b.*"
+    r"\b(?:созда(?:й|ть)|добав(?:ь|ить)|запиш(?:и|ите|ем)|записать|постав(?:ь|ить)|"
+    r"назнач(?:ь|ить)|запланиру(?:й|йте|ем|ть))\w*\b",
     re.I | re.S,
 )
 _DATE_RE = re.compile(
@@ -47,12 +51,48 @@ _PURPOSE_RE = re.compile(
     r"интервью|собеседовани|звонок|обед|ужин|тренировк)\w*\b",
     re.I,
 )
+_CALENDAR_EVENT_REF_RE = re.compile(
+    r"\b(?:event[\s_-]*id|идентификатор\s+события)\b|"
+    r"https?://(?:calendar\.google\.com|www\.google\.com/calendar)",
+    re.I,
+)
+_CALENDAR_ID_RE = re.compile(
+    r"\b(?:calendar[\s_-]*id|идентификатор\s+календаря|primary)\b|"
+    r"\bкалендарь\s*:\s*\S+",
+    re.I,
+)
+_CALENDAR_SUMMARY_RE = re.compile(r"\b(?:summary|название)\s*:", re.I)
+_CALENDAR_START_RE = re.compile(r"\b(?:start|начало)\s*:", re.I)
+_CALENDAR_END_RE = re.compile(r"\b(?:end|окончание)\s*:", re.I)
+_CALENDAR_READBACK_RE = re.compile(
+    r"\b(?:read[- ]?back|повторн\w*\s+(?:чтени|проверк)\w*|"
+    r"подтвержден\w*\s+(?:в|через)\s+календар\w*)",
+    re.I,
+)
+
+
+def calendar_completion_evidence_missing(
+    original_request: str,
+    final_response: str,
+) -> tuple[str, ...]:
+    if not _CALENDAR_CREATE_RE.search(original_request or ""):
+        return ()
+    response = final_response or ""
+    checks = (
+        (_CALENDAR_EVENT_REF_RE, "event ID или штатная ссылка"),
+        (_CALENDAR_ID_RE, "calendar ID"),
+        (_CALENDAR_SUMMARY_RE, "summary/название"),
+        (_CALENDAR_START_RE, "start/начало"),
+        (_CALENDAR_END_RE, "end/окончание"),
+        (_CALENDAR_READBACK_RE, "подтверждение read-back"),
+    )
+    return tuple(label for pattern, label in checks if not pattern.search(response))
 
 
 def _deterministic_input_preflight(text: str, route: TaskRoute) -> tuple[list[str], str] | None:
     value = text or ""
     missing: list[str] = []
-    if route.skill_names and _IMAGE_DEPENDENCY_RE.search(value) and not _IMAGE_CONTEXT_RE.search(value):
+    if _IMAGE_DEPENDENCY_RE.search(value) and not _IMAGE_CONTEXT_RE.search(value):
         missing.append("доступное изображение или vision-контекст")
     if "google-workspace" in route.skill_names and _CALENDAR_CREATE_RE.search(value):
         if not _DATE_RE.search(value):
@@ -150,9 +190,28 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     task = decision.task if decision.kind == "selected" else None
     continued = task is not None
+    if task is not None and task.status == "completed":
+        saved_result = task.metadata.get("final_response")
+        if isinstance(saved_result, str) and saved_result.strip():
+            response_text = "Задача уже выполнена.\n\n" + saved_result.strip()
+            response_reason = "completed task result replay"
+        else:
+            response_text = (
+                "Задача уже отмечена выполненной, но подтверждённый результат не сохранён. "
+                "Повторный запуск не выполнялся"
+            )
+            response_reason = "completed task without stored evidence"
+        return PreparedTaskTurn(
+            original, None, task,
+            early_response(
+                response_text,
+                task_id=task.task_id,
+                role=task.role,
+                reason=response_reason,
+            ),
+            True,
+        )
     if task is not None:
-        store.update(task.task_id, status="running", session_key=session_key,
-                     source_session_id=session_id, last_error=None)
         message = (
             "[System continuation: resume the saved unfinished task. Preserve its role, "
             "tools, safety mode and completion contract. Do not interpret the short "
@@ -223,6 +282,21 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             continued,
         )
 
+    if "google-workspace" in route.skill_names:
+        contract = (
+            "For calendar writes, create or update the event, read it back, and report calendar ID, "
+            "summary, start, end, event ID or official link, and read-back confirmation. Otherwise return INCOMPLETE."
+        )
+        route = TaskRoute(
+            role=route.role,
+            reason=route.reason,
+            toolsets=route.toolsets,
+            max_iterations=route.max_iterations,
+            skill_names=route.skill_names,
+            skip_context_files=route.skip_context_files,
+            operational_context=(route.operational_context + "\n\n" + contract).strip(),
+        )
+
     requires_execution, required = infer_execution_contract(base_text, route.role, route.toolsets)
     if task is not None:
         requires_execution, required = task.requires_execution, task.required_toolsets
@@ -240,6 +314,15 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 role=route.role, reason="capability preflight blocked",
             ),
             continued,
+        )
+
+    if task is not None:
+        store.update(
+            task.task_id,
+            status="running",
+            session_key=session_key,
+            source_session_id=session_id,
+            last_error=None,
         )
 
     if task is None and should_track_task(original, route.role, route.toolsets):

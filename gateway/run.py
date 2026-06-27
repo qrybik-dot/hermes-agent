@@ -15398,7 +15398,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         last_error=str(result.get("error") or "empty final response")[:300],
                     )
                 else:
-                    _task_store.update(_active_task.task_id, status="awaiting_delivery")
+                    from gateway.task_runtime import calendar_completion_evidence_missing
+                    _evidence_missing = calendar_completion_evidence_missing(
+                        _active_task.original_request,
+                        str(final_response),
+                    )
+                    if _evidence_missing:
+                        final_response = (
+                            "INCOMPLETE\nНе сохранено подтверждение результата календаря: "
+                            + ", ".join(_evidence_missing)
+                            + ". Задача сохранена и может быть продолжена"
+                        )
+                        result["partial"] = True
+                        result["completed"] = False
+                        _task_store.update(
+                            _active_task.task_id,
+                            status="incomplete",
+                            last_error="missing calendar evidence: " + ",".join(_evidence_missing),
+                        )
+                    else:
+                        _task_store.merge_metadata(
+                            _active_task.task_id,
+                            final_response=str(final_response),
+                            tool_call_count=_task_tool_calls,
+                            turn_exit_reason=_turn_exit_reason,
+                            selected_model=str(result.get("selected_model") or result.get("model") or ""),
+                            selected_provider=str(result.get("selected_provider") or result.get("provider") or ""),
+                        )
+                        _task_store.update(_active_task.task_id, status="awaiting_delivery")
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
