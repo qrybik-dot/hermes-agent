@@ -8,7 +8,7 @@ current turn while respecting the platform allowlist.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 ROLE_ORDER = (
@@ -101,6 +101,11 @@ _CALENDAR_RE = re.compile(
     r"встречи\s+(?:сегодня|завтра|в\s+календаре)",
     re.I,
 )
+_DRIVE_RE = re.compile(
+    r"google\s+drive|гугл\s+диск|google\s+диск|диск\s+google|"
+    r"(?:файл|папк|документ)\w*\s+(?:на|в)\s+(?:drive|google\s+drive|гугл\s+диск)",
+    re.I,
+)
 _GRANOLA_RE = re.compile(
     r"(?:в|из|через)\s+granola|заметк\w*\s+granola|транскрипт\w*\s+granola|"
     r"встреч\w*,?\s+(?:сохран[её]нн\w*|записанн\w*)\s+в\s+granola|"
@@ -127,6 +132,7 @@ class TaskRoute:
     reason: str
     toolsets: list[str]
     max_iterations: int
+    skill_names: tuple[str, ...] = field(default_factory=tuple)
     skip_context_files: bool = False
     operational_context: str = ""
 
@@ -146,12 +152,14 @@ def _intent_flags(text: str) -> dict[str, bool]:
     value = text or ""
     email = bool(_EMAIL_RE.search(value))
     calendar = bool(_CALENDAR_RE.search(value))
-    # A mention of Granola inside an email request describes the sender/subject,
-    # not a request to open the Granola MCP server.
-    granola = bool(_GRANOLA_RE.search(value)) and not email and not calendar
+    drive = bool(_DRIVE_RE.search(value))
+    # A mention of Granola inside a Google Workspace request describes the sender,
+    # subject, or file contents, not a request to open the Granola MCP server.
+    granola = bool(_GRANOLA_RE.search(value)) and not email and not calendar and not drive
     return {
         "email": email,
         "calendar": calendar,
+        "drive": drive,
         "granola": granola,
         "memory": bool(_MEMORY_RE.search(value)),
         "report": bool(_REPORT_RE.search(value)),
@@ -230,7 +238,7 @@ def select_toolsets(
         requested.update({"memory", "session_search"})
     if flags["report"]:
         requested.update({"file", "memory", "session_search"})
-    if flags["email"] or flags["calendar"]:
+    if flags["email"] or flags["calendar"] or flags["drive"]:
         # Google Workspace is currently exposed through its skill and CLI.
         requested.update({"skills", "terminal", "file"})
     if flags["granola"]:
@@ -301,11 +309,13 @@ def route_turn(
     agent_cfg = (user_config or {}).get("agent") if isinstance(user_config, Mapping) else {}
     if not isinstance(agent_cfg, Mapping):
         agent_cfg = {}
+    skill_names = ("google-workspace",) if (flags["email"] or flags["calendar"] or flags["drive"]) else ()
     return TaskRoute(
         role=role,
         reason=reason,
         toolsets=select_toolsets(role, text, platform_toolsets),
         max_iterations=max_turns_for_role(role, agent_cfg),
+        skill_names=skill_names,
         # Telegram intentionally skips the large repository AGENTS.md/SOUL.md;
         # compact personality and role safety rules are supplied above instead.
         skip_context_files=(platform_key == "telegram"),

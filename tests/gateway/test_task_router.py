@@ -161,3 +161,45 @@ def test_gateway_run_sync_scoping_regression():
     assert "gateway_overhead_ms" in source
     assert "_emit_task_status(0, \"подготовка\")" in source
     assert "task:{_active_task.task_id}" in source
+
+
+def test_google_workspace_intents_preload_google_workspace_skill():
+    cases = [
+        "Найди письмо в Gmail от Granola",
+        "Какие у меня встречи сегодня в календаре?",
+        "Найди файл в Google Drive про отчёт",
+    ]
+    for text in cases:
+        route = route_turn(
+            text,
+            command=None,
+            platform_key="telegram",
+            user_config={"agent": {}},
+            platform_toolsets=ALL_ALLOWED,
+        )
+        assert route.skill_names == ("google-workspace",)
+        assert "skills" in route.toolsets
+        assert "terminal" in route.toolsets
+
+
+def test_google_drive_intent_does_not_enable_granola():
+    route = route_turn(
+        "Найди файл в Google Drive с заметкой Granola",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.skill_names == ("google-workspace",)
+    assert "granola" not in route.toolsets
+
+
+def test_simple_route_does_not_preload_skill():
+    route = route_turn(
+        "Привет, ответь коротко",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.skill_names == ()

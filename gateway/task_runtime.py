@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from gateway.task_continuation import (
     TaskRecord,
@@ -13,6 +14,77 @@ from gateway.task_continuation import (
     should_track_task,
 )
 from gateway.task_router import TaskRoute, route_turn
+
+_IMAGE_DEPENDENCY_RE = re.compile(
+    r"\b(?:по|из|с|со)\s+(?:картинк|изображен|фото|скриншот)\w*|"
+    r"\b(?:на|в)\s+скриншот\w*|"
+    r"\b(?:распознай|прочитай|извлеки)\w*.*(?:картинк|изображен|фото|скриншот)\w*",
+    re.I | re.S,
+)
+_IMAGE_CONTEXT_RE = re.compile(
+    r"\[The user sent an image|vision_analyze|image_url:|media_urls?=|attachment",
+    re.I,
+)
+_CALENDAR_CREATE_RE = re.compile(
+    r"\b(?:создай|добавь|запиши|поставь|назначь|запланируй)\w*\b.*"
+    r"\b(?:календар|событи|встреч)\w*\b|"
+    r"\b(?:календар|событи|встреч)\w*\b.*"
+    r"\b(?:создай|добавь|запиши|поставь|назначь|запланируй)\w*\b",
+    re.I | re.S,
+)
+_DATE_RE = re.compile(
+    r"\b(?:сегодня|завтра|послезавтра|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|"
+    r"суббот[ау]|воскресень[еья]|\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?|"
+    r"\d{4}-\d{2}-\d{2})\b",
+    re.I,
+)
+_TIME_RE = re.compile(
+    r"\b(?:[01]?\d|2[0-3])[:.]\d{2}\b|\b(?:в|на)\s+(?:[01]?\d|2[0-3])\b",
+    re.I,
+)
+_PURPOSE_RE = re.compile(
+    r"\b(?:с\s+[А-ЯA-ZЁ][\wё-]+|созвон|встреч[ауы]|при[её]м|дедлайн|"
+    r"интервью|собеседовани|звонок|обед|ужин|тренировк)\w*\b",
+    re.I,
+)
+
+
+def _deterministic_input_preflight(text: str, route: TaskRoute) -> tuple[list[str], str] | None:
+    value = text or ""
+    missing: list[str] = []
+    if route.skill_names and _IMAGE_DEPENDENCY_RE.search(value) and not _IMAGE_CONTEXT_RE.search(value):
+        missing.append("доступное изображение или vision-контекст")
+    if "google-workspace" in route.skill_names and _CALENDAR_CREATE_RE.search(value):
+        if not _DATE_RE.search(value):
+            missing.append("конкретная дата события")
+        if not _TIME_RE.search(value):
+            missing.append("конкретное время события")
+        if not _PURPOSE_RE.search(value):
+            missing.append("назначение события")
+    if missing:
+        return missing, "deterministic input preflight blocked"
+    return None
+
+
+def _with_preloaded_skills(route: TaskRoute, task_id: str | None) -> tuple[TaskRoute, tuple[str, ...]]:
+    if not route.skill_names:
+        return route, ()
+    from agent.skill_commands import build_preloaded_skills_prompt
+    prompt, loaded, missing = build_preloaded_skills_prompt(list(route.skill_names), task_id=task_id)
+    if missing:
+        return route, tuple(missing)
+    if not prompt.strip():
+        return route, tuple(route.skill_names)
+    combined = (route.operational_context + "\n\n" + prompt).strip()
+    return TaskRoute(
+        role=route.role,
+        reason=route.reason + "; preloaded_skills=" + ",".join(loaded),
+        toolsets=route.toolsets,
+        max_iterations=route.max_iterations,
+        skill_names=route.skill_names,
+        skip_context_files=route.skip_context_files,
+        operational_context=combined,
+    ), ()
 
 
 @dataclass(frozen=True)
@@ -110,11 +182,45 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                     if name == "no_mcp" or platform_toolsets is None or name in allowed]
         route = TaskRoute(
             role=task.role,
-            reason=f"continued task {task.task_id}",
+            reason=f"continued task {task.task_id}; {route.reason}",
             toolsets=restored,
             max_iterations=route.max_iterations,
+            skill_names=route.skill_names,
             skip_context_files=route.skip_context_files,
             operational_context=route.operational_context,
+        )
+
+    preflight = _deterministic_input_preflight(base_text, route)
+    if preflight is not None:
+        missing_inputs, preflight_reason = preflight
+        if task is not None:
+            store.update(task.task_id, status="blocked", last_error="missing inputs: " + ",".join(missing_inputs))
+        return PreparedTaskTurn(
+            str(message or ""), route, task,
+            early_response(
+                "BLOCKED\nНе хватает: "
+                + ", ".join(missing_inputs)
+                + "\nФактические действия не выполнялись",
+                status="blocked", task_id=task.task_id if task else None,
+                role=route.role, reason=preflight_reason,
+            ),
+            continued,
+        )
+
+    route, missing_skills = _with_preloaded_skills(route, task.task_id if task else None)
+    if missing_skills:
+        if task is not None:
+            store.update(task.task_id, status="blocked", last_error="missing skills: " + ",".join(missing_skills))
+        return PreparedTaskTurn(
+            str(message or ""), route, task,
+            early_response(
+                "BLOCKED\nДля выполнения задачи недоступен skill: "
+                + ", ".join(missing_skills)
+                + "\nФактические действия не выполнялись",
+                status="blocked", task_id=task.task_id if task else None,
+                role=route.role, reason="skill preflight blocked",
+            ),
+            continued,
         )
 
     requires_execution, required = infer_execution_contract(base_text, route.role, route.toolsets)
