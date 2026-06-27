@@ -1422,6 +1422,7 @@ def _build_gateway_request_metrics(
             - _safe_int_metric(diagnostics.get("tool_total_ms", 0)),
         ),
         "task_level": agent_result.get("task_level"),
+        "task_id": agent_result.get("task_id"),
         "routing_reason": agent_result.get("routing_reason"),
         "selected_toolsets": list(agent_result.get("selected_toolsets") or []),
         "selected_model": agent_result.get("selected_model"),
@@ -1446,6 +1447,29 @@ def _build_gateway_request_metrics(
         "fallback_reason": fallback_reason,
         "final_status": _gateway_final_status(agent_result),
     }
+
+
+def _compact_gateway_metrics(full: Dict[str, Any], agent_result: Dict[str, Any]) -> Dict[str, Any]:
+    compact = {
+        "request_id": full.get("request_id"),
+        "status": full.get("final_status"),
+        "role": full.get("task_level"),
+        "model": full.get("resolved_model"),
+        "provider": full.get("provider"),
+        "cache": full.get("agent_cache_status"),
+        "llm_calls": full.get("llm_call_count"),
+        "tool_calls": full.get("tool_call_count"),
+        "total_ms": full.get("total_ms"),
+        "llm_ms": full.get("llm_total_ms"),
+        "tool_ms": full.get("tool_total_ms"),
+        "overhead_ms": full.get("gateway_overhead_ms"),
+    }
+    if full.get("fallback_used"):
+        compact["fallback"] = full.get("fallback_reason") or True
+    task_id = agent_result.get("task_id")
+    if task_id:
+        compact["task_id"] = task_id
+    return {key: value for key, value in compact.items() if value is not None}
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -9131,6 +9155,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 logger.info(
                     "gateway_request_metrics %s",
+                    json.dumps(
+                        _compact_gateway_metrics(_metric_record, agent_result),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                )
+                logger.debug(
+                    "gateway_request_metrics_debug %s",
                     json.dumps(_metric_record, ensure_ascii=False, sort_keys=True),
                 )
             except Exception as _metrics_err:
@@ -14629,19 +14661,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            from gateway.task_router import route_turn
-            _command_for_route = None
-            if isinstance(message, str):
-                _route_text = message.lstrip()
-                if _route_text.startswith("/"):
-                    _command_for_route = _route_text.split(None, 1)[0].lstrip("/").split("@", 1)[0]
-            _task_route = route_turn(
-                message,
-                command=_command_for_route,
+            from gateway.task_runtime import prepare_task_turn
+
+            _prepared_task = prepare_task_turn(
+                message=str(message or ""),
                 platform_key=platform_key,
+                chat_id=str(source.chat_id),
+                session_key=session_key or "",
+                session_id=session_id or "",
+                request_id=(session_id or session_key or "task") + ":" + str(run_generation),
                 user_config=user_config,
                 platform_toolsets=platform_allowed_toolsets,
             )
+            if _prepared_task.early_response is not None:
+                return _prepared_task.early_response
+            message = _prepared_task.message
+            _task_route = _prepared_task.route
+            _active_task = _prepared_task.task
+            if _prepared_task.continued and _active_task is not None:
+                logger.info("task continuation resumed: task_id=%s", _active_task.task_id)
             routed_toolsets = _task_route.toolsets
             max_iterations = _task_route.max_iterations
             if _task_route.operational_context:
@@ -14664,23 +14702,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _selected_provider = turn_route["runtime"].get("provider")
             _selected_model = turn_route.get("model")
             _quality_locked_roles = {"planning", "coding", "long_context", "server_debug"}
+            _simple_no_tools = (
+                _task_route.role == "simple" and set(routed_toolsets) <= {"no_mcp"}
+            )
             _turn_fallback_model = (
                 None
-                if _task_route.role in _quality_locked_roles and _selected_provider == "openai-codex"
+                if (
+                    (_task_route.role in _quality_locked_roles and _selected_provider == "openai-codex")
+                    or _simple_no_tools
+                    or _prepared_task.continued
+                )
                 else self._fallback_model
             )
-            if platform_key == "telegram" and _task_route.role in _live_status_roles:
-                _title = re.sub(r"\s+", " ", str(message or "")).strip()
+            _empty_retry_limit = 1 if _simple_no_tools else 2
+            _needs_task_status = bool(
+                _task_route.role in _live_status_roles
+                or (_active_task is not None and _active_task.requires_execution)
+            )
+            if platform_key == "telegram" and _needs_task_status:
+                _title = (_active_task.title if _active_task is not None else None)
+                if not _title:
+                    _title = re.sub(r"\s+", " ", str(message or "")).strip()
                 if len(_title) > 72:
                     _title = _title[:69].rstrip() + "..."
+                _status_key = (
+                    f"task:{_active_task.task_id}"
+                    if _active_task is not None
+                    else f"task:{session_key}:{run_generation}"
+                )
                 task_status_state.update({
                     "enabled": True,
-                    "key": f"task:{session_key}:{run_generation}",
+                    "key": _status_key,
                     "title": _title or "задача Hermes",
                     "started": time.monotonic(),
                     "last_percent": -1,
                 })
-                _emit_task_status(0, "подготовка плана")
+                _emit_task_status(0, "подготовка")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -14812,6 +14869,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.max_empty_retries = _empty_retry_limit
 
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
@@ -15205,6 +15263,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            from tools.session_search_tool import (
+                reset_turn_search_budget,
+                set_turn_search_budget,
+            )
+            _search_budget_token = set_turn_search_budget(2)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -15273,6 +15336,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _agent_returned_at = time.monotonic()
                 _emit_task_status(90, "подготовка ответа")
             finally:
+                reset_turn_search_budget(_search_budget_token)
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
@@ -15291,6 +15355,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
+
+            if _active_task is not None:
+                from gateway.task_continuation import TaskStateStore, is_progress_only
+                _task_store = TaskStateStore()
+                _task_tool_calls = int(request_metrics.get("tool_call_count", 0) or 0)
+                if (
+                    _active_task.requires_execution and _task_tool_calls == 0
+                ) or (final_response and is_progress_only(final_response) and _task_tool_calls == 0):
+                    final_response = (
+                        "INCOMPLETE\nФактическая работа не была выполнена: обязательные "
+                        "инструменты не запускались. Задача сохранена и может быть продолжена"
+                    )
+                    result["partial"] = True
+                    result["completed"] = False
+                    _task_store.update(
+                        _active_task.task_id,
+                        status="incomplete",
+                        last_error="execution task completed without tool calls",
+                    )
+                    logger.warning(
+                        "task completion rejected: task_id=%s reason=no_tool_calls",
+                        _active_task.task_id,
+                    )
+                elif not final_response:
+                    _task_store.update(
+                        _active_task.task_id,
+                        status="blocked",
+                        last_error=str(result.get("error") or "empty final response")[:300],
+                    )
+                else:
+                    _task_store.update(_active_task.task_id, status="awaiting_delivery")
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
@@ -15406,6 +15501,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "llm_total_ms": request_metrics.get("llm_turn_ms", 0),
                     "diagnostics": dict(request_metrics),
                     "context_length": _context_length,
+                    "task_id": _active_task.task_id if _active_task is not None else None,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -15520,6 +15616,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "llm_total_ms": request_metrics.get("llm_turn_ms", 0),
                 "diagnostics": dict(request_metrics),
                 "context_length": _context_length,
+                "task_id": _active_task.task_id if _active_task is not None else None,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),

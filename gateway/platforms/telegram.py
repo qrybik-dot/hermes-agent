@@ -2408,6 +2408,26 @@ class TelegramAdapter(BasePlatformAdapter):
                                     )
                                     effective_thread_id = thread_kwargs.get("message_thread_id")
                                 continue
+                            if (
+                                "can't parse entities" in err_lower
+                                or "reserved and must be escaped" in err_lower
+                            ):
+                                plain_chunk = _strip_mdv2(chunk)
+                                msg = await self._bot.send_message(
+                                    chat_id=int(chat_id),
+                                    text=plain_chunk,
+                                    parse_mode=None,
+                                    reply_to_message_id=reply_to_id,
+                                    reply_markup=chunk_reply_markup,
+                                    **thread_kwargs,
+                                    **self._link_preview_kwargs(),
+                                    **self._notification_kwargs(metadata),
+                                )
+                                logger.warning(
+                                    "[%s] Telegram parse fallback used once with parse_mode=None",
+                                    self.name,
+                                )
+                                break
                             # Other BadRequest errors are permanent — don't retry
                             raise
                         # TimedOut is also a subclass of NetworkError. A
@@ -2458,6 +2478,15 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass  # Typing failures are non-fatal
 
+            try:
+                from gateway.task_continuation import TaskStateStore
+                pending_task = TaskStateStore().latest_awaiting_delivery("telegram", str(chat_id)) if metadata and metadata.get("notify") is True else None
+                if pending_task is not None:
+                    TaskStateStore().update(pending_task.task_id, status="completed", last_error=None)
+                    logger.info("task continuation completed: task_id=%s", pending_task.task_id)
+            except Exception:
+                logger.debug("task delivery completion update failed", exc_info=True)
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -2488,6 +2517,18 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             is_pool_timeout = self._looks_like_pool_timeout(e)
+            try:
+                from gateway.task_continuation import TaskStateStore
+                pending_task = TaskStateStore().latest_awaiting_delivery("telegram", str(chat_id)) if metadata and metadata.get("notify") is True else None
+                if pending_task is not None:
+                    TaskStateStore().update(
+                        pending_task.task_id,
+                        status="delivery_failed",
+                        last_error=str(e)[:300],
+                    )
+                    logger.warning("task delivery failed: task_id=%s", pending_task.task_id)
+            except Exception:
+                logger.debug("task delivery failure update failed", exc_info=True)
             return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or is_pool_timeout or not is_timeout))
 
     async def send_or_update_status(
@@ -2509,6 +2550,19 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         key = (str(chat_id), str(status_key))
         cached_id = self._status_message_ids.get(key)
+        persistent_task_id = None
+        if str(status_key).startswith("task:"):
+            candidate = str(status_key).split(":", 1)[1]
+            try:
+                from gateway.task_continuation import TaskStateStore
+                stored_task = TaskStateStore().get(candidate)
+                if stored_task is not None:
+                    persistent_task_id = candidate
+                    if cached_id is None and stored_task.status_message_id:
+                        cached_id = str(stored_task.status_message_id)
+                        self._status_message_ids[key] = cached_id
+            except Exception:
+                logger.debug("persistent task status lookup failed", exc_info=True)
         fallback_sent = getattr(self, "_status_fallback_sent", None)
         if fallback_sent is None:
             fallback_sent = set()
@@ -2527,10 +2581,17 @@ class TelegramAdapter(BasePlatformAdapter):
             if result.success:
                 if result.message_id:
                     self._status_message_ids[key] = str(result.message_id)
-                logger.info(
+                logger.debug(
                     "[%s] Status updated: chat=%s key=%s message_id=%s",
                     self.name, chat_id, status_key, result.message_id or cached_id,
                 )
+                if persistent_task_id:
+                    try:
+                        TaskStateStore().set_status_message_id(
+                            persistent_task_id, result.message_id or cached_id
+                        )
+                    except Exception:
+                        logger.debug("persistent task status update failed", exc_info=True)
                 return result
             # Edit failed — Telegram live-status may send at most one fresh
             # fallback message per key; repeated edit failures must not spam.
@@ -2551,6 +2612,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Status created: chat=%s key=%s message_id=%s",
                 self.name, chat_id, status_key, result.message_id,
             )
+            if persistent_task_id:
+                try:
+                    TaskStateStore().set_status_message_id(persistent_task_id, result.message_id)
+                except Exception:
+                    logger.debug("persistent task status create failed", exc_info=True)
         return result
 
     async def edit_message(

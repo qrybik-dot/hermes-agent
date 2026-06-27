@@ -139,8 +139,8 @@ def test_telegram_uses_compact_personality_and_role_safety_context():
     )
     assert "backup-first" in debug.operational_context
     assert "git reset" in debug.operational_context
-    assert "⏳ В работе:" in debug.operational_context
-    assert "[░░░░░░░░░░] 0%" in debug.operational_context
+    assert "progress-only" in debug.operational_context
+    assert "gateway" in debug.operational_context
     assert "git diff/status" in debug.operational_context
     assert "не проверено" in debug.operational_context
 
@@ -159,5 +159,5 @@ def test_gateway_run_sync_scoping_regression():
     assert "agent_cache_status" in source
     assert "agent_prepare_ms" in source
     assert "gateway_overhead_ms" in source
-    assert "_emit_task_status(0, \"подготовка плана\")" in source
-    assert '"key": f"task:{session_key}:{run_generation}"' in source
+    assert "_emit_task_status(0, \"подготовка\")" in source
+    assert "task:{_active_task.task_id}" in source

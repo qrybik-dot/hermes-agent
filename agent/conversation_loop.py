@@ -4187,16 +4187,22 @@ def run_conversation(
                         _has_structured
                         and agent._thinking_prefill_retries >= 2
                     )
-                    if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
+                    _max_empty_retries = max(
+                        0, int(getattr(agent, "max_empty_retries", 3) or 0)
+                    )
+                    if (
+                        _truly_empty
+                        and (not _has_structured or _prefill_exhausted)
+                        and agent._empty_content_retries < _max_empty_retries
+                    ):
                         agent._empty_content_retries += 1
                         logger.warning(
-                            "Empty response (no content or reasoning) — "
-                            "retry %d/3 (model=%s)",
-                            agent._empty_content_retries, agent.model,
+                            "Empty response (no content or reasoning) — retry %d/%d (model=%s)",
+                            agent._empty_content_retries, _max_empty_retries, agent.model,
                         )
                         agent._buffer_status(
                             f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3)"
+                            f"({agent._empty_content_retries}/{_max_empty_retries})"
                         )
                         continue
 

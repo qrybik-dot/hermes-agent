@@ -29,9 +29,39 @@ shape with no mode parameter, no summary LLM path, and explicit scroll
 support.
 """
 
+import contextvars
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
+
+
+@dataclass
+class _SearchBudget:
+    remaining: int
+
+
+_SEARCH_BUDGET: contextvars.ContextVar[_SearchBudget | None] = contextvars.ContextVar(
+    "session_search_budget", default=None
+)
+
+
+def set_turn_search_budget(limit: int = 2):
+    return _SEARCH_BUDGET.set(_SearchBudget(max(0, int(limit))))
+
+
+def reset_turn_search_budget(token) -> None:
+    _SEARCH_BUDGET.reset(token)
+
+
+def _consume_search_budget() -> bool:
+    budget = _SEARCH_BUDGET.get()
+    if budget is None:
+        return True
+    if budget.remaining <= 0:
+        return False
+    budget.remaining -= 1
+    return True
 
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
@@ -518,6 +548,12 @@ def session_search(
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
     anchor is set — the agent has asked for a specific slice.
     """
+    if not _consume_search_budget():
+        return tool_error(
+            "session_search limit reached for this turn (max 2). Use the existing results or return a blocker.",
+            success=False,
+        )
+
     if db is None:
         try:
             from hermes_state import SessionDB
