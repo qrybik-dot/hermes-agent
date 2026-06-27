@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Hermes Personal Anton graph every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=hermes-graphify-pilot.service
+
+[Install]
+WantedBy=timers.target
