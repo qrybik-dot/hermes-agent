@@ -8,7 +8,7 @@ from gateway.task_continuation import (
     is_progress_only,
 )
 from gateway.task_router import route_turn
-from gateway.task_runtime import prepare_task_turn
+from gateway.task_runtime import prepare_task_turn, task_reported_non_success
 from tools.session_search_tool import (
     _consume_search_budget,
     reset_turn_search_budget,
@@ -28,6 +28,20 @@ def test_resume_one_task(tmp_path):
         required_toolsets=["terminal"], requires_execution=True, status="paused",
     )
     decision = store.resolve("Готов продолжить", "telegram", "1")
+    assert decision.kind == "selected"
+    assert decision.task.task_id == task.task_id
+
+
+def test_explicit_task_prefix_with_followup_text_resumes_task(tmp_path):
+    store = _store(tmp_path)
+    task = store.create(
+        task_id="deadbeef1234", platform="telegram", chat_id="1", session_key="s",
+        title="Provider test", original_request="Run provider smoke tests",
+        role="server_debug", toolsets=["terminal", "file"],
+        required_toolsets=["terminal"], requires_execution=True, status="incomplete",
+    )
+    message = "\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c deadbeef1234\n\nRun the full safe smoke test"
+    decision = store.resolve(message, "telegram", "1")
     assert decision.kind == "selected"
     assert decision.task.task_id == task.task_id
 
@@ -271,3 +285,126 @@ def test_missing_google_workspace_skill_blocks_before_model(tmp_path, monkeypatc
     assert prepared.early_response["model"] == "deterministic"
     assert prepared.early_response["api_calls"] == 0
     assert "google-workspace" in prepared.early_response["final_response"]
+
+
+def test_execution_without_working_toolsets_blocks_before_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    prepared = prepare_task_turn(
+        message="Самостоятельно найди источники по теме и верни результат",
+        platform_key="telegram", chat_id="1",
+        session_key="new", session_id="session-new", request_id="req-no-tools",
+        user_config={"agent": {}},
+        platform_toolsets=["no_mcp"],
+    )
+    assert prepared.early_response is not None
+    assert prepared.early_response["model"] == "deterministic"
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["tools"] == []
+    assert prepared.early_response["final_response"].startswith("BLOCKED")
+    assert "Маршрутизатор не назначил инструмент выполнения" in prepared.early_response["final_response"]
+
+
+
+def test_bare_numeric_choice_requires_recent_choice_prompt(tmp_path):
+    store = _store(tmp_path)
+    first = store.create(platform="telegram", chat_id="1", session_key="s", title="First", original_request="one", role="planning", toolsets=["file"], status="paused")
+    second = store.create(platform="telegram", chat_id="1", session_key="s", title="Second", original_request="two", role="planning", toolsets=["file"], status="paused")
+    assert store.resolve("1", "telegram", "1").kind == "none"
+    choice = store.resolve("\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0430\u0439", "telegram", "1")
+    assert choice.kind == "choice"
+    chosen = store.resolve("1", "telegram", "1")
+    assert chosen.kind == "selected"
+    assert chosen.task.task_id == second.task_id
+    assert chosen.task.task_id != first.task_id
+
+
+def test_contextual_confirmation_opens_choice_instead_of_new_task(tmp_path):
+    store = _store(tmp_path)
+    store.create(platform="telegram", chat_id="1", session_key="s", title="Creative smoke test", original_request="Run smoke-test", role="simple", toolsets=["terminal"], status="incomplete")
+    store.create(platform="telegram", chat_id="1", session_key="s", title="Notebook task", original_request="NotebookLM task", role="research", toolsets=["web"], status="incomplete")
+    decision = store.resolve("\u0414\u0430, \u0437\u0430\u043f\u0443\u0441\u0442\u0438 \u0442\u0435\u0441\u0442", "telegram", "1")
+    assert decision.kind == "choice"
+
+
+def test_task_reported_partial_or_blocked_is_non_success():
+    assert task_reported_non_success("\u0412\u0435\u0440\u0434\u0438\u043a\u0442: PARTIAL\nSmoke-test was not run") == ("incomplete", "reported verdict PARTIAL")
+    assert task_reported_non_success("BLOCKED\nMissing approval") == ("blocked", "reported verdict BLOCKED")
+    assert task_reported_non_success("READY\nAll checks passed") is None
+
+
+
+def test_skill_inventory_question_is_execution_contract():
+    execution, required = infer_execution_contract(
+        "Какие навыки еще будут полезны для меня? Сделай подборку",
+        "simple",
+        ["skills", "terminal", "file"],
+    )
+    assert execution is True
+    assert required == ()
+
+
+def test_execution_contract_does_not_match_log_inside_unrelated_words():
+    execution, required = infer_execution_contract(
+        "Создай аналог методологического skill и сохрани результат",
+        "simple",
+        ["file", "skills"],
+    )
+    assert execution is True
+    assert required == ()
+
+
+def test_prepare_task_turn_restores_required_terminal_from_platform_allowlist(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+
+    from gateway.task_router import TaskRoute
+
+    monkeypatch.setattr(
+        "gateway.task_runtime.route_turn",
+        lambda *args, **kwargs: TaskRoute(
+            role="server_debug",
+            reason="synthetic classifier miss",
+            toolsets=["file", "no_mcp"],
+            max_iterations=24,
+        ),
+    )
+    prepared = prepare_task_turn(
+        message="Проверь Git на VPS",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-restore-terminal",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "no_mcp"],
+    )
+    assert prepared.early_response is None
+    assert prepared.route is not None
+    assert "terminal" in prepared.route.toolsets
+    assert "restored_required=terminal" in prepared.route.reason
+
+
+def test_opaque_followup_resumes_single_task(tmp_path):
+    store = _store(tmp_path)
+    task = store.create(
+        platform="telegram", chat_id="1", session_key="s", title="Provider setup",
+        original_request="Configure provider and wait for input",
+        role="server_debug", toolsets=["terminal", "file"],
+        required_toolsets=["terminal"], requires_execution=True, status="incomplete",
+    )
+    opaque = "a" * 32 + "." + "b" * 20
+    decision = store.resolve("data " + opaque + " test", "telegram", "1")
+    assert decision.kind == "selected"
+    assert decision.task.task_id == task.task_id
+
+
+def test_opaque_followup_does_not_hijack_new_question(tmp_path):
+    store = _store(tmp_path)
+    store.create(
+        platform="telegram", chat_id="1", session_key="s", title="Provider setup",
+        original_request="Configure provider", role="server_debug",
+        toolsets=["terminal"], required_toolsets=["terminal"],
+        requires_execution=True, status="incomplete",
+    )
+    assert store.resolve("What is the weather tomorrow?", "telegram", "1").kind == "none"

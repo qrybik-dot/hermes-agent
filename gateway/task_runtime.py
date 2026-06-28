@@ -15,6 +15,31 @@ from gateway.task_continuation import (
 )
 from gateway.task_router import TaskRoute, route_turn
 
+_TASK_OUTCOME_RE = re.compile(
+    r"(?m)^\s*(?:[-*#>]+\s*)?(?:[^:\n]{0,40}:\s*)?"
+    r"(PARTIAL|BLOCKED|INCOMPLETE)\b"
+)
+
+
+def task_reported_non_success(
+    final_response: str,
+    *,
+    result_partial: bool = False,
+    result_failed: bool = False,
+) -> tuple[str, str] | None:
+    if result_failed:
+        return "blocked", "agent result flagged failed"
+    if result_partial:
+        return "incomplete", "agent result flagged partial"
+    match = _TASK_OUTCOME_RE.search((final_response or "")[:800])
+    if match is None:
+        return None
+    label = match.group(1)
+    if label == "BLOCKED":
+        return "blocked", "reported verdict BLOCKED"
+    return "incomplete", f"reported verdict {label}"
+
+
 _IMAGE_DEPENDENCY_RE = re.compile(
     r"\b(?:по|из|с|со)\s+(?:(?:присланн|приложенн|прикрепл[её]нн|этом|этому|данн)\w*\s+){0,3}"
     r"(?:картинк|изображен|фото|скриншот)\w*|"
@@ -171,6 +196,28 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                       user_config: dict, platform_toolsets: list[str] | None) -> PreparedTaskTurn:
     store = TaskStateStore()
     original = str(message or "")
+    if re.fullmatch(r"\s*(?:почему|из-за\s+чего|в\s+ч[её]м\s+причина)\s+(?:эта\s+)?(?:ошибка|blocked|блокировка)[\s.!?]*", original, re.I):
+        active = store.active(platform_key, str(chat_id))
+        if len(active) == 1:
+            current = active[0]
+            reason = current.last_error or "причина не сохранена"
+            if reason == "router did not assign execution toolset":
+                reason = "короткое сообщение было ошибочно обработано как новая simple-задача, поэтому инструменты активной задачи не унаследовались"
+            elif reason == "reported verdict PARTIAL":
+                reason = "активная задача завершила этап с PARTIAL и ожидала следующий ввод пользователя"
+            return PreparedTaskTurn(
+                original, None, current,
+                early_response(
+                    "Причина ошибки: " + reason + "\n"
+                    + "Задача: " + current.task_id + "\n"
+                    + "Роль: " + current.role + "\n"
+                    + "Инструменты: " + (", ".join(current.toolsets) or "не назначены"),
+                    task_id=current.task_id,
+                    role=current.role,
+                    reason="deterministic task error explanation",
+                ),
+                False,
+            )
     decision = store.resolve(original, platform_key, str(chat_id))
     if decision.kind == "choice":
         return PreparedTaskTurn(
@@ -300,6 +347,39 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     requires_execution, required = infer_execution_contract(base_text, route.role, route.toolsets)
     if task is not None:
         requires_execution, required = task.requires_execution, task.required_toolsets
+
+    # A classifier miss must not cause BLOCKED when the platform allowlist
+    # explicitly contains the deterministic execution capability.
+    missing_but_allowed = set(required) - set(route.toolsets)
+    platform_allowed = set(platform_toolsets or [])
+    if missing_but_allowed and (
+        platform_toolsets is None or missing_but_allowed.issubset(platform_allowed)
+    ):
+        route = TaskRoute(
+            role=route.role,
+            reason=route.reason + "; restored_required=" + ",".join(sorted(missing_but_allowed)),
+            toolsets=sorted(set(route.toolsets) | missing_but_allowed),
+            max_iterations=route.max_iterations,
+            skill_names=route.skill_names,
+            skip_context_files=route.skip_context_files,
+            operational_context=route.operational_context,
+        )
+
+    working_toolsets = [name for name in route.toolsets if name not in {"no_mcp", "clarify"}]
+    if requires_execution and not working_toolsets:
+        if task is not None:
+            store.update(task.task_id, status="blocked",
+                         last_error="router did not assign execution toolset")
+        return PreparedTaskTurn(
+            str(message or ""), route, task,
+            early_response(
+                "BLOCKED\nМаршрутизатор не назначил инструмент выполнения. "
+                "Фактические действия не выполнялись",
+                status="blocked", task_id=task.task_id if task else None,
+                role=route.role, reason="execution toolset preflight blocked",
+            ),
+            continued,
+        )
     missing = sorted(set(required) - set(route.toolsets))
     if missing:
         if task is not None:

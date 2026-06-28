@@ -13832,7 +13832,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             task_status_state["last_percent"] = percent
             if done:
                 content = (
-                    f"✅ Готово: {task_status_state['title']}\n"
+                    f"📋 Задача принята: {task_status_state['title']}\n"
                     f"Идёт: {_task_elapsed_text()}"
                 )
             else:
@@ -14705,14 +14705,104 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _simple_no_tools = (
                 _task_route.role == "simple" and set(routed_toolsets) <= {"no_mcp"}
             )
-            _turn_fallback_model = (
-                None
-                if (
-                    (_task_route.role in _quality_locked_roles and _selected_provider == "openai-codex")
-                    or _simple_no_tools
-                    or _prepared_task.continued
-                )
-                else self._fallback_model
+            _allowed_fallback_fields = {
+                "provider", "model", "base_url", "key_env", "api_key_env",
+                "api_mode", "reasons", "only_reasons", "only_before_tools",
+                "isolate_context", "allowed_tools",
+            }
+
+            def _normalize_fallback_chain(value):
+                if isinstance(value, dict):
+                    value = [value]
+                if not isinstance(value, list):
+                    return None
+                chain = []
+                for entry in value:
+                    if not isinstance(entry, dict):
+                        continue
+                    normalized = {
+                        key: item for key, item in entry.items()
+                        if key in _allowed_fallback_fields
+                    }
+                    if normalized.get("provider") and normalized.get("model"):
+                        chain.append(normalized)
+                return chain or None
+
+            from gateway.task_router import external_provider_fallback_safe
+            _external_fallback_safe = external_provider_fallback_safe(
+                message,
+                _task_route.role,
+                continued=bool(_prepared_task.continued),
+                requires_execution=bool(
+                    _active_task is not None and _active_task.requires_execution
+                ),
+            )
+            _fallback_bucket = "public" if _external_fallback_safe else "sensitive"
+            _role_fallback_cfg = (
+                user_config.get("role_fallbacks", {})
+                if isinstance(user_config, dict) else {}
+            )
+            _role_fallback_chain = None
+            if isinstance(_role_fallback_cfg, dict):
+                _role_entry = _role_fallback_cfg.get(_task_route.role, {})
+                if isinstance(_role_entry, dict):
+                    _role_fallback_chain = _normalize_fallback_chain(
+                        _role_entry.get(_fallback_bucket) or _role_entry.get("default")
+                    )
+
+            # Public, non-executing code review and log analysis may use GLM
+            # as a final independent-provider reserve. Executing coding/VPS
+            # tasks are classified into the sensitive bucket above and never
+            # receive this entry. The request is current-turn-only and has no
+            # tools, matching the same data-minimisation policy used elsewhere.
+            if (
+                _external_fallback_safe
+                and _task_route.role in {"coding", "server_debug"}
+                and isinstance(_role_fallback_chain, list)
+                and not any(entry.get("provider") == "zai" for entry in _role_fallback_chain)
+            ):
+                _role_fallback_chain.append({
+                    "provider": "zai",
+                    "model": "glm-4.7-flash",
+                    "only_before_tools": True,
+                    "isolate_context": True,
+                    "allowed_tools": [],
+                    "reasons": [
+                        "rate_limit", "usage_limit_exhausted", "auth",
+                        "auth_permanent", "billing", "model_not_found",
+                        "overloaded", "server_error", "timeout",
+                        "format_error", "provider_policy_blocked", "unknown",
+                    ],
+                })
+
+            _codex_fallback_cfg = (
+                user_config.get("codex_quality_fallback", {})
+                if isinstance(user_config, dict) else {}
+            )
+            _codex_failure_fallback = None
+            if (
+                isinstance(_codex_fallback_cfg, dict)
+                and _codex_fallback_cfg.get("enabled", True)
+                and _codex_fallback_cfg.get("provider")
+                and _codex_fallback_cfg.get("model")
+            ):
+                _codex_failure_fallback = _normalize_fallback_chain(_codex_fallback_cfg)
+
+            if _role_fallback_chain:
+                _turn_fallback_model = _role_fallback_chain
+            elif _task_route.role in _quality_locked_roles and _selected_provider == "openai-codex":
+                _turn_fallback_model = _codex_failure_fallback
+            elif _simple_no_tools or _prepared_task.continued:
+                _turn_fallback_model = None
+            else:
+                _turn_fallback_model = self._fallback_model
+            logger.info(
+                "fallback routing: role=%s bucket=%s external_safe=%s chain=%s",
+                _task_route.role,
+                _fallback_bucket,
+                _external_fallback_safe,
+                [f"{entry.get('provider')}/{entry.get('model')}" for entry in (_turn_fallback_model or [])]
+                if isinstance(_turn_fallback_model, list) else bool(_turn_fallback_model),
             )
             _empty_retry_limit = 1 if _simple_no_tools else 2
             _needs_task_status = bool(
@@ -14773,6 +14863,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
+                    if (
+                        cached
+                        and cached[0] is not _AGENT_PENDING_SENTINEL
+                        and getattr(cached[0], "_fallback_activated", False)
+                    ):
+                        evicted = self._agent_cache.pop(session_key, None)
+                        _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+                        if _ev_agent is not None:
+                            self._cleanup_agent_resources(_ev_agent)
+                        cached = None
+                        request_metrics["agent_cache_status"] = "invalidated_after_fallback"
                     if cached and cached[1] != _sig:
                         request_metrics["agent_cache_status"] = "signature_miss"
                     if cached and cached[1] == _sig:
@@ -14870,6 +14971,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
             agent.max_empty_retries = _empty_retry_limit
+            agent._fallback_current_user_text = str(message or "")
+            agent._executed_tool_call_count = 0
+            agent._fallback_context_isolated = False
+            agent._fallback_isolate_context_pending = False
+            agent._fallback_isolated_allowed_tools = set()
 
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
@@ -15363,11 +15469,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _turn_exit_reason = str(result.get("turn_exit_reason") or "")
                 _budget_exhausted = _turn_exit_reason.startswith("max_iterations_reached")
                 _no_execution_tools = _active_task.requires_execution and _task_tool_calls == 0
+                _provider_failed_before_tools = bool(
+                    _no_execution_tools and (result.get("failed") or result.get("error"))
+                )
                 _progress_without_tools = bool(
                     final_response and is_progress_only(final_response) and _task_tool_calls == 0
                 )
                 if _budget_exhausted or _no_execution_tools or _progress_without_tools:
-                    if _budget_exhausted:
+                    _reject_status = "incomplete"
+                    if _provider_failed_before_tools:
+                        _reject_reason = "provider_error_before_tools"
+                        _reject_status = "blocked"
+                        final_response = (
+                            "BLOCKED\nМодель не смогла начать выполнение из-за ошибки провайдера. "
+                            "Диагностика сохранена; задача может быть продолжена через fallback"
+                        )
+                    elif _budget_exhausted:
                         _reject_reason = "iteration_budget_exhausted"
                         final_response = (
                             "INCOMPLETE\nЛимит шагов исчерпан до подтверждения фактического результата. "
@@ -15381,9 +15498,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     result["partial"] = True
                     result["completed"] = False
+                    _task_store.merge_metadata(
+                        _active_task.task_id,
+                        final_response=str(final_response or ""),
+                        tool_call_count=_task_tool_calls,
+                        api_calls=int(result.get("api_calls", 0) or 0),
+                        turn_exit_reason=_turn_exit_reason,
+                        selected_model=str(_selected_model or ""),
+                        selected_provider=str(_selected_provider or ""),
+                        resolved_model=str(getattr(agent, "model", "") or ""),
+                        resolved_provider=str(getattr(agent, "provider", "") or ""),
+                        provider_error=str(result.get("error") or "")[:500],
+                    )
                     _task_store.update(
                         _active_task.task_id,
-                        status="incomplete",
+                        status=_reject_status,
                         last_error=_reject_reason,
                     )
                     logger.warning(
@@ -15398,25 +15527,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         last_error=str(result.get("error") or "empty final response")[:300],
                     )
                 else:
-                    from gateway.task_runtime import calendar_completion_evidence_missing
-                    _evidence_missing = calendar_completion_evidence_missing(
-                        _active_task.original_request,
-                        str(final_response),
+                    from gateway.task_runtime import (
+                        calendar_completion_evidence_missing,
+                        task_reported_non_success,
                     )
-                    if _evidence_missing:
-                        final_response = (
-                            "INCOMPLETE\nНе сохранено подтверждение результата календаря: "
-                            + ", ".join(_evidence_missing)
-                            + ". Задача сохранена и может быть продолжена"
-                        )
+                    _reported_non_success = task_reported_non_success(
+                        str(final_response),
+                        result_partial=bool(result.get("partial")),
+                        result_failed=bool(result.get("failed")),
+                    )
+                    if _reported_non_success is not None:
+                        _reported_status, _reported_reason = _reported_non_success
                         result["partial"] = True
                         result["completed"] = False
-                        _task_store.update(
-                            _active_task.task_id,
-                            status="incomplete",
-                            last_error="missing calendar evidence: " + ",".join(_evidence_missing),
-                        )
-                    else:
                         _task_store.merge_metadata(
                             _active_task.task_id,
                             final_response=str(final_response),
@@ -15425,7 +15548,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             selected_model=str(result.get("selected_model") or result.get("model") or ""),
                             selected_provider=str(result.get("selected_provider") or result.get("provider") or ""),
                         )
-                        _task_store.update(_active_task.task_id, status="awaiting_delivery")
+                        _task_store.update(
+                            _active_task.task_id,
+                            status=_reported_status,
+                            last_error=_reported_reason,
+                        )
+                    else:
+                        _evidence_missing = calendar_completion_evidence_missing(
+                            _active_task.original_request,
+                            str(final_response),
+                        )
+                        if _evidence_missing:
+                            final_response = (
+                                "INCOMPLETE\nНе сохранено подтверждение результата календаря: "
+                                + ", ".join(_evidence_missing)
+                                + ". Задача сохранена и может быть продолжена"
+                            )
+                            result["partial"] = True
+                            result["completed"] = False
+                            _task_store.update(
+                                _active_task.task_id,
+                                status="incomplete",
+                                last_error="missing calendar evidence: " + ",".join(_evidence_missing),
+                            )
+                        else:
+                            _task_store.merge_metadata(
+                                _active_task.task_id,
+                                final_response=str(final_response),
+                                tool_call_count=_task_tool_calls,
+                                turn_exit_reason=_turn_exit_reason,
+                                selected_model=str(result.get("selected_model") or result.get("model") or ""),
+                                selected_provider=str(result.get("selected_provider") or result.get("provider") or ""),
+                            )
+                            _task_store.update(_active_task.task_id, status="awaiting_delivery")
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0

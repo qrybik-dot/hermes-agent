@@ -15,14 +15,35 @@ _ACTIVE = ("running", "paused", "blocked", "incomplete", "awaiting_delivery", "d
 _CONTINUE_RE = re.compile(
     r"(?:^|\n)\s*(?:готов\s+продолжить|продолж(?:ай|ить|им)|дальше|возобнов(?:и|ить)|"
     r"можно\s+продолжить|давай\s+продолжим)(?:\s+(\d+|[0-9a-f]{6,32}))?[\s.!?]*$", re.I)
+_CONTEXTUAL_CONTINUE_RE = re.compile(
+    r"^\s*(?:\u0434\u0430[\s,]+)?(?:\u0437\u0430\u043f\u0443\u0441\u0442\u0438|\u0432\u044b\u043f\u043e\u043b\u043d\u0438|\u043f\u0440\u043e\u0432\u0435\u0434\u0438|\u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438|\u0441\u0434\u0435\u043b\u0430\u0439)\s+"
+    r"(?:\u044d\u0442\u043e|\u0435\u0433\u043e|\u0435[\u0435\u0451]|\u0442\u0435\u0441\u0442|smoke[- ]?test)\s*[.!?]*$",
+    re.I,
+)
+_NUMERIC_CHOICE_RE = re.compile(r"^\s*(\d{1,2})[\s.!?]*$")
+_OPAQUE_INPUT_RE = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z0-9][A-Za-z0-9_.-]{23,}(?![A-Za-z0-9])"
+)
+_CHOICE_CACHE: dict[tuple[str, str], tuple[float, tuple[str, ...]]] = {}
+_CHOICE_TTL_SECONDS = 600
+
 _PAUSE_RE = re.compile(
     r"\b(?:повторим\s+(?:утром|позже)|продолжим\s+(?:утром|позже)|"
     r"поставь\s+на\s+паузу|приостанови|отложи\s+(?:до|на))\b", re.I)
 _PROGRESS_ONLY_RE = re.compile(r"^\s*(?:⏳|🟡|🔄)?\s*(?:в\s+работе|этап\s+\d+|шаг\s+\d+)", re.I)
 _EXECUTION_RE = re.compile(
     r"\b(?:проверь|аудит|найди|создай|добавь|исправь|почини|выполни|запусти|"
-    r"обнови|синхрониз|отправь|запиши|сохрани|скачай|проанализируй\s+на\s+vps)\w*\b", re.I)
+    r"обнови|настрой|установи|расширь|подключи|внедри|доработай|реализуй|"
+    r"синхрониз|отправь|запиши|сохрани|скачай|проанализируй\s+на\s+vps)\w*\b|"
+    r"(?:какие|какой|список|подборк)\w*\s+(?:ещ[её]\s+)?(?:навык|skill)\w*|"
+    r"(?:есть|установлен|подключен|доступен)\w*.*(?:навык|skill)\w*", re.I)
 _PLAN_ONLY_RE = re.compile(r"\b(?:составь|подготовь)\s+план\b", re.I)
+_TERMINAL_EXECUTION_RE = re.compile(
+    r"\b(?:git|vps|systemd|journalctl|sudo|root|ssh|gateway)\b|"
+    r"\bсервис(?:а|ы|ов|е|у|ом|ами|ах)?\b|"
+    r"\bлог(?:и|ов|е|ах|ами)?\b|права\s+доступа|authorized_keys|\.env\b",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -204,25 +225,84 @@ class TaskStateStore:
             self.update(task_id, status_message_id=str(message_id))
 
     def resolve(self, text: str, platform: str, chat_id: str) -> ContinuationDecision:
-        match = _CONTINUE_RE.search(text or "")
-        if not match:
+        value = text or ""
+        key = (platform, str(chat_id))
+        match = _CONTINUE_RE.search(value)
+        prefix_match = _CONTINUE_RE.search(value.splitlines()[0]) if value.splitlines() else None
+        contextual = _CONTEXTUAL_CONTINUE_RE.search(value)
+        numeric = _NUMERIC_CHOICE_RE.fullmatch(value)
+
+        if numeric and not match and not prefix_match:
+            cached = _CHOICE_CACHE.get(key)
+            if cached is None:
+                return ContinuationDecision("none")
+            created_at, task_ids = cached
+            if time.time() - created_at > _CHOICE_TTL_SECONDS:
+                _CHOICE_CACHE.pop(key, None)
+                return ContinuationDecision("none")
+            index = int(numeric.group(1)) - 1
+            if not 0 <= index < len(task_ids):
+                tasks = tuple(
+                    task for task_id in task_ids
+                    if (task := self.get(task_id)) is not None
+                    and task.platform == platform
+                    and task.chat_id == str(chat_id)
+                    and task.status in _ACTIVE
+                    and task.expires_at > time.time()
+                )
+                return ContinuationDecision("choice", candidates=tasks)
+            task = self.get(task_ids[index])
+            _CHOICE_CACHE.pop(key, None)
+            if (
+                task is not None
+                and task.platform == platform
+                and task.chat_id == str(chat_id)
+                and task.status in _ACTIVE
+                and task.expires_at > time.time()
+            ):
+                return ContinuationDecision("selected", task=task)
+            return ContinuationDecision("empty")
+
+        if not match and not prefix_match and not contextual:
+            tasks = self.active(platform, str(chat_id))
+            implicit_input = bool(_OPAQUE_INPUT_RE.search(value))
+            if (
+                implicit_input
+                and len(tasks) == 1
+                and len(value) <= 600
+                and tasks[0].status in {"paused", "blocked", "incomplete"}
+                and time.time() - tasks[0].updated_at <= 6 * 3600
+            ):
+                _CHOICE_CACHE.pop(key, None)
+                return ContinuationDecision("selected", task=tasks[0])
+            if value.strip():
+                _CHOICE_CACHE.pop(key, None)
             return ContinuationDecision("none")
+
         tasks = self.active(platform, str(chat_id))
-        selector = match.group(1)
+        selector_match = match or prefix_match
+        selector = selector_match.group(1) if selector_match else None
         if selector:
             if selector.isdigit() and 0 <= int(selector) - 1 < len(tasks):
+                _CHOICE_CACHE.pop(key, None)
                 return ContinuationDecision("selected", task=tasks[int(selector) - 1])
             selected = [task for task in tasks if task.task_id.lower().startswith(selector.lower())]
             if len(selected) == 1:
+                _CHOICE_CACHE.pop(key, None)
                 return ContinuationDecision("selected", task=selected[0])
             stored = self.get(selector)
             if stored is not None and stored.platform == platform and stored.chat_id == str(chat_id):
+                _CHOICE_CACHE.pop(key, None)
                 return ContinuationDecision("selected", task=stored)
         if len(tasks) == 1:
+            _CHOICE_CACHE.pop(key, None)
             return ContinuationDecision("selected", task=tasks[0])
         if tasks:
+            _CHOICE_CACHE[key] = (time.time(), tuple(task.task_id for task in tasks))
             return ContinuationDecision("choice", candidates=tuple(tasks))
+        _CHOICE_CACHE.pop(key, None)
         return ContinuationDecision("empty")
+
 
 
 def is_pause_request(text: str) -> bool:
@@ -237,7 +317,7 @@ def infer_execution_contract(text: str, role: str, toolsets: Iterable[str]) -> t
     execution = bool(_EXECUTION_RE.search(text or "")) and not bool(_PLAN_ONLY_RE.search(text or ""))
     required: set[str] = set()
     lowered = (text or "").lower()
-    if execution and any(term in lowered for term in ("git", "vps", "systemd", "сервис", "лог")):
+    if execution and _TERMINAL_EXECUTION_RE.search(text or ""):
         required.add("terminal")
     if execution and any(term in lowered for term in ("календар", "напомин", "письм", "почт")):
         required.update({"skills", "terminal"})

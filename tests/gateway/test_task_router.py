@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from gateway.task_router import classify_task, route_turn, select_toolsets
+from gateway.task_router import adaptive_planning_policy, classify_task, route_turn, select_toolsets
 
 
 ALL_ALLOWED = [
@@ -8,9 +8,11 @@ ALL_ALLOWED = [
     "clarify",
     "code_execution",
     "context7",
+    "delegation",
     "file",
     "granola",
     "memory",
+    "notebooklm",
     "session_search",
     "skills",
     "terminal",
@@ -52,6 +54,28 @@ def test_memory_continuation_gets_memory_and_session_search():
         assert route.role == "simple"
         assert "memory" in route.toolsets
         assert "session_search" in route.toolsets
+
+
+def test_notebooklm_research_routes_to_notebooklm_tools_and_contract():
+    route = route_turn(
+        "В NotebookLM сделай презентацию, подкаст и инфографику. Перед этим самостоятельно найди "
+        "не менее 30 источников, не старше, чем 2 месяца.",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {"role_max_turns": {"research": 24}}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "research"
+    assert "web" in route.toolsets
+    assert "file" in route.toolsets
+    assert "terminal" in route.toolsets
+    assert "notebooklm" in route.toolsets
+    assert "no_mcp" not in route.toolsets
+    assert route.max_iterations >= 36
+    assert "stat -c" in route.operational_context
+    assert "helper-скрипты" in route.operational_context
+    assert "URL и точную дату" in route.operational_context
+    assert "READY допустим только" in route.operational_context
 
 
 def test_email_calendar_and_granola_are_not_confused():
@@ -203,3 +227,102 @@ def test_simple_route_does_not_preload_skill():
         platform_toolsets=ALL_ALLOWED,
     )
     assert route.skill_names == ()
+
+
+
+def test_skill_recommendation_requires_factual_tools():
+    route = route_turn(
+        "Какие навыки еще будут полезны для меня? Сделай подборку",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert "skills" in route.toolsets
+    assert "terminal" in route.toolsets
+    assert "file" in route.toolsets
+    assert "no_mcp" not in route.toolsets
+    assert "обязательно проверь фактический список" in route.operational_context
+    assert "Не выдумывай команды установки" in route.operational_context
+
+
+def _adaptive_route(text: str):
+    return route_turn(
+        text,
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+
+
+def test_adaptive_planning_six_scenarios():
+    simple = _adaptive_route("Почему небо голубое?")
+    assert adaptive_planning_policy("Почему небо голубое?", simple.role).mode == "none"
+    assert "plan" not in simple.skill_names
+    assert "delegation" not in simple.toolsets
+
+    one_command = _adaptive_route("Исправь опечатку в одном Python-файле")
+    assert one_command.role == "coding"
+    assert "terminal" in one_command.toolsets
+    assert "plan" not in one_command.skill_names
+    assert "delegation" not in one_command.toolsets
+
+    medium = _adaptive_route(
+        "Исправь обработку ошибок в Python-модуле, добавь тест и проверь обратную совместимость"
+    )
+    assert medium.role == "coding"
+    assert "plan" not in medium.skill_names
+    assert "delegation" not in medium.toolsets
+    assert "короткий внутренний план" in medium.operational_context
+
+    large = _adaptive_route(
+        "Реализуй крупную многоэтапную доработку task router: обнови классификацию, "
+        "добавь тесты, сохрани rollback и проверь Telegram UX"
+    )
+    assert large.role in {"coding", "server_debug"}
+    assert large.skill_names.count("plan") == 1
+    assert "delegation" in large.toolsets
+    assert "ровно одного reviewer" in large.operational_context
+    assert large.max_iterations >= 36
+
+    production_auth = _adaptive_route(
+        "Настрой production-авторизацию gateway, обнови права доступа и подготовь rollback"
+    )
+    assert production_auth.skill_names.count("plan") == 1
+    assert "delegation" in production_auth.toolsets
+    assert "backup-first" in production_auth.operational_context
+
+    approved = _adaptive_route(
+        "Реализуй уже согласованный план изменения Python-модуля и добавь тест"
+    )
+    assert approved.role == "coding"
+    assert "terminal" in approved.toolsets
+    assert "plan" not in approved.skill_names
+    assert "delegation" not in approved.toolsets
+
+
+def test_explicit_jtbd_dod_uses_plan_without_reviewer_for_small_task():
+    route = _adaptive_route("Составь JTBD и DoD для небольшой обратимой правки документации")
+    assert route.skill_names.count("plan") == 1
+    assert "delegation" not in route.toolsets
+    assert "3–7 пунктов" in route.operational_context
+
+
+def test_status_request_does_not_trigger_adaptive_planner():
+    route = _adaptive_route("Покажи статус systemd hermes-gateway на VPS")
+    assert route.role == "server_debug"
+    assert "plan" not in route.skill_names
+    assert "delegation" not in route.toolsets
+
+
+def test_adaptive_planner_install_request_routes_to_execution_tools():
+    route = _adaptive_route(
+        "Настрой адаптивное планирование крупных задач. Найди task router, расширь существующий "
+        "skill, сделай backup, проверь production/авторизацию и rollback. Проверь минимум 6 сценариев."
+    )
+    assert route.role in {"coding", "server_debug"}
+    assert "terminal" in route.toolsets
+    assert "file" in route.toolsets
+    assert route.skill_names.count("plan") == 1
+    assert "delegation" in route.toolsets

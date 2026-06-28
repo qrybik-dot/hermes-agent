@@ -51,22 +51,29 @@ _SERVER_DEBUG_RE = re.compile(
     re.I,
 )
 _CODING_ACTION_RE = re.compile(
-    r"\b(?:исправь|почини|реализуй|отрефакторь|закоммить|добавь\s+тест|"
-    r"внеси\s+изменения|измени\s+(?:код|файл|скрипт|модуль)|сделай\s+commit)\b|"
-    r"\b(?:fix|patch|implement|refactor|commit)\b",
+    r"\b(?:исправь|почини|реализуй|отрефакторь|закоммить|настрой|установи|"
+    r"создай|расширь|подключи|внедри|доработай|обнови|добавь\s+тест|"
+    r"внеси\s+изменения|измени\s+(?:код|файл|скрипт|модуль|маршрутизатор)|"
+    r"сделай\s+commit)\b|"
+    r"\b(?:fix|patch|implement|refactor|commit|configure|install|extend)\b",
     re.I,
 )
 _CODING_OBJECT_RE = re.compile(
     r"\b(?:код|python|javascript|typescript|репозитор|файл|скрипт|модуль|pytest|"
-    r"git|функци|класс|тест)\w*\b",
+    r"git|функци|класс|тест|router|маршрутизатор|skill|навык|конфиг|gateway|"
+    r"runtime|toolset|инструмент)\w*\b",
     re.I,
 )
 _RESEARCH_RE = re.compile(
     r"найди\s+(?:свеж|актуаль)|поиск\s+в\s+интернете|проверь\s+по\s+источникам|"
     r"сравни\s+источники|последние\s+новости|актуальные\s+(?:цены|правила|данные)|"
+    r"самостоятельно\s+найди|найди\s+(?:источник|источники|материалы|статьи|видео)|"
+    r"не\s+менее\s+\d+\s+источник\w*|"
+    r"не\s+старше(?:\s*,?\s*чем)?\s+\d+\s+(?:дн(?:я|ей)|недел[ьиь]|месяц(?:а|ев))|"
     r"\b(?:latest|web research)\b",
     re.I,
 )
+_NOTEBOOKLM_RE = re.compile(r"\bnotebook\s*lm\b|ноутбук\s*лм|ноутбуклм", re.I)
 _PLANNING_RE = re.compile(
     r"архитектурн\w*\s+план|спроектируй|стратеги\w*|roadmap|blueprint|"
     r"декомпозируй\s+(?:проект|задачу)|план\s+внедрения|"
@@ -124,6 +131,126 @@ _CONTEXT7_RE = re.compile(
     r"\b(?:next\.js|react|supabase)\b",
     re.I,
 )
+_SKILLS_QUERY_RE = re.compile(
+    r"(?:какие|какой|список|подборк)\w*\s+(?:ещ[её]\s+)?(?:навык|skill)\w*|"
+    r"(?:есть|установлен|подключен|доступен)\w*.*(?:навык|skill)\w*|"
+    r"(?:навык|skill)\w*.*(?:есть|установлен|подключен|доступен|полезен|лучше)|"
+    r"hermes\s+skills|/creative-ideation|/skill\b",
+    re.I,
+)
+_EXTERNAL_PROVIDER_SENSITIVE_RE = re.compile(
+    r"\b(?:mosreg|esia|мосрег|есиа|госуслуг|паспорт|снилс|"
+    r"токен\w*|парол\w*|cookie|oauth|authorization|api[_ -]?key|секрет\w*)\b|"
+    r"\.env\b|authorized_keys|(?:[\w.+-]+@[\w.-]+\.[A-Za-z]{2,})|"
+    r"(?<!\d)(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?!\d)",
+    re.I,
+)
+_EXTERNAL_PROVIDER_CONTINUATION_ONLY_RE = re.compile(
+    r"^\s*(?:продолжить|продолжай|возобновить|resume)\s+[0-9a-f]{6,32}\s*[.!?]*$",
+    re.I,
+)
+_EXTERNAL_PROVIDER_SAFE_ROLES = {
+    "simple", "parser", "research", "planning", "coding", "server_debug"
+}
+
+
+_EXPLICIT_ADAPTIVE_PLAN_RE = re.compile(
+    r"\b(?:jtbd|dod|definition\s+of\s+done)\b|"
+    r"\b(?:составь|подготовь|сделай|дай|покажи)\s+(?:кратк\w*\s+)?план\b|"
+    r"разлож\w*\s+на\s+этапы|критери\w*\s+готовност",
+    re.I,
+)
+_APPROVED_PLAN_RE = re.compile(
+    r"(?:утвержд[её]н\w*|согласован\w*)\s+план\w*|"
+    r"план\w*\s+(?:уже\s+)?(?:утвержд[её]н\w*|согласован\w*)|"
+    r"по\s+(?:уже\s+)?(?:утвержд[её]нн\w*|согласованн\w*)\s+план\w*|"
+    r"без\s+повторн\w*\s+планировани",
+    re.I,
+)
+_LARGE_TASK_RE = re.compile(
+    r"\b(?:крупн\w*|больш\w*\s+задач\w*|многоэтапн\w*|неоднозначн\w*|"
+    r"архитектурн\w*|рефактор\w*|миграц\w*|интеграц\w*|"
+    r"нескольк\w*\s+(?:этап|систем|компонент|сервис|файл))\b|"
+    r"не\s+менее\s+(?:[2-9]\d|\d{3,})\s+источник\w*",
+    re.I,
+)
+_RISKY_TASK_RE = re.compile(
+    r"\b(?:vps|systemd|sudo|ssh|gateway|rollback|backup|бэкап\w*|откат\w*|"
+    r"перезапуск\w*|production|prod)\b",
+    re.I,
+)
+_HIGH_RISK_TASK_RE = re.compile(
+    r"\b(?:root|авторизац\w*|аутентификац\w*|секрет\w*|токен\w*|"
+    r"удален\w*|миграц\w*)\b|\.env\b|права\s+доступа|authorized_keys",
+    re.I,
+)
+_STATUS_ONLY_RE = re.compile(
+    r"^\s*(?:покажи|проверь|дай)\s+(?:текущ\w*\s+)?(?:статус|состояние|логи?)\b",
+    re.I,
+)
+_MULTI_STEP_RE = re.compile(
+    r"\b(?:затем|после\s+этого|далее|нескольк\w*\s+шаг|этап)\b|"
+    r"\bи\s+(?:добавь|проверь|обнови|создай|настрой|запусти)\b",
+    re.I,
+)
+_ACTION_REQUEST_RE = re.compile(
+    r"\b(?:исправь|почини|реализуй|настрой|установи|создай|расширь|подключи|"
+    r"внедри|доработай|обнови|добавь|выполни|запусти|перезапусти|удали|"
+    r"примени|разверни|составь|подготовь)\b",
+    re.I,
+)
+
+
+@dataclass(frozen=True)
+class AdaptivePlanningPolicy:
+    mode: str = "none"
+    preload_plan_skill: bool = False
+    reviewer_required: bool = False
+    reason: str = "not needed"
+
+
+def adaptive_planning_policy(text: str, role: str) -> AdaptivePlanningPolicy:
+    value = text or ""
+    stripped = value.strip()
+    imperative = bool(_ACTION_REQUEST_RE.search(value))
+    if stripped.endswith("?") and len(stripped) < 320 and not imperative:
+        return AdaptivePlanningPolicy(reason="short question")
+    if _STATUS_ONLY_RE.search(value) and len(stripped) < 320:
+        return AdaptivePlanningPolicy(reason="status-only request")
+    if _APPROVED_PLAN_RE.search(value):
+        return AdaptivePlanningPolicy(reason="approved plan already exists")
+
+    explicit = bool(_EXPLICIT_ADAPTIVE_PLAN_RE.search(value))
+    item_count = len(re.findall(r"(?m)^\s*(?:\d+[.)]|[-*])\s+\S", value))
+    large = bool(_LARGE_TASK_RE.search(value)) or len(value) > 1600 or item_count >= 6
+    high_risk = bool(_HIGH_RISK_TASK_RE.search(value))
+    risky = high_risk or bool(_RISKY_TASK_RE.search(value))
+    technical_execution = role in {"coding", "server_debug"} or bool(
+        _CODING_ACTION_RE.search(value) and _CODING_OBJECT_RE.search(value)
+    )
+    nonempty_lines = [line for line in value.splitlines() if line.strip()]
+    one_clear_command = bool(
+        technical_execution
+        and len(stripped) < 320
+        and len(nonempty_lines) <= 2
+        and item_count == 0
+        and not explicit
+        and not large
+        and not high_risk
+        and not _MULTI_STEP_RE.search(value)
+    )
+    if one_clear_command:
+        return AdaptivePlanningPolicy(reason="one clear reversible command")
+    if large or risky:
+        reason = "large task" if large else "risky task"
+        if large and risky:
+            reason = "large and risky task"
+        return AdaptivePlanningPolicy("reviewed", True, True, reason)
+    if explicit:
+        return AdaptivePlanningPolicy("plan", True, False, "explicit plan/JTBD/DoD request")
+    if technical_execution or role == "planning":
+        return AdaptivePlanningPolicy("brief", False, False, "medium execution task")
+    return AdaptivePlanningPolicy(reason="simple task")
 
 
 @dataclass(frozen=True)
@@ -165,7 +292,40 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "report": bool(_REPORT_RE.search(value)),
         "tutu": bool(_TUTU_RE.search(value)),
         "context7": bool(_CONTEXT7_RE.search(value)),
+        "skills_query": bool(_SKILLS_QUERY_RE.search(value)),
+        "notebooklm": bool(_NOTEBOOKLM_RE.search(value)),
     }
+
+
+def external_provider_fallback_safe(
+    text: str,
+    role: str,
+    *,
+    continued: bool = False,
+    requires_execution: bool = False,
+) -> bool:
+    """Return whether a current-turn-only cross-provider fallback is useful.
+
+    The rule is provider-neutral: block actual credentials, identifiers and
+    account-backed data, not broad topics such as medicine, family or CVs.
+    Coding and server-analysis prompts are allowed only when no execution is
+    required; executable tasks stay on providers that retain their tool path.
+    """
+    value = (text or "").strip()
+    if role not in _EXTERNAL_PROVIDER_SAFE_ROLES:
+        return False
+    if role in {"coding", "server_debug"} and (
+        requires_execution or _ACTION_REQUEST_RE.search(value)
+    ):
+        return False
+    if continued and (
+        len(value) < 240 or _EXTERNAL_PROVIDER_CONTINUATION_ONLY_RE.fullmatch(value)
+    ):
+        return False
+    flags = _intent_flags(value)
+    if any(flags[name] for name in ("email", "calendar", "drive", "granola", "memory")):
+        return False
+    return not bool(_EXTERNAL_PROVIDER_SENSITIVE_RE.search(value))
 
 
 def classify_task(text: str, *, command: str | None = None) -> tuple[str, str]:
@@ -184,6 +344,8 @@ def classify_task(text: str, *, command: str | None = None) -> tuple[str, str]:
         return "server_debug", "server/debug intent"
     if _CODING_ACTION_RE.search(value) and _CODING_OBJECT_RE.search(value):
         return "coding", "explicit code change intent"
+    if _NOTEBOOKLM_RE.search(value):
+        return "research", "NotebookLM intent"
     if _RESEARCH_RE.search(value):
         return "research", "external research intent"
     if _PLANNING_RE.search(value):
@@ -250,6 +412,14 @@ def select_toolsets(
     if flags["context7"] and role in {"coding", "research", "planning"}:
         requested.discard("no_mcp")
         requested.add("context7")
+    if flags["skills_query"]:
+        requested.discard("no_mcp")
+        requested.update({"skills", "terminal", "file"})
+    if flags["notebooklm"]:
+        requested.discard("no_mcp")
+        requested.update({"notebooklm", "file", "terminal"})
+        if role == "research":
+            requested.add("web")
 
     return _apply_platform_policy(requested, platform_toolsets)
 
@@ -293,6 +463,61 @@ def compact_operational_context(platform_key: str, role: str) -> str:
     return common
 
 
+def skills_facts_operational_context() -> str:
+    return (
+        "Контракт фактов о навыках Hermes: перед ответом обязательно проверь фактический "
+        "список и содержимое навыков через skills/terminal. Не утверждай, что навык установлен, "
+        "существует, вызывается по ключевым словам или имеет определённые функции, без результата "
+        "инструмента либо прочитанного SKILL.md. Отделяй установленные локальные навыки от upstream. "
+        "Не выдумывай команды установки. Если проверка недоступна, верни BLOCKED, а не рекомендацию."
+    )
+
+
+def notebooklm_operational_context() -> str:
+    return (
+        "Контракт NotebookLM: используй настоящий NotebookLM MCP. Дождись завершения каждого артефакта, "
+        "скачай артефакты и проверь существование файлов перед отчётом. После скачивания используй штатный "
+        "terminal, предпочтительно stat -c '%n|%s' <path>, чтобы подтвердить точный размер больше нуля. "
+        "Не создавай Python, shell или другие helper-скрипты только для проверки размера и не используй "
+        "patch/write_file для проверки уже существующего артефакта. Для источников с ограничением свежести "
+        "сохраняй название, URL и точную дату публикации; источник без подтверждаемой даты не засчитывай. "
+        "READY допустим только после завершения генерации, скачивания, проверки существования и ненулевого "
+        "размера файла, успешной отправки и подтверждения нужного числа URL/дат. Иначе верни PARTIAL или "
+        "BLOCKED. Итоговый отчёт пользователю пиши на русском."
+    )
+
+
+def adaptive_planning_operational_context(policy: AdaptivePlanningPolicy) -> str:
+    if policy.mode == "none":
+        return ""
+    if policy.mode == "brief":
+        return (
+            "Адаптивное планирование: это средняя задача. Перед действиями составь короткий внутренний "
+            "план из 2–4 шагов. Не вызывай дополнительную модель и не показывай пользователю отдельный "
+            "методологический блок. Выполняй задачу сразу и сохраняй текущий формат прогресса и финала."
+        )
+
+    common = (
+        "Адаптивное планирование: используй предзагруженный skill plan в adaptive execution mode. "
+        "Если пользователь запросил только план, не выполняй изменения. Если вместе с планом запросил "
+        "реализацию, не останавливайся после плана. Не создавай отдельный plan-файл без явного запроса. "
+        "Пользователю показывай только: цель одной строкой, план из 3–7 пунктов, до 3 рисков и DoD из "
+        "2–5 критериев. Прогресс: текущий этап, подтверждённый результат и блокер. Финал оставь в текущем "
+        "формате READY / PARTIAL / BLOCKED."
+    )
+    if not policy.reviewer_required:
+        return common
+    return common + (
+        " После чернового плана вызови ровно одного reviewer через delegate_task с role=leaf. Reviewer "
+        "не должен менять файлы или выполнять реализацию. Передай ему цель, план, риски, rollback и UX "
+        "финального отчёта; попроси максимум 5 замечаний по пропускам, переусложнению и безопасности. "
+        "Используй настроенный delegation runtime. Если reviewer наследует ту же модель или провайдер, "
+        "называй его reviewer в отдельном контексте, а не независимой моделью. Если delegate_task "
+        "недоступен или завершился ошибкой, сделай один явно обозначенный self-review и не называй его "
+        "независимым. Не делегируй саму реализацию и не вызывай второго reviewer."
+    )
+
+
 def route_turn(
     text: str,
     *,
@@ -303,21 +528,49 @@ def route_turn(
 ) -> TaskRoute:
     role, reason = classify_task(text, command=command)
     flags = _intent_flags(text)
+    planning_policy = adaptive_planning_policy(text, role)
     intent_names = [name for name, enabled in flags.items() if enabled]
     if intent_names:
         reason = f"{reason}; intents={','.join(intent_names)}"
+    if planning_policy.mode != "none":
+        reason = f"{reason}; adaptive_plan={planning_policy.mode}:{planning_policy.reason}"
     agent_cfg = (user_config or {}).get("agent") if isinstance(user_config, Mapping) else {}
     if not isinstance(agent_cfg, Mapping):
         agent_cfg = {}
-    skill_names = ("google-workspace",) if (flags["email"] or flags["calendar"] or flags["drive"]) else ()
+
+    skill_names_list: list[str] = []
+    if flags["email"] or flags["calendar"] or flags["drive"]:
+        skill_names_list.append("google-workspace")
+    if planning_policy.preload_plan_skill:
+        skill_names_list.append("plan")
+    skill_names = tuple(dict.fromkeys(skill_names_list))
+
+    toolsets = select_toolsets(role, text, platform_toolsets)
+    if planning_policy.preload_plan_skill:
+        toolsets = _apply_platform_policy(set(toolsets) | {"file", "skills"}, platform_toolsets)
+    if planning_policy.reviewer_required:
+        toolsets = _apply_platform_policy(set(toolsets) | {"delegation"}, platform_toolsets)
+
+    operational_context = compact_operational_context(platform_key, role)
+    adaptive_context = adaptive_planning_operational_context(planning_policy)
+    if adaptive_context:
+        operational_context = (operational_context + "\n\n" + adaptive_context).strip()
+    max_iterations = max_turns_for_role(role, agent_cfg)
+    if planning_policy.reviewer_required:
+        max_iterations = max(max_iterations, 36)
+    if flags["skills_query"]:
+        operational_context = (operational_context + "\n\n" + skills_facts_operational_context()).strip()
+    if flags["notebooklm"]:
+        operational_context = (operational_context + "\n\n" + notebooklm_operational_context()).strip()
+        max_iterations = max(max_iterations, 36)
     return TaskRoute(
         role=role,
         reason=reason,
-        toolsets=select_toolsets(role, text, platform_toolsets),
-        max_iterations=max_turns_for_role(role, agent_cfg),
+        toolsets=toolsets,
+        max_iterations=max_iterations,
         skill_names=skill_names,
         # Telegram intentionally skips the large repository AGENTS.md/SOUL.md;
         # compact personality and role safety rules are supplied above instead.
         skip_context_files=(platform_key == "telegram"),
-        operational_context=compact_operational_context(platform_key, role),
+        operational_context=operational_context,
     )
