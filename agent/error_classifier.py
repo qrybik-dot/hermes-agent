@@ -30,7 +30,8 @@ class FailoverReason(enum.Enum):
 
     # Billing / quota
     billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
-    rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
+    usage_limit_exhausted = "usage_limit_exhausted"  # confirmed subscription/account window exhaustion — fail over immediately
+    rate_limit = "rate_limit"            # transient 429 or quota throttling — backoff without breaking quality lock
 
     # Server-side
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
@@ -843,7 +844,20 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Codex subscription windows can be exhausted for days. This is
+        # materially different from a transient RPM/capacity 429: retrying
+        # the same account cannot recover within this turn.
+        if (
+            error_code.lower() in {"usage_limit_reached", "usage_limit_exhausted"}
+            or (provider == "openai-codex" and "usage limit has been reached" in error_msg)
+        ):
+            return result_fn(
+                FailoverReason.usage_limit_exhausted,
+                retryable=False,
+                should_rotate_credential=False,
+                should_fallback=True,
+            )
+        # Ordinary 429 remains transient and keeps the quality lock.
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -1091,6 +1105,14 @@ def _classify_by_error_code(
 ) -> Optional[ClassifiedError]:
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
+
+    if code_lower in {"usage_limit_reached", "usage_limit_exhausted"}:
+        return result_fn(
+            FailoverReason.usage_limit_exhausted,
+            retryable=False,
+            should_rotate_credential=False,
+            should_fallback=True,
+        )
 
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(

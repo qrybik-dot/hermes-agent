@@ -52,7 +52,7 @@ class TestFailoverReason:
 
     def test_enum_members_exist(self):
         expected = {
-            "auth", "auth_permanent", "billing", "rate_limit",
+            "auth", "auth_permanent", "billing", "usage_limit_exhausted", "rate_limit",
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
@@ -1654,3 +1654,27 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
+class TestCodexUsageLimitExhausted:
+    def test_structured_codex_usage_limit_is_terminal(self):
+        e = MockAPIError(
+            "The usage limit has been reached",
+            status_code=429,
+            body={"error": {"type": "usage_limit_reached", "message": "The usage limit has been reached"}},
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.usage_limit_exhausted
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+
+    def test_transient_codex_429_remains_rate_limit(self):
+        e = MockAPIError(
+            "Too many requests, retry after 10 seconds",
+            status_code=429,
+            body={"error": {"type": "rate_limit_exceeded", "message": "retry after 10 seconds"}},
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True

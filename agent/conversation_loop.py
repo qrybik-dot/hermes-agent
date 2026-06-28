@@ -527,6 +527,52 @@ def run_conversation(
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
+        # External fallback isolation. A role-safe Z.ai entry may be used only
+        # with the current public request, never with prior Telegram history,
+        # memory, file output, or arbitrary tools from the primary agent.
+        if False and getattr(agent, "_fallback_isolate_context_pending", False):
+            safe_system_prompt = (
+                "Ты резервный ассистент для обработки только текущего публичного запроса. "
+                "Не делай выводов из отсутствующего контекста, не запрашивай личные данные, "
+                "секреты или учётные данные. Если данных недостаточно, скажи об этом прямо. "
+                "Используй только явно доступные публичные инструменты."
+            )
+            current_user_message = None
+            if 0 <= current_turn_user_idx < len(messages):
+                candidate = messages[current_turn_user_idx]
+                if isinstance(candidate, dict) and candidate.get("role") == "user":
+                    current_user_message = candidate
+            if current_user_message is None:
+                current_user_message = {"role": "user", "content": original_user_message}
+            else:
+                current_user_message["content"] = original_user_message
+            isolated_system = {"role": "system", "content": safe_system_prompt}
+            flushed_ids = getattr(agent, "_flushed_db_message_ids", None)
+            if isinstance(flushed_ids, set):
+                flushed_ids.add(id(isolated_system))
+            messages = [isolated_system, current_user_message]
+            current_turn_user_idx = 1
+            active_system_prompt = safe_system_prompt
+
+            allowed_tools = set(getattr(agent, "_fallback_isolated_allowed_tools", set()) or set())
+            agent.tools = [
+                tool for tool in (getattr(agent, "tools", None) or [])
+                if (tool.get("function") or {}).get("name") in allowed_tools
+            ]
+            agent.valid_tool_names = {
+                (tool.get("function") or {}).get("name")
+                for tool in agent.tools
+                if (tool.get("function") or {}).get("name")
+            }
+            agent._fallback_isolate_context_pending = False
+            agent._fallback_context_isolated = True
+            logger.info(
+                "External fallback context isolated: provider=%s model=%s allowed_tools=%s",
+                agent.provider,
+                agent.model,
+                sorted(agent.valid_tool_names),
+            )
+
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
             interrupted = True
@@ -881,6 +927,8 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
+            from agent.fallback_isolation import isolate_request_if_needed
+            api_messages, total_chars, approx_tokens, approx_request_tokens = isolate_request_if_needed(agent, api_messages)
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
@@ -1002,7 +1050,7 @@ def run_conversation(
                             api_request_id=api_request_id,
                             session_id=agent.session_id or "",
                             user_message=original_user_message,
-                            conversation_history=list(messages),
+                            conversation_history=(list(api_messages) if getattr(agent, "_fallback_context_isolated", False) else list(messages)),
                             platform=agent.platform or "",
                             model=agent.model,
                             provider=agent.provider,
@@ -2731,8 +2779,9 @@ def run_conversation(
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
+                    FailoverReason.usage_limit_exhausted,
                 }
-                if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
+                if is_rate_limited and agent._has_pending_fallback(reason=classified.reason):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
@@ -2746,6 +2795,10 @@ def run_conversation(
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        elif classified.reason == FailoverReason.usage_limit_exhausted:
+                            agent._buffer_status(
+                                "⚠️ Codex usage window exhausted — switching to approved fallback..."
                             )
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
@@ -3147,12 +3200,12 @@ def run_conversation(
                     # exists; otherwise "trying fallback..." is a lie and the
                     # session looks like it's recovering when it's about to
                     # abort silently (#35314, #17446).
-                    if agent._has_pending_fallback():
+                    if agent._has_pending_fallback(reason=classified.reason):
                         if classified.reason == FailoverReason.content_policy_blocked:
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -3291,9 +3344,9 @@ def run_conversation(
                         retry_count = 0
                         continue
                     # Try fallback before giving up entirely
-                    if agent._has_pending_fallback():
+                    if agent._has_pending_fallback(reason=classified.reason):
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -3908,6 +3961,9 @@ def run_conversation(
                     except Exception:
                         pass
 
+                agent._executed_tool_call_count = int(
+                    getattr(agent, "_executed_tool_call_count", 0)
+                ) + len(getattr(assistant_message, "tool_calls", None) or [])
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                 if agent._tool_guardrail_halt_decision is not None:

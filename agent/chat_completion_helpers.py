@@ -1042,6 +1042,48 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
 
 
+def _fallback_reason_name(reason: "FailoverReason | str | None") -> str:
+    if reason is None:
+        return ""
+    value = getattr(reason, "value", reason)
+    return str(value or "").strip().lower()
+
+
+def fallback_entry_allows_reason(entry: dict, reason: "FailoverReason | str | None") -> bool:
+    allowed = entry.get("reasons") or entry.get("only_reasons")
+    if not allowed:
+        return True
+    reason_name = _fallback_reason_name(reason)
+    if not reason_name:
+        return False
+    if isinstance(allowed, str):
+        allowed = [item.strip() for item in allowed.split(",") if item.strip()]
+    if not isinstance(allowed, (list, tuple, set)):
+        return False
+    normalized = {_fallback_reason_name(item) for item in allowed}
+    return reason_name in normalized
+
+
+def fallback_entry_runtime_allowed(
+    agent,
+    entry: dict,
+    reason: "FailoverReason | str | None" = None,
+) -> bool:
+    if not fallback_entry_allows_reason(entry, reason):
+        return False
+    if entry.get("only_before_tools") and int(
+        getattr(agent, "_executed_tool_call_count", 0) or 0
+    ) > 0:
+        return False
+    return True
+
+
+def has_pending_fallback(agent, reason: "FailoverReason | str | None" = None) -> bool:
+    chain = getattr(agent, "_fallback_chain", None) or []
+    index = getattr(agent, "_fallback_index", 0)
+    return any(fallback_entry_runtime_allowed(agent, entry, reason) for entry in chain[index:])
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1054,7 +1096,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
-    if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
+    chain = getattr(agent, "_fallback_chain", None) or []
+    start_index = getattr(agent, "_fallback_index", 0)
+    eligible_index = next(
+        (idx for idx in range(start_index, len(chain))
+         if fallback_entry_runtime_allowed(agent, chain[idx], reason)),
+        None,
+    )
+    if eligible_index is None:
+        return False
+    agent._fallback_index = eligible_index
+
+    if reason in {
+        FailoverReason.rate_limit,
+        FailoverReason.billing,
+        FailoverReason.usage_limit_exhausted,
+    }:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
         # source of the 429 so the cooldown should not be reset/extended.
@@ -1071,7 +1128,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
-        return agent._try_activate_fallback()  # skip invalid, try next
+        return agent._try_activate_fallback(reason=reason)  # skip invalid, try next
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
@@ -1086,7 +1143,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason=reason)
     if (
         fb_base_url_for_dedup
         and current_base_url
@@ -1097,7 +1154,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry base_url %s matches current backend",
             fb_base_url_for_dedup,
         )
-        return agent._try_activate_fallback()
+        return agent._try_activate_fallback(reason=reason)
 
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
@@ -1128,7 +1185,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             logger.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
-            return agent._try_activate_fallback()  # try next in chain
+            return agent._try_activate_fallback(reason=reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 
@@ -1180,6 +1237,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+        agent._fallback_isolate_context_pending = bool(fb.get("isolate_context"))
+        allowed_tools = fb.get("allowed_tools") or []
+        if isinstance(allowed_tools, str):
+            allowed_tools = [item.strip() for item in allowed_tools.split(",") if item.strip()]
+        agent._fallback_isolated_allowed_tools = set(allowed_tools) if isinstance(allowed_tools, (list, tuple, set)) else set()
 
         # Clear the credential pool when the fallback provider doesn't match
         # the pool's provider.  The pool was seeded for the primary provider;
@@ -1298,7 +1360,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         return True
     except Exception as e:
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback()  # try next in chain
+        return agent._try_activate_fallback(reason=reason)  # try next in chain
 
 
 
