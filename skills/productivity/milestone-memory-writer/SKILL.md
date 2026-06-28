@@ -148,7 +148,8 @@ If validation fails, move the proposal to staging review. Do not partially updat
 Promotion is allowed only when the user requested storage and validation passed.
 
 - Back up every affected vault file before replacement.
-- Preserve the existing vault owner, group, and mode.
+- Preserve the existing vault owner and group. Canonical Markdown files must not be executable; use the established file mode and destination ACLs.
+- Atomic promotion must reapply the destination directory ACLs because moving a staged file does not inherit them. Verify that both `hermes` and `hermes-backup` can read every promoted note, and that `hermes-promoter` retains write access where required.
 - Update no more than three canonical pages: project, system, and decisions.
 - Put only a summary and link in index pages.
 - Preserve unrelated text and existing frontmatter.
@@ -157,8 +158,8 @@ Promotion is allowed only when the user requested storage and validation passed.
 ### 6. Verify Storage and Sync
 
 - compare staged and vault checksums;
-- read the canonical file back;
-- confirm ownership and mode;
+- read the canonical file back as `hermes`;
+- confirm ownership, non-executable mode, ACLs, and readability as `hermes-backup`;
 - confirm Syncthing is active;
 - check folder and device state when available;
 - confirm the note can be found by filename or memory index.
