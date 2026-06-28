@@ -138,3 +138,4 @@ RELEASE_v*.md
 apps/desktop/demo/
 # Generated task artifacts; runlogs and documentation remain tracked
 .tasks/**/outputs/
+.patch-backups/
