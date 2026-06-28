@@ -456,3 +456,30 @@ class TestBaseAdapterClarifyFallback:
         assert "Free form?" in adapter.sent[0]
         # No numbered list — choices were empty
         assert "1." not in adapter.sent[0]
+
+
+
+@pytest.mark.asyncio
+async def test_stale_numeric_choice_reports_expired():
+    adapter = _make_adapter()
+    adapter._clarify_state["cidExpired"] = "sk-expired"
+    query = AsyncMock()
+    query.data = "cl:cidExpired:0"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.message.text = "Pick"
+    query.from_user = MagicMock()
+    query.from_user.id = "777"
+    query.from_user.first_name = "Tester"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+        await adapter._handle_callback_query(update, context)
+    assert "cidExpired" not in adapter._clarify_state
+    assert query.answer.call_count == 1
+    assert "expired" in query.answer.call_args.kwargs["text"].lower()
+    assert query.answer.call_args.kwargs["show_alert"] is True
+    assert "expired" in query.edit_message_text.call_args.kwargs["text"].lower()
