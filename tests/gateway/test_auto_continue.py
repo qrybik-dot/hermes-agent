@@ -195,3 +195,17 @@ class TestInterruptedReplayFiltering:
             {"role": "assistant", "content": "answer"},
             {"role": "user", "content": "third"},
         ]
+
+
+class TestSimpleNoToolsHistory:
+    def test_strips_tool_chains_and_caps_recent_plain_context(self):
+        from gateway.run import _build_simple_no_tools_history
+
+        history = [
+            {"role": "user", "content": "old task"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "function": {"name": "skill_view", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        ] + [{"role": "user" if i % 2 == 0 else "assistant", "content": str(i)} for i in range(20)]
+
+        filtered = _build_simple_no_tools_history(history, max_messages=4)
+        assert [item["content"] for item in filtered] == ["16", "17", "18", "19"]

@@ -713,6 +713,25 @@ def _build_gateway_agent_history(
     return agent_history, observed_context
 
 
+def _build_simple_no_tools_history(
+    agent_history: List[Dict[str, Any]],
+    *,
+    max_messages: int = 16,
+) -> List[Dict[str, Any]]:
+    """Keep recent plain-text context for simple routes with no tools."""
+    plain_history: List[Dict[str, Any]] = []
+    for msg in agent_history or []:
+        if msg.get("role") not in {"user", "assistant"}:
+            continue
+        if msg.get("tool_calls") or msg.get("tool_call_id"):
+            continue
+        content = msg.get("content")
+        if not content:
+            continue
+        plain_history.append({"role": msg["role"], "content": content})
+    return plain_history[-max(1, int(max_messages)) :]
+
+
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
     """Prepend observed Telegram context to the API-only current user turn."""
 
@@ -15286,6 +15305,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 history,
                 channel_prompt=channel_prompt,
             )
+            if _simple_no_tools:
+                _history_before_simple_filter = len(agent_history)
+                agent_history = _build_simple_no_tools_history(agent_history)
+                if len(agent_history) != _history_before_simple_filter:
+                    logger.info(
+                        "simple/no_mcp history filtered: %s -> %s messages",
+                        _history_before_simple_filter, len(agent_history),
+                    )
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
