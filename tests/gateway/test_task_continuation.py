@@ -8,7 +8,11 @@ from gateway.task_continuation import (
     is_progress_only,
 )
 from gateway.task_router import route_turn
-from gateway.task_runtime import prepare_task_turn, task_reported_non_success
+from gateway.task_runtime import (
+    calendar_completion_evidence_missing,
+    prepare_task_turn,
+    task_reported_non_success,
+)
 from tools.session_search_tool import (
     _consume_search_budget,
     reset_turn_search_budget,
@@ -225,6 +229,52 @@ def test_calendar_missing_image_and_datetime_blocks_before_model(tmp_path, monke
     assert store.get(task.task_id).status == "blocked"
 
 
+def test_output_screenshot_artifacts_do_not_require_vision_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    task = store.create(
+        task_id="facefeed2026",
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="HTML reporting smoke",
+        original_request=(
+            "Измени production Report Finalizer renderer. После рендеринга HTML создай "
+            "desktop screenshot и mobile screenshot как выходные PNG артефакты через браузер. "
+            "Входное изображение и vision-контекст не требуются."
+        ),
+        role="server_debug",
+        toolsets=["terminal", "file", "skills"],
+        required_toolsets=["terminal"],
+        requires_execution=True,
+        status="incomplete",
+    )
+
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("PLAN SKILL", list(names), []),
+    )
+    prepared = prepare_task_turn(
+        message="Продолжить facefeed2026",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-html-reporting",
+        user_config={"agent": {}},
+        platform_toolsets=["file", "skills", "terminal", "no_mcp"],
+    )
+
+    assert prepared.continued is True
+    assert prepared.task is not None
+    assert prepared.task.task_id == task.task_id
+    assert prepared.early_response is None
+    assert prepared.route is not None
+    assert "terminal" in prepared.route.toolsets
+
+
 def test_completed_task_replays_saved_result_without_model(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / ".hermes"
@@ -408,3 +458,101 @@ def test_opaque_followup_does_not_hijack_new_question(tmp_path):
         requires_execution=True, status="incomplete",
     )
     assert store.resolve("What is the weather tomorrow?", "telegram", "1").kind == "none"
+
+
+
+def test_technical_events_do_not_activate_calendar_verifier():
+    assert calendar_completion_evidence_missing(
+        "Исправь progress events и status events для live-status, события не календарные",
+        "READY\nСобытия runtime обработаны, календарь не изменялся",
+        route_toolsets=["terminal", "file"],
+        route_skills=[],
+    ) == ()
+
+
+def test_real_calendar_write_still_requires_evidence():
+    missing = calendar_completion_evidence_missing(
+        "Создай событие в календаре завтра в 18:30: созвон с Иваном",
+        "READY\nСобытие создано",
+        route_toolsets=["google-calendar"],
+        route_skills=["google-workspace"],
+        metadata={"execution_contract": {"type": "calendar_write"}},
+    )
+    assert "event ID или штатная ссылка" in missing
+    assert "подтверждение read-back" in missing
+
+
+def test_continuation_uses_checkpoint_and_does_not_repeat_audit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    task = store.create(
+        task_id="feedcafe2026",
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="Gateway regression fix",
+        original_request="Проверь git status, затем исправь runtime и проверь DoD",
+        role="server_debug",
+        toolsets=["terminal", "file", "no_mcp"],
+        required_toolsets=["terminal"],
+        requires_execution=True,
+        status="incomplete",
+        metadata={"checkpoint": "audit done; changed gateway/run.py; tests pending"},
+    )
+
+    prepared = prepare_task_turn(
+        message="Продолжить feedcafe2026",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-cont",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "no_mcp"],
+    )
+
+    assert prepared.continued is True
+    assert prepared.task.task_id == task.task_id
+    assert "Saved checkpoint" in prepared.message
+    assert "audit done" in prepared.message
+    assert "Do not repeat completed audit" in prepared.message
+    assert "Reserve the last 5 iterations" in prepared.route.operational_context
+
+
+def test_after_two_budget_exhaustions_continuation_escalates_without_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    store.create(
+        task_id="deadbeef2026",
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="Budget exhausted task",
+        original_request="Исправь gateway regression",
+        role="server_debug",
+        toolsets=["terminal", "file", "no_mcp"],
+        required_toolsets=["terminal"],
+        requires_execution=True,
+        status="incomplete",
+        metadata={"budget_exhaustions": 2, "checkpoint": "tests still failing"},
+    )
+
+    prepared = prepare_task_turn(
+        message="Продолжить deadbeef2026",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-limit",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "no_mcp"],
+    )
+
+    assert prepared.early_response is not None
+    assert prepared.early_response["model"] == "deterministic"
+    assert prepared.early_response["final_response"].startswith("BLOCKED")
+    assert "двух исчерпаний" in prepared.early_response["final_response"]

@@ -4148,6 +4148,12 @@ class BasePlatformAdapter(ABC):
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
+                message_id = getattr(result, "message_id", None)
+                if message_id:
+                    try:
+                        setattr(interrupt_event, "_hermes_last_delivery_message_id", str(message_id))
+                    except Exception:
+                        pass
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).

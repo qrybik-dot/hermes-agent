@@ -146,3 +146,22 @@ def test_progress_not_100_without_completed_dod():
 def test_progress_not_80_90_before_critical_tests_start():
     stages = ["accepted", "audit", "prepared", "applied", "tests", "delivery"]
     assert completed_stage_percent(stages, stages[:5], tests_started=False) == 60
+
+
+
+def test_waiting_for_non_streaming_status_does_not_surface():
+    assert not should_surface_telegram_interim(
+        "waiting for non-streaming API response",
+        task_status_enabled=True,
+    )
+    assert not should_surface_telegram_interim(
+        "waiting for non-streaming API response",
+        task_status_enabled=False,
+    )
+
+
+def test_incomplete_final_status_never_reaches_100_percent():
+    state = TelegramTaskStatusState("demo")
+    rendered = state.render(stage="delivery", verdict="INCOMPLETE")
+    assert "100%" not in rendered
+    assert "90%" in rendered or "80%" in rendered or "60%" in rendered

@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.report_finalizer_renderer import render_task_report_html
 
 
 def finalize_turn(
@@ -354,6 +355,31 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+
+    # Deterministic production HTML report.  This is deliberately outside the
+    # model loop so HTML reporting does not consume tool/API budget and cannot
+    # be misrouted as image generation or vision analysis.  Browser screenshots
+    # are downstream output artifacts created from this file, not required
+    # inputs for the task.
+    if final_response and not interrupted:
+        try:
+            _html_report = render_task_report_html(
+                final_response=final_response,
+                completed=completed,
+                failed=failed,
+                session_id=agent.session_id,
+                turn_exit_reason=_turn_exit_reason,
+                model=agent.model,
+            )
+            result["html_report_path"] = str(_html_report.path)
+            result["html_report_status"] = _html_report.status
+            result["final_delivery_owner"] = "gateway_runtime"
+            result["finalization_generation"] = "gateway-runtime-v1"
+            result["document_delivery_generation"] = "task-report-html-v1"
+        except Exception as exc:
+            logger.warning("task report HTML rendering failed: %s", exc)
+            result["html_report_error"] = str(exc)
+
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

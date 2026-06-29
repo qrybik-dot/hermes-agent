@@ -52,14 +52,28 @@ _IMAGE_CONTEXT_RE = re.compile(
     r"\[The user sent an image|vision_analyze|image_url:|media_urls?=|attachment",
     re.I,
 )
+_OUTPUT_SCREENSHOT_ARTIFACT_RE = re.compile(
+    r"\b(?:сдела(?:й|ть)|созда(?:й|ть)|сгенерир(?:уй|овать)|получ(?:и|ить)|"
+    r"рендер(?:и|ить)|capture|take|create|generate)\w*\b.{0,120}"
+    r"(?:скриншот|screenshot)\w*|"
+    r"(?:скриншот|screenshot)\w*.{0,120}\b(?:выходн|артефакт|artifact|output|PNG|browser|браузер)\w*",
+    re.I | re.S,
+)
 _CALENDAR_CREATE_RE = re.compile(
     r"\b(?:созда(?:й|ть)|добав(?:ь|ить)|запиш(?:и|ите|ем)|записать|постав(?:ь|ить)|"
-    r"назнач(?:ь|ить)|запланиру(?:й|йте|ем|ть))\w*\b.*"
-    r"\b(?:календар|событи|встреч|напоминан)\w*\b|"
-    r"\b(?:календар|событи|встреч|напоминан)\w*\b.*"
-    r"\b(?:созда(?:й|ть)|добав(?:ь|ить)|запиш(?:и|ите|ем)|записать|постав(?:ь|ить)|"
-    r"назнач(?:ь|ить)|запланиру(?:й|йте|ем|ть))\w*\b",
-    re.I | re.S,
+    r"назнач(?:ь|ить)|запланиру(?:й|йте|ем|ть))\w*\b[^\n.!?;]{0,80}"
+    r"\b(?:календар|встреч|созвон|напоминан)\w*\b|"
+    r"\b(?:в\s+календар\w*|google\s+calendar)\b[^\n.!?;]{0,80}"
+    r"\b(?:событи|встреч|созвон|напоминан)\w*\b|"
+    r"\b(?:create|add|schedule)\b[^\n.!?;]{0,80}"
+    r"\b(?:calendar\s+event|google\s+calendar|meeting|call|reminder)\b",
+    re.I,
+)
+_TECHNICAL_EVENT_CONTEXT_RE = re.compile(
+    r"\b(?:live-status|progress\s+events?|status\s+events?|runtime\s+events?|delivery\s+events?|"
+    r"intermediate\s+events?|промежуточн\w*\s+событи\w*|обработчик\w*\s+событи\w*|"
+    r"событи\w*\s+обработчик\w*|тест\w*|handler|webhook|event\s+handler)\b",
+    re.I,
 )
 _DATE_RE = re.compile(
     r"\b(?:сегодня|завтра|послезавтра|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|"
@@ -96,11 +110,62 @@ _CALENDAR_READBACK_RE = re.compile(
 )
 
 
+def _route_has_calendar_capability(
+    route_toolsets: Iterable[str] | None = None,
+    route_skills: Iterable[str] | None = None,
+) -> bool:
+    values = [*(route_toolsets or ()), *(route_skills or ())]
+    return any("calendar" in str(value).lower() or "google-workspace" in str(value).lower() for value in values)
+
+
+def _metadata_requests_calendar_write(metadata: dict | None) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    contract = metadata.get("execution_contract")
+    if isinstance(contract, dict) and contract.get("type") == "calendar_write":
+        return True
+    return metadata.get("execution_contract_type") == "calendar_write" or metadata.get("operation_type") == "calendar_write"
+
+
+def _successful_calendar_write_tool_used(tool_calls: Iterable[object] | None = None) -> bool:
+    if tool_calls is None:
+        return False
+    write_verbs = ("create", "add", "schedule", "update")
+    for item in tool_calls:
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("tool") or item.get("tool_name") or "").lower()
+            if item.get("success") is False or item.get("error"):
+                continue
+        else:
+            name = str(item).lower()
+        if "calendar" in name and any(verb in name for verb in write_verbs):
+            return True
+    return False
+
+
+def _is_calendar_write_request(text: str) -> bool:
+    value = text or ""
+    if not value or _TECHNICAL_EVENT_CONTEXT_RE.search(value):
+        return False
+    return bool(_CALENDAR_CREATE_RE.search(value))
+
+
 def calendar_completion_evidence_missing(
     original_request: str,
     final_response: str,
+    *,
+    route_toolsets: Iterable[str] | None = None,
+    route_skills: Iterable[str] | None = None,
+    metadata: dict | None = None,
+    tool_calls: Iterable[object] | None = None,
 ) -> tuple[str, ...]:
-    if not _CALENDAR_CREATE_RE.search(original_request or ""):
+    if not _is_calendar_write_request(original_request or ""):
+        return ()
+    if not (
+        _route_has_calendar_capability(route_toolsets, route_skills)
+        or _metadata_requests_calendar_write(metadata)
+        or _successful_calendar_write_tool_used(tool_calls)
+    ):
         return ()
     response = final_response or ""
     checks = (
@@ -117,9 +182,13 @@ def calendar_completion_evidence_missing(
 def _deterministic_input_preflight(text: str, route: TaskRoute) -> tuple[list[str], str] | None:
     value = text or ""
     missing: list[str] = []
-    if _IMAGE_DEPENDENCY_RE.search(value) and not _IMAGE_CONTEXT_RE.search(value):
+    if (
+        _IMAGE_DEPENDENCY_RE.search(value)
+        and not _IMAGE_CONTEXT_RE.search(value)
+        and not _OUTPUT_SCREENSHOT_ARTIFACT_RE.search(value)
+    ):
         missing.append("доступное изображение или vision-контекст")
-    if "google-workspace" in route.skill_names and _CALENDAR_CREATE_RE.search(value):
+    if "google-workspace" in route.skill_names and _is_calendar_write_request(value):
         if not _DATE_RE.search(value):
             missing.append("конкретная дата события")
         if not _TIME_RE.search(value):
@@ -237,6 +306,17 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     task = decision.task if decision.kind == "selected" else None
     continued = task is not None
+    if task is not None and int(task.metadata.get("budget_exhaustions", 0) or 0) >= 2:
+        return PreparedTaskTurn(
+            original, None, task,
+            early_response(
+                "BLOCKED\nАвтоматические продолжения остановлены после двух исчерпаний лимита шагов. "
+                "Нужна ручная эскалация с новым планом или сужением объёма",
+                status="blocked", task_id=task.task_id, role=task.role,
+                reason="budget exhaustion escalation",
+            ),
+            True,
+        )
     if task is not None and task.status == "completed":
         saved_result = task.metadata.get("final_response")
         if isinstance(saved_result, str) and saved_result.strip():
@@ -260,10 +340,14 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         )
     if task is not None:
         message = (
-            "[System continuation: resume the saved unfinished task. Preserve its role, "
-            "tools, safety mode and completion contract. Do not interpret the short "
-            "continuation phrase as a new task.]\n\nSaved task:\n"
-            + task.original_request + "\n\nContinuation message:\n" + original
+            "[System continuation: resume the saved unfinished task from its saved checkpoint. Preserve its role, "
+            "tools, safety mode and completion contract. Do not repeat completed audit or discovery; "
+            "continue from metadata/checkpoint and spend the last 5 iterations only on tests, DoD, checkpoint, and final delivery. "
+            "Do not interpret the short continuation phrase as a new task.]\n\nSaved task:\n"
+            + task.original_request
+            + "\n\nSaved checkpoint:\n"
+            + str(task.metadata.get("checkpoint") or task.metadata.get("final_response") or task.last_error or "not recorded")[:1800]
+            + "\n\nContinuation message:\n" + original
         )
 
     if is_pause_request(original):
@@ -293,7 +377,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             max_iterations=route.max_iterations,
             skill_names=route.skill_names,
             skip_context_files=route.skip_context_files,
-            operational_context=route.operational_context,
+            operational_context=(
+                route.operational_context
+                + "\n\nIteration budget policy: the route limit is fixed; do not increase it. "
+                + "Reserve the last 5 iterations for tests, Definition of Done checks, checkpoint persistence, and final delivery."
+            ).strip(),
         )
 
     preflight = _deterministic_input_preflight(base_text, route)

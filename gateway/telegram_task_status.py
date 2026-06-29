@@ -9,8 +9,8 @@ from typing import Iterable
 
 
 _TECHNICAL_EVENT_RE = re.compile(
-    r"receiving stream response|pytest|\buv\b|venv|delegate_task|reviewer|subagent|"
-    r"tool trace|tool\.started|tool\.completed|iteration budget|self-improvement|"
+    r"receiving stream response|waiting for non-streaming API response|pytest|\buv\b|venv|delegate_task|reviewer|subagent|"
+    r"tool trace|tool\.started|tool\.completed|iteration budget|internal hypothes|self-improvement|"
     r"search_files|read_file|terminal|patch|write_file",
     re.I,
 )
@@ -33,7 +33,7 @@ _STAGE_PCT = {
     "prepared": 40,
     "applied": 60,
     "tests": 80,
-    "delivery": 100,
+    "delivery": 90,
     "done": 100,
 }
 
@@ -168,4 +168,4 @@ def completed_stage_percent(stages: Iterable[str], completed: Iterable[str], *, 
         return min(percent, 60)
     if percent >= 100 and len(done) < len(ordered):
         return 80 if tests_started else 60
-    return percent
+    return min(percent, 90) if len(done) < len(ordered) else percent

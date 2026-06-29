@@ -9406,9 +9406,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
-            # Runtime is the single owner of user-visible final text delivery.
-            # The task finalizer may generate an HTML artifact, but it must not
-            # send a second text final for the same task/verdict/generation.
             _final_task_id = str(
                 agent_result.get("task_id")
                 or agent_result.get("session_id")
@@ -9416,6 +9413,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 or session_key
                 or ""
             )
+            _task_delivery_store = None
+            _task_delivery_record = None
+            if _final_task_id:
+                try:
+                    from gateway.task_continuation import TaskStateStore as _TaskStateStore
+                    _task_delivery_store = _TaskStateStore()
+                    _task_delivery_record = _task_delivery_store.get(_final_task_id)
+                except Exception as _delivery_state_exc:
+                    logger.debug("task delivery state unavailable: %s", _delivery_state_exc)
+
+            # Runtime is the single owner of user-visible final text delivery.
+            # The task finalizer may generate an HTML artifact, but it must not
+            # send a second text final for the same task/verdict/generation.
             if response and _final_task_id and not _intentional_silence:
                 _final_verdict = verdict_from_text(
                     response,
@@ -9427,7 +9437,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or agent_result.get("html_report_status")
                     or "gateway-runtime-v1"
                 )
-                if not _FINAL_DELIVERY_DEDUPER.mark_once(
+                _delivery_meta = (_task_delivery_record.metadata if _task_delivery_record is not None else {}) or {}
+                _text_delivery = _delivery_meta.get("final_text_delivery") if isinstance(_delivery_meta, dict) else None
+                _text_already_delivered = bool(
+                    isinstance(_text_delivery, dict)
+                    and _text_delivery.get("verdict") == _final_verdict
+                    and _text_delivery.get("generation") == _delivery_generation
+                )
+                if _text_already_delivered or not _FINAL_DELIVERY_DEDUPER.mark_once(
                     task_id=_final_task_id,
                     verdict=_final_verdict,
                     delivery_type="text",
@@ -9440,6 +9457,76 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _delivery_generation,
                     )
                     response = ""
+                elif _task_delivery_store is not None and _task_delivery_record is not None:
+                    _task_delivery_store.merge_metadata(
+                        _final_task_id,
+                        final_text_delivery={
+                            "verdict": _final_verdict,
+                            "generation": _delivery_generation,
+                            "queued_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                        },
+                    )
+
+                _html_report_path = str(agent_result.get("html_report_path") or "")
+                _document_generation = str(agent_result.get("document_delivery_generation") or "task-report-html-v1")
+                _document_delivery = _delivery_meta.get("html_document_delivery") if isinstance(_delivery_meta, dict) else None
+                _document_already_delivered = bool(
+                    isinstance(_document_delivery, dict)
+                    and _document_delivery.get("generation") == _document_generation
+                    and _document_delivery.get("path") == _html_report_path
+                    and _document_delivery.get("message_id")
+                )
+                if (
+                    response
+                    and _html_report_path
+                    and os.path.exists(_html_report_path)
+                    and not _document_already_delivered
+                    and _FINAL_DELIVERY_DEDUPER.mark_once(
+                        task_id=_final_task_id,
+                        verdict=_final_verdict,
+                        delivery_type="document",
+                        generation=_document_generation,
+                    )
+                ):
+                    _html_adapter = self.adapters.get(source.platform)
+                    if _html_adapter and hasattr(_html_adapter, "send_document") and session_key:
+                        async def _deliver_task_html_report() -> None:
+                            _thread_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                            _doc_result = await _html_adapter.send_document(
+                                chat_id=source.chat_id,
+                                file_path=_html_report_path,
+                                caption="HTML-отчёт по задаче",
+                                file_name=os.path.basename(_html_report_path),
+                                reply_to=self._reply_anchor_for_event(event),
+                                metadata=_thread_meta,
+                            )
+                            _active_event = getattr(_html_adapter, "_active_sessions", {}).get(session_key)
+                            _text_message_id = getattr(_active_event, "_hermes_last_delivery_message_id", None)
+                            if _task_delivery_store is not None and _task_delivery_record is not None:
+                                _task_delivery_store.merge_metadata(
+                                    _final_task_id,
+                                    final_text_delivery={
+                                        "verdict": _final_verdict,
+                                        "generation": _delivery_generation,
+                                        "message_id": str(_text_message_id or ""),
+                                        "delivered_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                                    },
+                                    html_document_delivery={
+                                        "verdict": _final_verdict,
+                                        "generation": _document_generation,
+                                        "path": _html_report_path,
+                                        "message_id": str(getattr(_doc_result, "message_id", "") or ""),
+                                        "delivered_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                                        "success": bool(getattr(_doc_result, "success", False)),
+                                        "error": str(getattr(_doc_result, "error", "") or "")[:300],
+                                    },
+                                )
+                        if getattr(type(_html_adapter), "register_post_delivery_callback", None) is not None:
+                            _html_adapter.register_post_delivery_callback(
+                                session_key,
+                                _deliver_task_html_report,
+                                generation=run_generation,
+                            )
 
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
@@ -15520,6 +15607,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _budget_exhausted or _no_execution_tools or _progress_without_tools:
                     _reject_status = "incomplete"
+                    _budget_exhaustions = int((_active_task.metadata or {}).get("budget_exhaustions", 0) or 0)
+                    if _budget_exhausted:
+                        _budget_exhaustions += 1
                     if _provider_failed_before_tools:
                         _reject_reason = "provider_error_before_tools"
                         _reject_status = "blocked"
@@ -15544,6 +15634,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _task_store.merge_metadata(
                         _active_task.task_id,
                         final_response=str(final_response or ""),
+                        checkpoint=str(final_response or ""),
+                        checkpoint_reason=_reject_reason,
+                        budget_exhaustions=_budget_exhaustions,
                         tool_call_count=_task_tool_calls,
                         api_calls=int(result.get("api_calls", 0) or 0),
                         turn_exit_reason=_turn_exit_reason,
@@ -15600,6 +15693,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _evidence_missing = calendar_completion_evidence_missing(
                             _active_task.original_request,
                             str(final_response),
+                            route_toolsets=routed_toolsets,
+                            route_skills=getattr(_task_route, "skill_names", ()),
+                            metadata=_active_task.metadata,
+                            tool_calls=result.get("tool_calls") or result.get("tools"),
                         )
                         if _evidence_missing:
                             final_response = (
@@ -15823,6 +15920,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+            if final_response and _active_task is not None:
+                try:
+                    from agent.report_finalizer_renderer import render_task_report_html as _render_task_report_html
+                    _html_report = _render_task_report_html(
+                        final_response=str(final_response),
+                        completed=bool(result_holder[0].get("completed")) if result_holder[0] else None,
+                        failed=bool(result_holder[0].get("failed")) if result_holder[0] else None,
+                        session_id=effective_session_id,
+                        turn_exit_reason=str(result.get("turn_exit_reason") or ""),
+                        model=str(_resolved_model or ""),
+                    )
+                    result["html_report_path"] = str(_html_report.path)
+                    result["html_report_status"] = _html_report.status
+                    result["final_delivery_owner"] = "gateway_runtime"
+                    result["finalization_generation"] = "gateway-runtime-v1"
+                    result["document_delivery_generation"] = "task-report-html-v1"
+                except Exception as _html_exc:
+                    logger.warning("task report HTML rendering failed after gateway validation: %s", _html_exc)
+                    result["html_report_error"] = str(_html_exc)
+
             if _agent_returned_at is not None:
                 request_metrics["agent_post_ms"] = int(
                     (time.monotonic() - _agent_returned_at) * 1000
@@ -15864,6 +15981,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
+                "html_report_path": result.get("html_report_path"),
+                "html_report_status": result.get("html_report_status"),
+                "final_delivery_owner": result.get("final_delivery_owner"),
+                "finalization_generation": result.get("finalization_generation"),
+                "document_delivery_generation": result.get("document_delivery_generation"),
             }
         
         # Start progress message sender if enabled
