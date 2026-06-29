@@ -76,6 +76,10 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _FINAL_DELIVERY_DEDUPER = FinalDeliveryDeduper()
 
+
+def _final_delivery_task_id(agent_result: dict[str, Any]) -> str:
+    return str(agent_result.get("task_id") or "")
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -9406,13 +9410,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
-            _final_task_id = str(
-                agent_result.get("task_id")
-                or agent_result.get("session_id")
-                or session_entry.session_id
-                or session_key
-                or ""
-            )
+            _final_task_id = _final_delivery_task_id(agent_result)
             _task_delivery_store = None
             _task_delivery_record = None
             if _final_task_id:

@@ -6,6 +6,7 @@ registration API chains them rather than clobbering. Per-callback
 exceptions are swallowed so one bad callback can't sabotage the others.
 Stale-generation registrations are rejected.
 """
+import asyncio
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -44,7 +45,7 @@ class TestPostDeliveryCallbackChaining:
         adapter.register_post_delivery_callback("s", lambda: fired.append("A"))
         adapter.register_post_delivery_callback("s", lambda: fired.append("B"))
         cb = adapter.pop_post_delivery_callback("s")
-        cb()
+        asyncio.run(cb())
         assert fired == ["A", "B"]
 
     def test_three_callbacks_chain_in_order(self, adapter):
@@ -55,7 +56,7 @@ class TestPostDeliveryCallbackChaining:
                 "s", lambda x=label: fired.append(x)
             )
         cb = adapter.pop_post_delivery_callback("s")
-        cb()
+        asyncio.run(cb())
         assert fired == ["A", "B", "C"]
 
     def test_exception_in_one_callback_does_not_block_next(self, adapter):
@@ -67,7 +68,7 @@ class TestPostDeliveryCallbackChaining:
         adapter.register_post_delivery_callback("s", boom)
         adapter.register_post_delivery_callback("s", lambda: fired.append("survived"))
         cb = adapter.pop_post_delivery_callback("s")
-        cb()
+        asyncio.run(cb())
         assert fired == ["survived"]
 
     def test_same_generation_chains(self, adapter):
@@ -79,7 +80,7 @@ class TestPostDeliveryCallbackChaining:
             "s", lambda: fired.append("B"), generation=5
         )
         cb = adapter.pop_post_delivery_callback("s", generation=5)
-        cb()
+        asyncio.run(cb())
         assert fired == ["A", "B"]
 
     def test_stale_generation_registration_rejected(self, adapter):
@@ -111,3 +112,15 @@ class TestPostDeliveryCallbackChaining:
     def test_non_callable_is_noop(self, adapter):
         adapter.register_post_delivery_callback("s", "not-callable")  # type: ignore[arg-type]
         assert adapter._post_delivery_callbacks == {}
+
+    def test_async_callback_in_chain_is_awaited(self, adapter):
+        fired = []
+
+        async def deliver_html():
+            fired.append("html")
+
+        adapter.register_post_delivery_callback("s", lambda: fired.append("text"))
+        adapter.register_post_delivery_callback("s", deliver_html)
+        cb = adapter.pop_post_delivery_callback("s")
+        asyncio.run(cb())
+        assert fired == ["text", "html"]

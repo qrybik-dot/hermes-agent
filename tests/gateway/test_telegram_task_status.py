@@ -1,6 +1,7 @@
 """Regression tests for Telegram long-task live-status and final delivery."""
 
 import asyncio
+from gateway.run import _final_delivery_task_id
 
 from gateway.platforms.base import SendResult
 from gateway.telegram_task_status import (
@@ -165,3 +166,11 @@ def test_incomplete_final_status_never_reaches_100_percent():
     rendered = state.render(stage="delivery", verdict="INCOMPLETE")
     assert "100%" not in rendered
     assert "90%" in rendered or "80%" in rendered or "60%" in rendered
+
+
+
+def test_ordinary_turn_has_no_final_delivery_task_key():
+    assert _final_delivery_task_id({"task_id": None, "session_id": "same-session"}) == ""
+
+def test_managed_task_has_final_delivery_task_key():
+    assert _final_delivery_task_id({"task_id": "task-123", "session_id": "same-session"}) == "task-123"
