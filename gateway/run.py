@@ -82,16 +82,44 @@ def _final_delivery_task_id(agent_result: dict[str, Any]) -> str:
 
 
 def _text_only_turn_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    technical_boundary = -1
+    for index, message in enumerate(history):
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if (
+            message.get("role") in {"tool", "function"}
+            or bool(message.get("tool_calls"))
+            or (
+                message.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith(
+                    "You've reached the maximum number of tool-calling iterations allowed."
+                )
+            )
+        ):
+            technical_boundary = index
+
+    if technical_boundary < 0:
+        return [message.copy() for message in history if isinstance(message, dict)]
+
     projected = []
-    for message in history:
-        if not isinstance(message, dict) or message.get("role") in {"tool", "function"}:
+    for message in history[technical_boundary + 1:]:
+        if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
             continue
         clean = message.copy()
         clean.pop("tool_calls", None)
         clean.pop("tool_call_id", None)
-        if clean.get("role") == "assistant" and not clean.get("content"):
+        content = clean.get("content")
+        if content in (None, "", []):
             continue
-        projected.append(clean)
+        if projected and projected[-1].get("role") == clean.get("role"):
+            projected[-1] = clean
+        else:
+            projected.append(clean)
+
+    while projected and projected[-1].get("role") == "user":
+        projected.pop()
     return projected
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
