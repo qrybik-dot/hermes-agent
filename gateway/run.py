@@ -81,47 +81,6 @@ def _final_delivery_task_id(agent_result: dict[str, Any]) -> str:
     return str(agent_result.get("task_id") or "")
 
 
-def _text_only_turn_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    technical_boundary = -1
-    for index, message in enumerate(history):
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        if (
-            message.get("role") in {"tool", "function"}
-            or bool(message.get("tool_calls"))
-            or (
-                message.get("role") == "user"
-                and isinstance(content, str)
-                and content.startswith(
-                    "You've reached the maximum number of tool-calling iterations allowed."
-                )
-            )
-        ):
-            technical_boundary = index
-
-    if technical_boundary < 0:
-        return [message.copy() for message in history if isinstance(message, dict)]
-
-    projected = []
-    for message in history[technical_boundary + 1:]:
-        if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
-            continue
-        clean = message.copy()
-        clean.pop("tool_calls", None)
-        clean.pop("tool_call_id", None)
-        content = clean.get("content")
-        if content in (None, "", []):
-            continue
-        if projected and projected[-1].get("role") == clean.get("role"):
-            projected[-1] = clean
-        else:
-            projected.append(clean)
-
-    while projected and projected[-1].get("role") == "user":
-        projected.pop()
-    return projected
-
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -760,17 +719,50 @@ def _build_simple_no_tools_history(
     *,
     max_messages: int = 16,
 ) -> List[Dict[str, Any]]:
-    """Keep recent plain-text context for simple routes with no tools."""
+    """Keep a clean text tail for simple routes without execution tools.
+
+    Historical tool protocol is a semantic boundary: text before the last
+    tool/tool-call belongs to an older technical task and must not steer a new
+    greeting or other short ordinary message. The stored transcript is not
+    modified; this projection is API-only.
+    """
+    technical_boundary = -1
+    for index, msg in enumerate(agent_history or []):
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if (
+            msg.get("role") in {"tool", "function"}
+            or bool(msg.get("tool_calls"))
+            or bool(msg.get("tool_call_id"))
+            or (
+                msg.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith(
+                    "You've reached the maximum number of tool-calling iterations allowed."
+                )
+            )
+        ):
+            technical_boundary = index
+
+    source = (agent_history or [])[technical_boundary + 1:]
     plain_history: List[Dict[str, Any]] = []
-    for msg in agent_history or []:
-        if msg.get("role") not in {"user", "assistant"}:
+    for msg in source:
+        if not isinstance(msg, dict) or msg.get("role") not in {"user", "assistant"}:
             continue
         if msg.get("tool_calls") or msg.get("tool_call_id"):
             continue
         content = msg.get("content")
-        if not content:
+        if content in (None, "", []):
             continue
-        plain_history.append({"role": msg["role"], "content": content})
+        clean = {"role": msg["role"], "content": content}
+        if plain_history and plain_history[-1]["role"] == clean["role"]:
+            plain_history[-1] = clean
+        else:
+            plain_history.append(clean)
+
+    while plain_history and plain_history[-1]["role"] == "user":
+        plain_history.pop()
     return plain_history[-max(1, int(max_messages)) :]
 
 
@@ -15607,17 +15599,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _run_message,
                     observed_group_context,
                 )
-                _turn_history = agent_history
-                if not getattr(agent, "valid_tool_names", set()) and agent_history:
-                    _turn_history = _text_only_turn_history(agent_history)
-                    if len(_turn_history) != len(agent_history):
-                        logger.info(
-                            "No-tool turn: projected history from %s to %s text messages",
-                            len(agent_history),
-                            len(_turn_history),
-                        )
                 _conversation_kwargs = {
-                    "conversation_history": _turn_history,
+                    "conversation_history": agent_history,
                     "task_id": session_id,
                 }
                 if _persist_user_message_override is not None:
@@ -15875,7 +15858,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
             effective_session_id = agent_session_id
-            _effective_history_offset = 0 if _session_was_split else len(_turn_history)
+            _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
             if not final_response:
                 if _agent_returned_at is not None:
@@ -15926,7 +15909,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Scope the scan to THIS turn's tool results only. ``agent_history``
             # was passed into run_conversation as ``conversation_history``, so the
             # agent's returned ``messages`` list is ``agent_history`` followed by
-            # the messages produced this turn. Slicing at ``len(_turn_history)``
+            # the messages produced this turn. Slicing at ``len(agent_history)``
             # isolates the current turn precisely, so a stale MEDIA: path emitted
             # by a tool several turns earlier (still present in the full message
             # list) can never leak onto a later text-only reply. (Fixes #34608)
@@ -15939,7 +15922,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if "MEDIA:" not in final_response:
                 media_tags, has_voice_directive = _collect_auto_append_media_tags(
                     result.get("messages", []),
-                    history_offset=len(_turn_history),
+                    history_offset=len(agent_history),
                     history_media_paths=_history_media_paths,
                 )
 
