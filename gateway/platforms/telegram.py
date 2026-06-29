@@ -2578,6 +2578,11 @@ class TelegramAdapter(BasePlatformAdapter):
             result = await self.edit_message(
                 chat_id, cached_id, content, finalize=True, metadata=metadata,
             )
+            if not result.success and getattr(result, "retryable", False):
+                logger.info("[%s] Retrying transient status edit failure for %s", self.name, key)
+                result = await self.edit_message(
+                    chat_id, cached_id, content, finalize=True, metadata=metadata,
+                )
             if result.success:
                 if result.message_id:
                     self._status_message_ids[key] = str(result.message_id)

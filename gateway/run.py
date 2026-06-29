@@ -57,6 +57,12 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.telegram_task_status import (
+    FinalDeliveryDeduper,
+    TelegramTaskStatusState,
+    should_surface_telegram_interim,
+    verdict_from_text,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -68,6 +74,7 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_FINAL_DELIVERY_DEDUPER = FinalDeliveryDeduper()
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -9399,6 +9406,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
+            # Runtime is the single owner of user-visible final text delivery.
+            # The task finalizer may generate an HTML artifact, but it must not
+            # send a second text final for the same task/verdict/generation.
+            _final_task_id = str(
+                agent_result.get("task_id")
+                or agent_result.get("session_id")
+                or session_entry.session_id
+                or session_key
+                or ""
+            )
+            if response and _final_task_id and not _intentional_silence:
+                _final_verdict = verdict_from_text(
+                    response,
+                    failed=bool(agent_result.get("failed")),
+                    partial=bool(agent_result.get("partial")),
+                )
+                _delivery_generation = str(
+                    agent_result.get("finalization_generation")
+                    or agent_result.get("html_report_status")
+                    or "gateway-runtime-v1"
+                )
+                if not _FINAL_DELIVERY_DEDUPER.mark_once(
+                    task_id=_final_task_id,
+                    verdict=_final_verdict,
+                    delivery_type="text",
+                    generation=_delivery_generation,
+                ):
+                    logger.warning(
+                        "Suppressing duplicate final text delivery: task_id=%s verdict=%s generation=%s",
+                        _final_task_id,
+                        _final_verdict,
+                        _delivery_generation,
+                    )
+                    response = ""
+
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
             # still persisted in session history so later turns keep normal
@@ -13812,39 +13854,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "enabled": False,
             "key": "",
             "title": "",
-            "started": time.monotonic(),
-            "last_percent": -1,
+            "formatter": None,
         }
 
-        def _task_elapsed_text() -> str:
-            elapsed = max(0, int(time.monotonic() - task_status_state["started"]))
-            minutes, seconds = divmod(elapsed, 60)
-            if minutes:
-                return f"{minutes} мин {seconds:02d} сек"
-            return f"{seconds} сек"
-
-        def _emit_task_status(percent: int, stage: str, *, done: bool = False) -> None:
+        def _emit_task_status(percent: int, stage: str, *, done: bool = False, verdict: str | None = None, blocker: str | None = None) -> None:
             if not task_status_state["enabled"]:
                 return
-            percent = max(0, min(100, int(percent)))
-            if not done and percent == task_status_state["last_percent"]:
-                return
-            task_status_state["last_percent"] = percent
+            formatter = task_status_state.get("formatter")
+            if not isinstance(formatter, TelegramTaskStatusState):
+                formatter = TelegramTaskStatusState(task_status_state.get("title") or "задача Hermes")
+                task_status_state["formatter"] = formatter
+            stage_key = stage
             if done:
-                content = (
-                    f"📋 Задача принята: {task_status_state['title']}\n"
-                    f"Идёт: {_task_elapsed_text()}"
-                )
-            else:
-                filled = max(0, min(10, round(percent / 10)))
-                bar = "█" * filled + "░" * (10 - filled)
-                content = (
-                    f"⏳ В работе: {task_status_state['title']}\n"
-                    f"[{bar}] {percent}%\n"
-                    f"Этап: {stage}\n"
-                    f"Идёт: {_task_elapsed_text()}"
-                )
-            _status_callback_sync(task_status_state["key"], content)
+                stage_key = "done" if (verdict or "READY").upper() in {"READY", "SUCCESS"} else "incomplete"
+            elif stage not in formatter.stages and stage not in {"blocked", "incomplete", "done"}:
+                stage_key = "prepared" if percent <= 40 else "applied" if percent <= 60 else "tests"
+            content = formatter.render(stage=stage_key, verdict=verdict, blocker=blocker)
+            if formatter.should_emit(content, force=done):
+                _status_callback_sync(task_status_state["key"], content)
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
@@ -13861,20 +13888,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if task_status_state["enabled"]:
                 if event_type == "tool.started":
                     stage_map = {
-                        "web": "поиск и проверка источников",
-                        "terminal": "выполнение изменений",
-                        "file": "проверка файлов",
-                        "code_execution": "выполнение и проверка кода",
-                        "memory": "поиск по памяти",
-                        "session_search": "поиск по истории",
-                        "skills": "подготовка метода",
+                        "web": "audit",
+                        "session_search": "audit",
+                        "memory": "audit",
+                        "skills": "accepted",
+                        "read_file": "audit",
+                        "search_files": "audit",
+                        "file": "prepared",
+                        "patch": "applied",
+                        "write_file": "applied",
+                        "terminal": "tests" if request_metrics["tool_call_count"] >= 3 else "applied",
+                        "code_execution": "tests",
                     }
-                    stage = stage_map.get(str(tool_name or ""), "выполнение")
-                    pct = min(75, 30 + request_metrics["tool_call_count"] * 10)
-                    _emit_task_status(pct, stage)
+                    stage = stage_map.get(str(tool_name or ""), "prepared")
+                    _emit_task_status(0, stage)
                 elif event_type == "tool.completed":
-                    pct = min(85, 55 + request_metrics["tool_call_count"] * 6)
-                    _emit_task_status(pct, "проверка результата")
+                    # Completion of a tool may advance the current plan stage,
+                    # but never derives percent from tool count or iteration budget.
+                    _emit_task_status(0, "tests" if request_metrics["tool_call_count"] >= 4 else "applied")
                 if event_type in {"tool.started", "tool.completed"}:
                     return
 
@@ -14642,6 +14673,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
+                if not should_surface_telegram_interim(
+                    text,
+                    task_status_enabled=bool(task_status_state.get("enabled")),
+                ):
+                    logger.debug("Telegram interim commentary suppressed for task status UX")
+                    return
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
@@ -14820,14 +14857,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _active_task is not None
                     else f"task:{session_key}:{run_generation}"
                 )
+                _formatter = TelegramTaskStatusState(_title or "задача Hermes")
                 task_status_state.update({
                     "enabled": True,
                     "key": _status_key,
                     "title": _title or "задача Hermes",
-                    "started": time.monotonic(),
-                    "last_percent": -1,
+                    "formatter": _formatter,
                 })
-                _emit_task_status(0, "подготовка")
+                # For long Telegram tasks the gateway-owned live status is the
+                # only mid-turn user surface. Token streaming and assistant
+                # commentary stay in logs/transcript to prevent reviewer/tool
+                # diagnostics from becoming separate Telegram messages.
+                _stream_delta_cb = None
+                _want_interim_messages = False
+                _emit_task_status(0, "accepted")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -15667,6 +15710,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         (time.monotonic() - _agent_returned_at) * 1000
                     )
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                _emit_task_status(0, "incomplete", done=True, verdict="INCOMPLETE")
                 return {
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
@@ -15783,7 +15827,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 request_metrics["agent_post_ms"] = int(
                     (time.monotonic() - _agent_returned_at) * 1000
                 )
-            _emit_task_status(100, "завершено", done=True)
+            _final_verdict = verdict_from_text(
+                final_response,
+                failed=bool(result_holder[0].get("failed", False)) if result_holder[0] else False,
+                partial=bool(result_holder[0].get("partial", False)) if result_holder[0] else False,
+            )
+            _emit_task_status(100, "delivery", done=True, verdict=_final_verdict)
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
@@ -15975,8 +16024,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _notify_start = time.time()
 
         async def _notify_long_running():
-            if _NOTIFY_INTERVAL is None:
-                return  # Notifications disabled (gateway_notify_interval: 0)
+            if _NOTIFY_INTERVAL is None or task_status_state.get("enabled"):
+                return  # Notifications disabled or replaced by task live-status
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
