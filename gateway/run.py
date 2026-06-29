@@ -80,6 +80,20 @@ _FINAL_DELIVERY_DEDUPER = FinalDeliveryDeduper()
 def _final_delivery_task_id(agent_result: dict[str, Any]) -> str:
     return str(agent_result.get("task_id") or "")
 
+
+def _text_only_turn_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    projected = []
+    for message in history:
+        if not isinstance(message, dict) or message.get("role") in {"tool", "function"}:
+            continue
+        clean = message.copy()
+        clean.pop("tool_calls", None)
+        clean.pop("tool_call_id", None)
+        if clean.get("role") == "assistant" and not clean.get("content"):
+            continue
+        projected.append(clean)
+    return projected
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -15565,8 +15579,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _run_message,
                     observed_group_context,
                 )
+                _turn_history = agent_history
+                if not getattr(agent, "valid_tool_names", set()) and agent_history:
+                    _turn_history = _text_only_turn_history(agent_history)
+                    if len(_turn_history) != len(agent_history):
+                        logger.info(
+                            "No-tool turn: projected history from %s to %s text messages",
+                            len(agent_history),
+                            len(_turn_history),
+                        )
                 _conversation_kwargs = {
-                    "conversation_history": agent_history,
+                    "conversation_history": _turn_history,
                     "task_id": session_id,
                 }
                 if _persist_user_message_override is not None:
@@ -15824,7 +15847,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
             effective_session_id = agent_session_id
-            _effective_history_offset = 0 if _session_was_split else len(agent_history)
+            _effective_history_offset = 0 if _session_was_split else len(_turn_history)
 
             if not final_response:
                 if _agent_returned_at is not None:
@@ -15875,7 +15898,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Scope the scan to THIS turn's tool results only. ``agent_history``
             # was passed into run_conversation as ``conversation_history``, so the
             # agent's returned ``messages`` list is ``agent_history`` followed by
-            # the messages produced this turn. Slicing at ``len(agent_history)``
+            # the messages produced this turn. Slicing at ``len(_turn_history)``
             # isolates the current turn precisely, so a stale MEDIA: path emitted
             # by a tool several turns earlier (still present in the full message
             # list) can never leak onto a later text-only reply. (Fixes #34608)
@@ -15888,7 +15911,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if "MEDIA:" not in final_response:
                 media_tags, has_voice_directive = _collect_auto_append_media_tags(
                     result.get("messages", []),
-                    history_offset=len(agent_history),
+                    history_offset=len(_turn_history),
                     history_media_paths=_history_media_paths,
                 )
 
