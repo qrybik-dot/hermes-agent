@@ -1,7 +1,7 @@
 ---
 name: milestone-memory-writer
 description: Create structured milestone notes from verified changes.
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
@@ -23,7 +23,7 @@ The skill source belongs in Git. Generated Personal Anton notes belong only in t
 
 ## When to Use
 
-Use after a completed change when the user asks to record a milestone, save the result in memory, describe what changed in Hermes, or preserve an accepted operating rule.
+Use after a completed important change. If the user explicitly signals that the result is accepted or should be remembered, initiate a structured candidate. If a durable result appears without an explicit save signal, classify it, check for duplicates, and offer saving in one short line without writing.
 
 Good candidates:
 
@@ -37,7 +37,7 @@ Do not use for routine fixes, unfinished work, speculative causes, or ordinary s
 
 ## Boundaries
 
-- Require a clear user request to save the milestone.
+- Explicit save or acceptance signals may initiate a candidate without an extra textual question; the consequential action confirmation is sufficient. For implicit durable results, only classify, check duplicates, and offer saving.
 - Follow runtime approval rules for knowledge-base changes.
 - Stage first; do not create a new milestone directly in the canonical vault.
 - Keep Personal Anton notes out of GitHub.
@@ -52,7 +52,7 @@ Treat a result as a milestone only when at least three conditions are true:
 2. Material: it changes behavior, architecture, safety, or a recurring workflow.
 3. Verified: there is git, test, runtime, delivery, or user acceptance evidence.
 4. Retrievable: a future task is likely to benefit from finding it.
-5. Explicit: the user asked to save or preserve it.
+5. Explicit: the user asked to save or preserve it, or clearly accepted/closed the result.
 
 If the result fails this test, keep it in the final report or runlog instead of the knowledge base.
 
