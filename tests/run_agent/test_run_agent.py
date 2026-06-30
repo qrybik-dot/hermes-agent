@@ -3747,10 +3747,11 @@ class TestRunConversation:
             empty_resp, empty_resp, empty_resp, empty_resp, content_resp,
         ]
 
-        fallback_called = {"called": False}
+        fallback_called = {"called": False, "reason": None}
 
-        def _mock_fallback():
+        def _mock_fallback(*args, **kwargs):
             fallback_called["called"] = True
+            fallback_called["reason"] = kwargs.get("reason")
             # Simulate what _try_activate_fallback does: just advance the
             # index and set the flag (the client is already mocked).
             agent._fallback_index = 1
@@ -3767,6 +3768,7 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert fallback_called["called"], "Fallback should have been triggered"
+        assert fallback_called["reason"] == FailoverReason.format_error
         assert result["completed"] is True
         assert result["final_response"] == "Fallback answer."
 
@@ -3786,7 +3788,7 @@ class TestRunConversation:
             empty_resp, empty_resp, empty_resp, empty_resp,  # fallback exhausted
         ]
 
-        def _mock_fallback():
+        def _mock_fallback(*args, **kwargs):
             if agent._fallback_index >= len(agent._fallback_chain):
                 return False
             agent._fallback_index += 1

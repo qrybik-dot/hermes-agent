@@ -4279,7 +4279,7 @@ def run_conversation(
                             "⚠️ Model returning empty responses — "
                             "switching to fallback provider..."
                         )
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(reason=FailoverReason.format_error):
                             agent._empty_content_retries = 0
                             agent._buffer_status(
                                 f"↻ Switched to fallback: {agent.model} "
