@@ -42,7 +42,27 @@ def _title(text: str, fallback: str) -> str:
             return s.lstrip('#').strip()[:200] or fallback
     return fallback
 
-def _entity_type(rel: str) -> str:
+def _frontmatter_value(text: str, key: str) -> str | None:
+    if not text.startswith('---\n'):
+        return None
+    end = text.find('\n---\n', 4)
+    if end < 0:
+        return None
+    prefix = key.lower() + ':'
+    for line in text[4:end].splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith(prefix):
+            value = stripped.split(':', 1)[1].strip().strip('"').strip("'")
+            return value or None
+    return None
+
+
+def _entity_type(rel: str, text: str = '') -> str:
+    declared = _frontmatter_value(text, 'type') or _frontmatter_value(text, 'entity_type')
+    if declared:
+        normalized = re.sub(r'[^a-z0-9_-]+', '-', declared.lower()).strip('-')
+        if normalized:
+            return normalized[:64]
     low = rel.lower()
     if 'granola' in low or 'meeting' in low or 'встреч' in low: return 'meeting'
     if 'career' in low or 'job' in low or 'работ' in low: return 'career'
@@ -61,9 +81,9 @@ def reindex(vault: Path = DEFAULT_VAULT, index_dir: Path = DEFAULT_INDEX_DIR) ->
             except Exception:
                 skipped += 1; continue
             scanned += 1; seen.add(rel); digest = hashlib.sha256(data).hexdigest(); st = path.stat()
-            row = con.execute('select sha256 from docs where path=?', (rel,)).fetchone()
-            if row and row[0] == digest: continue
-            title = _title(text, path.stem); et = _entity_type(rel)
+            title = _title(text, path.stem); et = _entity_type(rel, text)
+            row = con.execute('select sha256, entity_type from docs where path=?', (rel,)).fetchone()
+            if row and row[0] == digest and row[1] == et: continue
             con.execute('insert or replace into docs(path,title,mtime,sha256,entity_type,source) values(?,?,?,?,?,?)', (rel, title, st.st_mtime, digest, et, 'vault'))
             con.execute('delete from docs_fts where path=?', (rel,))
             con.execute('insert into docs_fts(path,title,body,entity_type,source) values(?,?,?,?,?)', (rel, title, text[:200000], et, 'vault'))
