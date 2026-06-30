@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 import re
 
 from gateway.task_continuation import (
@@ -62,7 +63,7 @@ _OUTPUT_SCREENSHOT_ARTIFACT_RE = re.compile(
 _CALENDAR_CREATE_RE = re.compile(
     r"\b(?:созда(?:й|ть)|добав(?:ь|ить)|запиш(?:и|ите|ем)|записать|постав(?:ь|ить)|"
     r"назнач(?:ь|ить)|запланиру(?:й|йте|ем|ть))\w*\b[^\n.!?;]{0,80}"
-    r"\b(?:календар|встреч|созвон|напоминан)\w*\b|"
+    r"\b(?:календар|встреч|созвон|напоминан|событи)\w*\b|"
     r"\b(?:в\s+календар\w*|google\s+calendar)\b[^\n.!?;]{0,80}"
     r"\b(?:событи|встреч|созвон|напоминан)\w*\b|"
     r"\b(?:create|add|schedule)\b[^\n.!?;]{0,80}"
@@ -75,10 +76,16 @@ _TECHNICAL_EVENT_CONTEXT_RE = re.compile(
     r"событи\w*\s+обработчик\w*|тест\w*|handler|webhook|event\s+handler)\b",
     re.I,
 )
+_RU_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
+    "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
+_RU_MONTH_NAME_RE = "|".join(_RU_MONTHS)
+_RU_MONTH_DATE_RE = re.compile(rf"\b\d{{1,2}}\s+(?:{_RU_MONTH_NAME_RE})(?:\s+\d{{4}})?\b", re.I)
 _DATE_RE = re.compile(
-    r"\b(?:сегодня|завтра|послезавтра|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|"
-    r"суббот[ау]|воскресень[еья]|\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?|"
-    r"\d{4}-\d{2}-\d{2})\b",
+    rf"\b(?:сегодня|завтра|послезавтра|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|"
+    rf"суббот[ау]|воскресень[еья]|\d{{1,2}}[./-]\d{{1,2}}(?:[./-]\d{{2,4}})?|"
+    rf"\d{{4}}-\d{{2}}-\d{{2}})\b|\b\d{{1,2}}\s+(?:{_RU_MONTH_NAME_RE})(?:\s+\d{{4}})?\b",
     re.I,
 )
 _TIME_RE = re.compile(
@@ -87,7 +94,7 @@ _TIME_RE = re.compile(
 )
 _PURPOSE_RE = re.compile(
     r"\b(?:с\s+[А-ЯA-ZЁ][\wё-]+|созвон|встреч[ауы]|при[её]м|дедлайн|"
-    r"интервью|собеседовани|звонок|обед|ужин|тренировк)\w*\b",
+    r"консультаци|интервью|собеседовани|звонок|обед|ужин|тренировк)\w*\b",
     re.I,
 )
 _CALENDAR_EVENT_REF_RE = re.compile(
@@ -148,6 +155,138 @@ def _is_calendar_write_request(text: str) -> bool:
     if not value or _TECHNICAL_EVENT_CONTEXT_RE.search(value):
         return False
     return bool(_CALENDAR_CREATE_RE.search(value))
+
+
+_WRAPPER_LINE_RE = re.compile(
+    r"^\s*(?:Записал\s+в\s+формате\s+события|Часовой\s+пояс\b.*не\s+указан\w*)\b.*$",
+    re.I,
+)
+_EVENT_LINE_RE = re.compile(
+    rf"(?P<date>\b(?:сегодня|завтра|послезавтра|\d{{4}}-\d{{2}}-\d{{2}}|\d{{1,2}}[./-]\d{{1,2}}(?:[./-]\d{{2,4}})?|\d{{1,2}}\s+(?:{_RU_MONTH_NAME_RE})(?:\s+\d{{4}})?)\b)"
+    r"\s*,?\s*(?:в\s+)?(?P<time>(?:[01]?\d|2[0-3])[:.]\d{2})"
+    r"(?:\s*[—-]\s*(?P<title>[^\n]+))?",
+    re.I,
+)
+
+
+@dataclass(frozen=True)
+class MessageContext:
+    current_text: str = ""
+    current_message_id: str | None = None
+    chat_id: str | None = None
+    sender_id: str | None = None
+    update_id: str | None = None
+    reply_text: str | None = None
+    reply_caption: str | None = None
+    reply_message_id: str | None = None
+    reply_sender_id: str | None = None
+
+
+def _normalize_message_context(value: dict | MessageContext | None, *, fallback_text: str = "", chat_id: str = "") -> MessageContext:
+    if isinstance(value, MessageContext):
+        return value
+    data = value if isinstance(value, dict) else {}
+    return MessageContext(
+        current_text=str(data.get("current_text") or fallback_text or ""),
+        current_message_id=str(data["current_message_id"]) if data.get("current_message_id") is not None else None,
+        chat_id=str(data.get("chat_id") or chat_id or ""),
+        sender_id=str(data["sender_id"]) if data.get("sender_id") is not None else None,
+        update_id=str(data["update_id"]) if data.get("update_id") is not None else None,
+        reply_text=str(data["reply_text"]) if data.get("reply_text") else None,
+        reply_caption=str(data["reply_caption"]) if data.get("reply_caption") else None,
+        reply_message_id=str(data["reply_message_id"]) if data.get("reply_message_id") is not None else None,
+        reply_sender_id=str(data["reply_sender_id"]) if data.get("reply_sender_id") is not None else None,
+    )
+
+
+def _clean_calendar_text(text: str) -> str:
+    lines = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line or _WRAPPER_LINE_RE.search(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _extract_calendar_event_draft(text: str) -> dict | None:
+    clean = _clean_calendar_text(text)
+    if not clean:
+        return None
+    match = _EVENT_LINE_RE.search(clean)
+    if match is None:
+        return None
+    title = (match.group("title") or "").strip(" .;\t")
+    if not title:
+        tail = clean[match.end():].strip(" \n.;")
+        title = tail.splitlines()[0].strip(" .;") if tail else ""
+    if not title:
+        return None
+    date_text = match.group("date").strip()
+    month_match = _RU_MONTH_DATE_RE.fullmatch(date_text)
+    iso_date = None
+    if month_match:
+        parts = date_text.lower().split()
+        day = int(parts[0])
+        month = _RU_MONTHS[parts[1]]
+        year = int(parts[2]) if len(parts) > 2 else date.today().year
+        iso_date = f"{year:04d}-{month:02d}-{day:02d}"
+    return {
+        "date": iso_date or date_text,
+        "date_text": date_text,
+        "time": match.group("time").replace(".", ":"),
+        "summary": title,
+    }
+
+
+def _calendar_context_draft(ctx: MessageContext) -> tuple[dict | None, str]:
+    for source_name, source_text in (
+        ("current", ctx.current_text),
+        ("reply_text", ctx.reply_text),
+        ("reply_caption", ctx.reply_caption),
+    ):
+        draft = _extract_calendar_event_draft(source_text or "")
+        if draft is not None:
+            return draft, source_name
+    return None, ""
+
+
+def _format_calendar_request(current_text: str, draft: dict, source: str) -> str:
+    return (
+        str(current_text or "").strip()
+        + "\n\nStructured calendar event from " + source + ":\n"
+        + "Date: " + str(draft.get("date") or draft.get("date_text") or "") + "\n"
+        + "Time: " + str(draft.get("time") or "") + "\n"
+        + "Summary: " + str(draft.get("summary") or "")
+    ).strip()
+
+
+def _calendar_task_sender_matches(task: TaskRecord, ctx: MessageContext) -> bool:
+    saved = task.metadata.get("sender_id")
+    return not (saved and ctx.sender_id and str(saved) != str(ctx.sender_id))
+
+
+def _task_is_calendar_write(task: TaskRecord) -> bool:
+    return bool(
+        task.metadata.get("intent") == "calendar_write"
+        or _metadata_requests_calendar_write(task.metadata)
+        or _is_calendar_write_request(task.original_request)
+    )
+
+
+def _select_calendar_pending_task(store: TaskStateStore, platform_key: str, chat_id: str, ctx: MessageContext) -> TaskRecord | None:
+    if not _is_calendar_write_request(ctx.current_text):
+        return None
+    matches = [
+        task for task in store.active(platform_key, str(chat_id))
+        if _task_is_calendar_write(task) and _calendar_task_sender_matches(task, ctx)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _calendar_source_request_id(platform_key: str, chat_id: str, ctx: MessageContext, fallback: str) -> str:
+    marker = ctx.update_id or ctx.current_message_id or fallback
+    return f"{platform_key}:{chat_id}:{ctx.sender_id or ''}:{marker}:calendar_write"
 
 
 def calendar_completion_evidence_missing(
@@ -262,9 +401,12 @@ def early_response(text: str, *, status: str = "success", task_id: str | None = 
 
 def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                       session_key: str, session_id: str, request_id: str,
-                      user_config: dict, platform_toolsets: list[str] | None) -> PreparedTaskTurn:
+                      user_config: dict, platform_toolsets: list[str] | None,
+                      message_context: dict | MessageContext | None = None) -> PreparedTaskTurn:
     store = TaskStateStore()
     original = str(message or "")
+    msg_ctx = _normalize_message_context(message_context, fallback_text=original, chat_id=str(chat_id))
+    current_text = msg_ctx.current_text or original
     if re.fullmatch(r"\s*(?:почему|из-за\s+чего|в\s+ч[её]м\s+причина)\s+(?:эта\s+)?(?:ошибка|blocked|блокировка)[\s.!?]*", original, re.I):
         active = store.active(platform_key, str(chat_id))
         if len(active) == 1:
@@ -288,6 +430,9 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 False,
             )
     decision = store.resolve(original, platform_key, str(chat_id))
+    pending_calendar = None
+    if decision.kind == "none":
+        pending_calendar = _select_calendar_pending_task(store, platform_key, str(chat_id), msg_ctx)
     if decision.kind == "choice":
         return PreparedTaskTurn(
             original, None, None,
@@ -304,7 +449,9 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             False,
         )
 
-    task = decision.task if decision.kind == "selected" else None
+    task = pending_calendar or (decision.task if decision.kind == "selected" else None)
+    if task is not None and _task_is_calendar_write(task) and not _calendar_task_sender_matches(task, msg_ctx):
+        task = None
     continued = task is not None
     if task is not None and int(task.metadata.get("budget_exhaustions", 0) or 0) >= 2:
         return PreparedTaskTurn(
@@ -363,9 +510,36 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 False,
             )
 
-    base_text = task.original_request if task else str(message or "")
+    draft, draft_source = _calendar_context_draft(msg_ctx)
+    calendar_request = None
+    if draft is not None and _is_calendar_write_request(current_text):
+        calendar_request = _format_calendar_request(current_text, draft, draft_source)
+        if task is None:
+            message = calendar_request
+    elif task is not None and _is_calendar_write_request(current_text):
+        saved_draft = task.metadata.get("calendar_event_draft")
+        if isinstance(saved_draft, dict):
+            calendar_request = _format_calendar_request(current_text, saved_draft, "pending_task")
+            message = calendar_request
+
+    base_text = task.original_request if task else str(calendar_request or message or "")
     route = route_turn(base_text, command=None, platform_key=platform_key,
                        user_config=user_config, platform_toolsets=platform_toolsets)
+    if calendar_request is not None and "google-workspace" not in route.skill_names:
+        allowed = set(platform_toolsets or [])
+        extra_toolsets = [
+            name for name in ("skills", "terminal", "file")
+            if platform_toolsets is None or name in allowed
+        ]
+        route = TaskRoute(
+            role=route.role,
+            reason=route.reason + "; structured_calendar_reply",
+            toolsets=sorted(set(route.toolsets) | set(extra_toolsets)),
+            max_iterations=route.max_iterations,
+            skill_names=tuple([*route.skill_names, "google-workspace"]),
+            skip_context_files=False,
+            operational_context=route.operational_context,
+        )
     if task is not None:
         allowed = set(platform_toolsets or [])
         restored = [name for name in task.toolsets
@@ -419,7 +593,8 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     if "google-workspace" in route.skill_names:
         contract = (
-            "For calendar writes, create or update the event, read it back, and report calendar ID, "
+            "For calendar writes, create exactly one event, or update only when explicitly requested; "
+            "use the structured calendar event if present. Then read it back and report calendar ID, "
             "summary, start, end, event ID or official link, and read-back confirmation. Otherwise return INCOMPLETE."
         )
         route = TaskRoute(
@@ -493,20 +668,36 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             last_error=None,
         )
 
-    if task is None and should_track_task(original, route.role, route.toolsets):
-        title = " ".join(original.split())[:120] or "Задача Hermes"
+    if task is None and (calendar_request is not None or should_track_task(original, route.role, route.toolsets)):
+        title_source = calendar_request or original
+        title = " ".join(title_source.split())[:120] or "Задача Hermes"
+        task_metadata = None
+        source_request_id = request_id
+        if calendar_request and draft is not None:
+            source_request_id = _calendar_source_request_id(platform_key, str(chat_id), msg_ctx, request_id)
+            task_metadata = {
+                "intent": "calendar_write",
+                "sender_id": msg_ctx.sender_id,
+                "current_message_id": msg_ctx.current_message_id,
+                "platform_update_id": msg_ctx.update_id,
+                "reply_message_id": msg_ctx.reply_message_id,
+                "reply_sender_id": msg_ctx.reply_sender_id,
+                "calendar_event_draft": draft,
+                "execution_contract": {"type": "calendar_write"},
+            }
         task = store.create(
             platform=platform_key,
             chat_id=str(chat_id),
             session_key=session_key,
             title=title,
-            original_request=original,
+            original_request=calendar_request or original,
             role=route.role,
             toolsets=route.toolsets,
             required_toolsets=required,
             requires_execution=requires_execution,
-            source_request_id=request_id,
+            source_request_id=source_request_id,
             source_session_id=session_id,
             status="running",
+            metadata=task_metadata,
         )
     return PreparedTaskTurn(str(message or ""), route, task, None, continued)

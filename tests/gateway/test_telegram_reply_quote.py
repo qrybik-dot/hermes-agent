@@ -1,12 +1,4 @@
-"""Tests for Telegram native partial-quote handling in _build_message_event.
-
-When a Telegram user replies using Telegram's native quote feature to
-select only part of a prior message, the adapter must use ``message.quote.text``
-(the user-selected substring) rather than ``message.reply_to_message.text``
-(the entire replied-to message). Otherwise the agent receives the full prior
-message as ``reply_to_text``, which can cause it to act on unrelated
-actionable-looking text the user did not quote (#22619).
-"""
+"""Tests for Telegram reply context handling in _build_message_event."""
 
 import sys
 from types import SimpleNamespace
@@ -56,6 +48,7 @@ def _make_message(
             message_id=reply_to_id,
             text=reply_to_text,
             caption=reply_to_caption,
+            from_user=SimpleNamespace(id=9001, full_name="Hermes"),
         )
 
     quote = None
@@ -75,8 +68,8 @@ def _make_message(
     )
 
 
-def test_native_partial_quote_used_as_reply_to_text():
-    """When ``message.quote`` is present, prefer the selected substring."""
+def test_full_reply_text_has_priority_over_native_quote():
+    """Full replied-to text has priority over partial quote for task context."""
     from gateway.platforms.base import MessageType
 
     adapter = _make_adapter()
@@ -90,8 +83,11 @@ def test_native_partial_quote_used_as_reply_to_text():
 
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
-    assert event.reply_to_text == "Item B: rotate keys"
+    assert event.reply_to_text == (
+        "Briefing:\n- Item A: deploy fix\n- Item B: rotate keys\n- Item C: update docs"
+    )
     assert event.reply_to_message_id == "42"
+    assert event.reply_to_sender_id == "9001"
 
 
 def test_full_reply_text_used_when_no_native_quote():
@@ -126,6 +122,7 @@ def test_caption_fallback_when_no_quote_and_no_text():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "Photo caption from earlier"
+    assert event.reply_to_caption == "Photo caption from earlier"
 
 
 def test_empty_quote_text_falls_back_to_full_reply():
@@ -142,3 +139,28 @@ def test_empty_quote_text_falls_back_to_full_reply():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "Prior message body"
+
+
+
+def test_native_quote_used_only_without_text_or_caption():
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_message(
+        text="follow-up",
+        reply_to_text=None,
+        reply_to_caption=None,
+        quote_text="Selected quote only",
+    )
+    msg.reply_to_message = SimpleNamespace(
+        message_id=42,
+        text=None,
+        caption=None,
+        from_user=SimpleNamespace(id=9001, full_name="Hermes"),
+    )
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_text == "Selected quote only"
+    assert event.reply_to_caption is None
+    assert event.reply_to_sender_id == "9001"

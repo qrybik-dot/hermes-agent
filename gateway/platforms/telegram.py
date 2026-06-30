@@ -6873,27 +6873,21 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         # Extract reply context if this message is a reply.
-        # Prefer Telegram's native partial quote (message.quote, TextQuote)
-        # so a user replying to a single selected substring of a prior
-        # multi-section message doesn't get the whole replied-to message
-        # injected into the agent's context — which can cause the agent
-        # to act on unrelated actionable-looking text the user didn't
-        # quote (#22619). Fall back to the full replied-to message text
-        # / caption when no native quote is present.
+        # Calendar/task routing needs the full replied-to text before native
+        # quote snippets; quote remains the last fallback for old clients.
         reply_to_id = None
         reply_to_text = None
+        reply_to_caption = None
+        reply_to_sender_id = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
+            reply_to_text = message.reply_to_message.text or None
+            reply_to_caption = message.reply_to_message.caption or None
+            reply_user = getattr(message.reply_to_message, "from_user", None)
+            reply_to_sender_id = str(reply_user.id) if getattr(reply_user, "id", None) is not None else None
             quote = getattr(message, "quote", None)
             quote_text = getattr(quote, "text", None) if quote is not None else None
-            if quote_text:
-                reply_to_text = quote_text
-            else:
-                reply_to_text = (
-                    message.reply_to_message.text
-                    or message.reply_to_message.caption
-                    or None
-                )
+            reply_to_text = reply_to_text or reply_to_caption or quote_text or None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
@@ -6913,6 +6907,8 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_caption=reply_to_caption,
+            reply_to_sender_id=reply_to_sender_id,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

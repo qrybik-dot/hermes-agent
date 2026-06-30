@@ -556,3 +556,275 @@ def test_after_two_budget_exhaustions_continuation_escalates_without_model(tmp_p
     assert prepared.early_response["model"] == "deterministic"
     assert prepared.early_response["final_response"].startswith("BLOCKED")
     assert "двух исчерпаний" in prepared.early_response["final_response"]
+
+
+
+def test_calendar_reply_context_supplies_structured_event(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+
+    prepared = prepare_task_turn(
+        message='[Replying to: "1 июля 2026, 20:00 — консультация по Hermes в Zoom"]\n\nдобавь в календарь мне',
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-calendar-reply",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "добавь в календарь мне",
+            "current_message_id": 101,
+            "chat_id": "1",
+            "sender_id": "u1",
+            "update_id": 5001,
+            "reply_text": "1 июля 2026, 20:00 — консультация по Hermes в Zoom",
+            "reply_message_id": 99,
+            "reply_sender_id": "bot",
+        },
+    )
+
+    assert prepared.early_response is None
+    assert prepared.task is not None
+    assert prepared.task.metadata["intent"] == "calendar_write"
+    assert prepared.task.metadata["calendar_event_draft"] == {
+        "date": "2026-07-01",
+        "date_text": "1 июля 2026",
+        "time": "20:00",
+        "summary": "консультация по Hermes в Zoom",
+    }
+    assert "Structured calendar event from reply_text" in prepared.message
+    assert "Summary: консультация по Hermes в Zoom" in prepared.message
+    assert "google-workspace" in prepared.route.skill_names
+
+
+def test_calendar_reply_caption_used_when_text_absent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+
+    prepared = prepare_task_turn(
+        message="поставь в календарь",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-calendar-caption",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "поставь в календарь",
+            "sender_id": "u1",
+            "update_id": 5002,
+            "reply_caption": "1 июля 2026, 20:00 — консультация по Hermes в Zoom",
+        },
+    )
+
+    assert prepared.early_response is None
+    assert prepared.task.metadata["calendar_event_draft"]["summary"] == "консультация по Hermes в Zoom"
+
+
+def test_calendar_wrapper_lines_not_used_as_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+
+    prepared = prepare_task_turn(
+        message="создай событие",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-wrapper",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "создай событие",
+            "sender_id": "u1",
+            "update_id": 5003,
+            "reply_text": "Записал в формате события\n1 июля 2026, 20:00 — консультация по Hermes в Zoom\nЧасовой пояс не указан",
+        },
+    )
+
+    summary = prepared.task.metadata["calendar_event_draft"]["summary"]
+    assert summary == "консультация по Hermes в Zoom"
+    assert "Записал" not in prepared.message
+    assert "Часовой пояс" not in summary
+
+
+def test_calendar_missing_reply_data_blocks_before_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+
+    def fail_if_preload_runs(*args, **kwargs):
+        raise AssertionError("calendar input preflight must block before skill preload")
+
+    monkeypatch.setattr("agent.skill_commands.build_preloaded_skills_prompt", fail_if_preload_runs)
+    prepared = prepare_task_turn(
+        message="добавь в календарь мне",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-calendar-missing",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={"current_text": "добавь в календарь мне", "sender_id": "u1"},
+    )
+
+    assert prepared.early_response is not None
+    assert prepared.early_response["final_response"].startswith("BLOCKED")
+    assert "конкретная дата" in prepared.early_response["final_response"]
+    assert "конкретное время" in prepared.early_response["final_response"]
+    assert "назначение события" in prepared.early_response["final_response"]
+
+
+def test_calendar_pending_continuation_requires_calendar_action_and_same_user(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    task = store.create(
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="Calendar draft",
+        original_request="добавь в календарь\n\nStructured calendar event from reply_text:\nDate: 2026-07-01\nTime: 20:00\nSummary: консультация по Hermes в Zoom",
+        role="simple",
+        toolsets=["file", "skills", "terminal"],
+        status="blocked",
+        metadata={
+            "intent": "calendar_write",
+            "sender_id": "u1",
+            "calendar_event_draft": {"date": "2026-07-01", "time": "20:00", "summary": "консультация по Hermes в Zoom"},
+        },
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+
+    ordinary = prepare_task_turn(
+        message="если я отвечаю тебе так на сообщение — ты видишь инфо по нему?",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-ordinary",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={"current_text": "если я отвечаю тебе так на сообщение — ты видишь инфо по нему?", "sender_id": "u1"},
+    )
+    assert ordinary.continued is False
+    assert ordinary.task is None
+
+    other_user = prepare_task_turn(
+        message="и поставь в календарь",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-other-user",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={"current_text": "и поставь в календарь", "sender_id": "u2"},
+    )
+    assert other_user.continued is False
+
+    same_user = prepare_task_turn(
+        message="и поставь в календарь",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-same-user",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={"current_text": "и поставь в календарь", "sender_id": "u1"},
+    )
+    assert same_user.continued is True
+    assert same_user.task.task_id == task.task_id
+    assert "Structured calendar event from pending_task" in same_user.message
+
+
+def test_calendar_duplicate_update_reuses_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+    kwargs = dict(
+        message="добавь в календарь мне",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="fallback-req",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "добавь в календарь мне",
+            "sender_id": "u1",
+            "update_id": 777,
+            "reply_text": "1 июля 2026, 20:00 — консультация по Hermes в Zoom",
+        },
+    )
+
+    first = prepare_task_turn(**kwargs)
+    second = prepare_task_turn(**kwargs)
+
+    assert first.task.task_id == second.task.task_id
+    assert second.task.source_request_id == "telegram:1:u1:777:calendar_write"
+
+
+def test_calendar_tool_error_does_not_count_as_successful_write():
+    missing = calendar_completion_evidence_missing(
+        "Создай событие в календаре завтра в 18:30: созвон с Иваном",
+        "READY\nСобытие создано",
+        route_toolsets=["google-calendar"],
+        route_skills=["google-workspace"],
+        tool_calls=[{"name": "google_calendar_create_event", "success": False, "error": "quota"}],
+    )
+    assert "event ID или штатная ссылка" in missing
+
+
+def test_calendar_successful_tool_still_needs_readback_evidence():
+    missing = calendar_completion_evidence_missing(
+        "Создай событие в календаре завтра в 18:30: созвон с Иваном",
+        "READY\nEvent ID: abc\nCalendar ID: primary\nSummary: созвон с Иваном\nStart: 2026-07-01T18:30\nEnd: 2026-07-01T19:30",
+        route_toolsets=[],
+        route_skills=[],
+        tool_calls=[{"name": "google_calendar_create_event", "success": True}],
+    )
+    assert missing == ("подтверждение read-back",)
+
+
+def test_calendar_old_numeric_date_still_passes_preflight(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+    prepared = prepare_task_turn(
+        message="создай событие в календаре 01.07.2026 в 20:00 консультация по Hermes",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-old-date",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+    )
+    assert prepared.early_response is None
