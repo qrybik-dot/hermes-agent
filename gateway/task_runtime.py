@@ -775,6 +775,9 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     requires_execution, required = infer_execution_contract(base_text, route.role, route.toolsets)
     if task is not None:
         requires_execution, required = task.requires_execution, task.required_toolsets
+    if "city-travel-concierge" in route.skill_names:
+        requires_execution = True
+        required = tuple(sorted(set(required) | {"terminal"}))
 
     # A classifier miss must not cause BLOCKED when the platform allowlist
     # explicitly contains the deterministic execution capability.
@@ -833,7 +836,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             last_error=None,
         )
 
-    if task is None and (calendar_request is not None or should_track_task(original, route.role, route.toolsets)):
+    if task is None and (
+        calendar_request is not None
+        or requires_execution
+        or should_track_task(original, route.role, route.toolsets)
+    ):
         title_source = calendar_request or original
         title = " ".join(title_source.split())[:120] or "Задача Hermes"
         task_metadata = None

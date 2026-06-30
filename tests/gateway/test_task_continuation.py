@@ -360,6 +360,36 @@ def test_execution_without_working_toolsets_blocks_before_model(tmp_path, monkey
     assert "Маршрутизатор не назначил инструмент выполнения" in prepared.early_response["final_response"]
 
 
+def test_travel_turn_is_tracked_and_requires_terminal_execution(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: (
+            "Travel skill loaded",
+            ["city-travel-concierge"],
+            [],
+        ),
+    )
+    prepared = prepare_task_turn(
+        message="сколько ехать до парка останкино от королева ул лесная и где там бесплатные парковки?",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="travel",
+        session_id="session-travel",
+        request_id="req-travel",
+        user_config={"agent": {}},
+        platform_toolsets=["browser", "file", "skills", "terminal", "web"],
+    )
+    assert prepared.early_response is None
+    assert prepared.route is not None
+    assert prepared.route.skill_names == ("city-travel-concierge",)
+    assert prepared.task is not None
+    assert prepared.task.requires_execution is True
+    assert prepared.task.required_toolsets == ("terminal",)
+    assert "terminal" in prepared.task.toolsets
+
+
 
 def test_bare_numeric_choice_requires_recent_choice_prompt(tmp_path):
     store = _store(tmp_path)

@@ -126,6 +126,16 @@ _MEMORY_RE = re.compile(
     re.I,
 )
 _TUTU_RE = re.compile(r"\b(?:tutu|туту|ржд|ж/д|поезд|железнодорожн\w*\s+билет)\b", re.I)
+_TRAVEL_RE = re.compile(
+    r"\b(?:сколько|как)\s+(?:ехать|идти|добираться|доехать)\b|"
+    r"\b(?:маршрут|дорог[аи]|доехать|ехать)\w*\b.{0,100}\b(?:до|из|от)\b|"
+    r"\b(?:парковк|припарковаться|кафе|ресторан|поесть|покушать|"
+    r"куда\s+сходить|что\s+посмотреть)\w*\b|"
+    r"\b(?:парк|усадьб|музе|вднх|достопримечательност)\w*\b.{0,100}"
+    r"\b(?:маршрут|парковк|кафе|рядом|около|возле|дет)\w*\b|"
+    r"\b(?:яндекс\s*карт|2гис)\b.{0,100}\b(?:маршрут|парковк|кафе|мест)\w*\b",
+    re.I | re.S,
+)
 _CONTEXT7_RE = re.compile(
     r"\bcontext7\b|официальн\w*\s+документац|документац\w*\s+(?:api|sdk|библиотек)|"
     r"\b(?:next\.js|react|supabase)\b",
@@ -291,6 +301,7 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "memory": bool(_MEMORY_RE.search(value)),
         "report": bool(_REPORT_RE.search(value)),
         "tutu": bool(_TUTU_RE.search(value)),
+        "travel": bool(_TRAVEL_RE.search(value)),
         "context7": bool(_CONTEXT7_RE.search(value)),
         "skills_query": bool(_SKILLS_QUERY_RE.search(value)),
         "notebooklm": bool(_NOTEBOOKLM_RE.search(value)),
@@ -409,6 +420,9 @@ def select_toolsets(
     if flags["tutu"]:
         requested.discard("no_mcp")
         requested.add("tutu")
+    if flags["travel"]:
+        requested.discard("no_mcp")
+        requested.update({"browser", "file", "skills", "terminal", "web"})
     if flags["context7"] and role in {"coding", "research", "planning"}:
         requested.discard("no_mcp")
         requested.add("context7")
@@ -470,6 +484,22 @@ def skills_facts_operational_context() -> str:
         "существует, вызывается по ключевым словам или имеет определённые функции, без результата "
         "инструмента либо прочитанного SKILL.md. Отделяй установленные локальные навыки от upstream. "
         "Не выдумывай команды установки. Если проверка недоступна, верни BLOCKED, а не рекомендацию."
+    )
+
+
+def travel_operational_context() -> str:
+    return (
+        "Контракт городских поездок: используй предзагруженный skill city-travel-concierge и реальные "
+        "инструменты до ответа. Для адресов, маршрутов, ETA, мест и парковок сначала вызывай helper skill "
+        "через terminal; для текущих отзывов, рейтингов, режима работы, тарифов и дорожной ситуации используй "
+        "web или browser. Не оценивай время в пути, расстояние, парковку или рейтинг по памяти. "
+        "Geoapify не учитывает live traffic: всегда помечай это и давай ссылку Яндекс Карт для проверки перед "
+        "выездом. Парковку называй бесплатной только при официальном подтверждении или свежем подтверждении "
+        "пользователя; OSM fee=no допускает лишь статус likely_free, остальные кандидаты unverified. "
+        "Не советуй дворы, частную территорию, access=private/customers/permit или место без проверяемой точки. "
+        "Для кафе по отзывам верни не более 3 вариантов: текущий рейтинг, число отзывов, расстояние, почему подходит "
+        "для детей и прямую ссылку на источник; места без проверяемых отзывов не ранжируй. Если объект неоднозначен, "
+        "сначала разреши адрес/координаты через skill, а не угадывай."
     )
 
 
@@ -541,6 +571,8 @@ def route_turn(
     skill_names_list: list[str] = []
     if flags["email"] or flags["calendar"] or flags["drive"]:
         skill_names_list.append("google-workspace")
+    if flags["travel"]:
+        skill_names_list.append("city-travel-concierge")
     if planning_policy.preload_plan_skill:
         skill_names_list.append("plan")
     skill_names = tuple(dict.fromkeys(skill_names_list))
@@ -560,6 +592,9 @@ def route_turn(
         max_iterations = max(max_iterations, 36)
     if flags["skills_query"]:
         operational_context = (operational_context + "\n\n" + skills_facts_operational_context()).strip()
+    if flags["travel"]:
+        operational_context = (operational_context + "\n\n" + travel_operational_context()).strip()
+        max_iterations = max(max_iterations, 20)
     if flags["notebooklm"]:
         operational_context = (operational_context + "\n\n" + notebooklm_operational_context()).strip()
         max_iterations = max(max_iterations, 36)

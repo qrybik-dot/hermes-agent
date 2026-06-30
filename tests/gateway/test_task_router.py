@@ -229,6 +229,31 @@ def test_simple_route_does_not_preload_skill():
     assert route.skill_names == ()
 
 
+def test_travel_intent_preloads_skill_and_real_tools():
+    cases = (
+        "сколько ехать до парка останкино от королева ул лесная и где там бесплатные парковки?",
+        "нет парк который около вднх, усадьба останкино",
+        "пришли ссылкой на яндекс карты самый лучший вариант парковки для меня",
+        "найди 3 кафе и рандируй их по отзывам - покушать после прогулки в парке с детьми",
+    )
+    for text in cases:
+        route = route_turn(
+            text,
+            command=None,
+            platform_key="telegram",
+            user_config={"agent": {}},
+            platform_toolsets=ALL_ALLOWED,
+        )
+        assert route.role == "simple"
+        assert route.skill_names == ("city-travel-concierge",)
+        assert {"browser", "file", "skills", "terminal", "web"}.issubset(route.toolsets)
+        assert "no_mcp" not in route.toolsets
+        assert route.max_iterations >= 20
+        assert "Не оценивай время в пути" in route.operational_context
+        assert "likely_free" in route.operational_context
+        assert "число отзывов" in route.operational_context
+
+
 
 def test_skill_recommendation_requires_factual_tools():
     route = route_turn(
