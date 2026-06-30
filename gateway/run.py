@@ -9052,6 +9052,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                message_context={
+                    "current_text": getattr(event, "text", None) or message_text,
+                    "current_message_id": getattr(event, "message_id", None),
+                    "chat_id": getattr(source, "chat_id", None),
+                    "sender_id": getattr(source, "user_id", None),
+                    "update_id": getattr(event, "platform_update_id", None),
+                    "reply_text": getattr(event, "reply_to_text", None),
+                    "reply_caption": getattr(event, "reply_to_caption", None),
+                    "reply_message_id": getattr(event, "reply_to_message_id", None),
+                    "reply_sender_id": getattr(event, "reply_to_sender_id", None),
+                },
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -13802,6 +13813,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        message_context: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14847,17 +14859,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 request_id=(session_id or session_key or "task") + ":" + str(run_generation),
                 user_config=user_config,
                 platform_toolsets=platform_allowed_toolsets,
-                message_context={
-                    "current_text": getattr(event, "text", None) or str(message or ""),
-                    "current_message_id": getattr(event, "message_id", None),
-                    "chat_id": getattr(source, "chat_id", None),
-                    "sender_id": getattr(source, "user_id", None),
-                    "update_id": getattr(event, "platform_update_id", None),
-                    "reply_text": getattr(event, "reply_to_text", None),
-                    "reply_caption": getattr(event, "reply_to_caption", None),
-                    "reply_message_id": getattr(event, "reply_to_message_id", None),
-                    "reply_sender_id": getattr(event, "reply_to_sender_id", None),
-                },
+                message_context=message_context,
             )
             if _prepared_task.early_response is not None:
                 return _prepared_task.early_response
