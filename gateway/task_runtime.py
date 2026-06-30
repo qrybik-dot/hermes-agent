@@ -568,7 +568,12 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             False,
         )
 
-    task = pending_calendar or (decision.task if decision.kind == "selected" else None)
+    # Explicit calendar create commands are new actions.  A previous incomplete
+    # calendar task may contribute its saved draft, but must not become the
+    # execution task for a new Telegram update/message.  Idempotency for the
+    # same inbound update is handled later by source_request_id.
+    pending_calendar_draft_task = pending_calendar
+    task = decision.task if decision.kind == "selected" else None
     if task is not None and _task_is_calendar_write(task) and not _calendar_task_sender_matches(task, msg_ctx):
         task = None
     continued = task is not None
@@ -631,15 +636,22 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     draft, draft_source = _calendar_context_draft(msg_ctx)
     calendar_request = None
+    calendar_request_draft = None
+    calendar_request_source_task_id = None
     if draft is not None and _is_calendar_write_request(current_text):
         calendar_request = _format_calendar_request(current_text, draft, draft_source)
+        calendar_request_draft = draft
         if task is None:
             message = calendar_request
-    elif task is not None and _is_calendar_write_request(current_text):
-        saved_draft = task.metadata.get("calendar_event_draft")
+    elif _is_calendar_write_request(current_text):
+        saved_draft_source = task or pending_calendar_draft_task
+        saved_draft = saved_draft_source.metadata.get("calendar_event_draft") if saved_draft_source else None
         if isinstance(saved_draft, dict):
             calendar_request = _format_calendar_request(current_text, saved_draft, "pending_task")
-            message = calendar_request
+            calendar_request_draft = saved_draft
+            calendar_request_source_task_id = saved_draft_source.task_id
+            if task is None:
+                message = calendar_request
 
     base_text = task.original_request if task else str(calendar_request or message or "")
     route = route_turn(base_text, command=None, platform_key=platform_key,
@@ -792,7 +804,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         title = " ".join(title_source.split())[:120] or "Задача Hermes"
         task_metadata = None
         source_request_id = request_id
-        if calendar_request and draft is not None:
+        if calendar_request and calendar_request_draft is not None:
             source_request_id = _calendar_source_request_id(platform_key, str(chat_id), msg_ctx, request_id)
             task_metadata = {
                 "intent": "calendar_write",
@@ -801,9 +813,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 "platform_update_id": msg_ctx.update_id,
                 "reply_message_id": msg_ctx.reply_message_id,
                 "reply_sender_id": msg_ctx.reply_sender_id,
-                "calendar_event_draft": draft,
+                "calendar_event_draft": calendar_request_draft,
                 "execution_contract": {"type": "calendar_write"},
             }
+            if calendar_request_source_task_id:
+                task_metadata["calendar_draft_source_task_id"] = calendar_request_source_task_id
         task = store.create(
             platform=platform_key,
             chat_id=str(chat_id),

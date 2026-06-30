@@ -757,8 +757,9 @@ def test_calendar_pending_continuation_requires_calendar_action_and_same_user(tm
         platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
         message_context={"current_text": "и поставь в календарь", "sender_id": "u1"},
     )
-    assert same_user.continued is True
-    assert same_user.task.task_id == task.task_id
+    assert same_user.continued is False
+    assert same_user.task.task_id != task.task_id
+    assert same_user.task.metadata["calendar_draft_source_task_id"] == task.task_id
     assert "Structured calendar event from pending_task" in same_user.message
 
 
@@ -791,6 +792,245 @@ def test_calendar_duplicate_update_reuses_task(tmp_path, monkeypatch):
 
     assert first.task.task_id == second.task.task_id
     assert second.task.source_request_id == "telegram:1:u1:777:calendar_write"
+
+
+def test_new_calendar_message_after_incomplete_task_creates_new_task_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    old = store.create(
+        task_id="8ac73f70df8a",
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="old calendar",
+        original_request="добавь в календарь мне",
+        role="simple",
+        toolsets=["terminal", "file", "skills"],
+        status="incomplete",
+        metadata={
+            "intent": "calendar_write",
+            "sender_id": "u1",
+            "current_message_id": "101",
+            "platform_update_id": "5001",
+            "calendar_event_draft": {
+                "date": "2026-07-01",
+                "date_text": "1 июля 2026",
+                "time": "20:00",
+                "summary": "консультация по Hermes в Zoom",
+            },
+            "calendar_evidence": {
+                "calendar_id": "primary",
+                "event_id": "stale-deleted-event",
+                "summary": "консультация по Hermes в Zoom",
+                "start": "2026-07-01T20:00:00+03:00",
+                "end": "2026-07-01T21:00:00+03:00",
+                "event_link": "https://calendar.google.com/event?stale",
+                "read_back": True,
+                "status": "created",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+
+    prepared = prepare_task_turn(
+        message="добавь в календарь мне",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-new-update",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "добавь в календарь мне",
+            "sender_id": "u1",
+            "current_message_id": 202,
+            "update_id": 5002,
+        },
+    )
+
+    assert prepared.continued is False
+    assert prepared.task.task_id != old.task_id
+    assert prepared.task.metadata["calendar_draft_source_task_id"] == old.task_id
+    assert prepared.task.metadata["calendar_event_draft"]["summary"] == "консультация по Hermes в Zoom"
+    assert "calendar_evidence" not in prepared.task.metadata
+    assert "Structured calendar event from pending_task" in prepared.message
+
+
+def test_new_calendar_update_with_same_text_is_not_duplicate(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+    base = dict(
+        message="добавь в календарь мне",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+    )
+    first = prepare_task_turn(
+        **base,
+        request_id="req-1",
+        message_context={
+            "current_text": "добавь в календарь мне",
+            "sender_id": "u1",
+            "update_id": 777,
+            "reply_text": "1 июля 2026, 20:00 — консультация по Hermes в Zoom",
+        },
+    )
+    second = prepare_task_turn(
+        **base,
+        request_id="req-2",
+        message_context={
+            "current_text": "добавь в календарь мне",
+            "sender_id": "u1",
+            "update_id": 778,
+            "reply_text": "1 июля 2026, 20:00 — консультация по Hermes в Zoom",
+        },
+    )
+
+    assert first.task.task_id != second.task.task_id
+    assert first.task.source_request_id == "telegram:1:u1:777:calendar_write"
+    assert second.task.source_request_id == "telegram:1:u1:778:calendar_write"
+
+
+def test_stale_event_id_without_readback_does_not_complete_calendar_task():
+    evidence = _calendar_evidence()
+    evidence.update({"read_back": False, "status": "not_found", "read_back_error": "404 notFound"})
+
+    missing = calendar_completion_evidence_missing(
+        "добавь в календарь мне",
+        "Событие уже создано. ID: stale-deleted-event",
+        route_skills=["google-workspace"],
+        metadata={"execution_contract": {"type": "calendar_write"}, "calendar_evidence": evidence},
+    )
+
+    assert "подтверждение read-back" in missing
+    assert "status=created" in missing
+
+
+def test_after_stale_invalidation_new_update_can_create_again(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    store.create(
+        task_id="oldcalendar01",
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="old calendar",
+        original_request="добавь в календарь мне",
+        role="simple",
+        toolsets=["terminal", "file", "skills"],
+        status="incomplete",
+        metadata={
+            "intent": "calendar_write",
+            "sender_id": "u1",
+            "calendar_event_draft": {"date": "2026-07-01", "time": "20:00", "summary": "консультация по Hermes в Zoom"},
+            "calendar_evidence": {"event_id": "stale", "read_back": False, "status": "not_found"},
+        },
+    )
+    store.update("oldcalendar01", last_error="missing calendar evidence: calendar ID,подтверждение read-back")
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+
+    prepared = prepare_task_turn(
+        message="добавь в календарь мне",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-fresh-create",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={"current_text": "добавь в календарь мне", "sender_id": "u1", "update_id": 9002},
+    )
+
+    assert prepared.continued is False
+    assert prepared.early_response is None
+    assert prepared.task.task_id != "oldcalendar01"
+    assert "calendar_evidence" not in prepared.task.metadata
+    assert "terminal" in prepared.route.toolsets
+
+
+def test_calendar_summary_preserves_full_zoom_text_from_reply(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+
+    prepared = prepare_task_turn(
+        message="добавь в календарь мне",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-full-summary",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "добавь в календарь мне",
+            "sender_id": "u1",
+            "update_id": 9010,
+            "reply_text": "1 июля 2026, 20:00 — консультация по Hermes в Zoom",
+        },
+    )
+
+    assert prepared.task.metadata["calendar_event_draft"]["summary"] == "консультация по Hermes в Zoom"
+    assert "Summary: консультация по Hermes в Zoom" in prepared.message
+
+
+def test_new_calendar_create_uses_runtime_callback_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+    prepared = prepare_task_turn(
+        message="добавь в календарь мне",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-callback",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "добавь в календарь мне",
+            "sender_id": "u1",
+            "update_id": 9020,
+            "reply_text": "1 июля 2026, 20:00 — консультация по Hermes в Zoom",
+        },
+    )
+    evidence = _calendar_evidence()
+
+    saved = persist_calendar_evidence_from_tool_result(TaskStateStore(tmp_path / ".hermes" / "state.db"), prepared.task.task_id, json.dumps(evidence))
+
+    assert saved == evidence
+    metadata = TaskStateStore(tmp_path / ".hermes" / "state.db").get(prepared.task.task_id).metadata
+    assert metadata["calendar_evidence"] == evidence
+    assert calendar_completion_evidence_missing(
+        prepared.task.original_request,
+        "Готово",
+        route_skills=["google-workspace"],
+        metadata=metadata,
+    ) == ()
 
 
 def test_calendar_tool_error_does_not_count_as_successful_write():
