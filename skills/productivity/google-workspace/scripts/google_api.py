@@ -515,6 +515,33 @@ def calendar_list(args):
 
 
 
+def _calendar_evidence(calendar_id, event, *, read_back):
+    return {
+        "calendar_id": calendar_id,
+        "event_id": event.get("id", ""),
+        "summary": event.get("summary", ""),
+        "start": event.get("start", {}).get("dateTime", event.get("start", {}).get("date", "")),
+        "end": event.get("end", {}).get("dateTime", event.get("end", {}).get("date", "")),
+        "event_link": event.get("htmlLink", ""),
+        "read_back": bool(read_back),
+    }
+
+
+def _calendar_get_event(calendar_id, event_id):
+    if _gws_binary():
+        return _run_gws(
+            ["calendar", "events", "get"],
+            params={"calendarId": calendar_id, "eventId": event_id},
+        )
+    service = build_service("calendar", "v3")
+    return service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+
+
+def calendar_get(args):
+    event = _calendar_get_event(args.calendar, args.event_id)
+    print(json.dumps(_calendar_evidence(args.calendar, event, read_back=True), indent=2, ensure_ascii=False))
+
+
 def calendar_create(args):
     event = {
         "summary": args.summary,
@@ -534,22 +561,26 @@ def calendar_create(args):
             params={"calendarId": args.calendar},
             body=event,
         )
-        print(json.dumps({
-            "status": "created",
-            "id": result["id"],
-            "summary": result.get("summary", ""),
-            "htmlLink": result.get("htmlLink", ""),
-        }, indent=2))
+    else:
+        service = build_service("calendar", "v3")
+        result = service.events().insert(calendarId=args.calendar, body=event).execute()
+
+    event_id = result["id"]
+    try:
+        read_back = _calendar_get_event(args.calendar, event_id)
+    except Exception as exc:
+        evidence = _calendar_evidence(args.calendar, result, read_back=False)
+        evidence.update({
+            "status": "incomplete",
+            "read_back_error": str(exc)[:500],
+            "message": "created event but read-back failed; do not create a duplicate, retry calendar get with event_id",
+        })
+        print(json.dumps(evidence, indent=2, ensure_ascii=False))
         return
 
-    service = build_service("calendar", "v3")
-    result = service.events().insert(calendarId=args.calendar, body=event).execute()
-    print(json.dumps({
-        "status": "created",
-        "id": result["id"],
-        "summary": result.get("summary", ""),
-        "htmlLink": result.get("htmlLink", ""),
-    }, indent=2))
+    evidence = _calendar_evidence(args.calendar, read_back, read_back=True)
+    evidence["status"] = "created"
+    print(json.dumps(evidence, indent=2, ensure_ascii=False))
 
 
 
@@ -1113,6 +1144,11 @@ def main():
     p.add_argument("--attendees", default="", help="Comma-separated email addresses")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_create)
+
+    p = cal_sub.add_parser("get")
+    p.add_argument("event_id")
+    p.add_argument("--calendar", default="primary")
+    p.set_defaults(func=calendar_get)
 
     p = cal_sub.add_parser("delete")
     p.add_argument("event_id")

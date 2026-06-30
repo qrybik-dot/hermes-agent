@@ -828,3 +828,25 @@ def test_calendar_old_numeric_date_still_passes_preflight(tmp_path, monkeypatch)
         platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
     )
     assert prepared.early_response is None
+
+
+
+def test_calendar_readback_evidence_allows_completion():
+    assert calendar_completion_evidence_missing(
+        "Создай событие в календаре завтра в 18:30: созвон с Иваном",
+        '{"status":"created","calendar_id":"primary","event_id":"evt-1","summary":"созвон с Иваном","start":"2026-07-01T18:30:00+03:00","end":"2026-07-01T19:00:00+03:00","event_link":"https://calendar.google.com/event?evt-1","read_back":true}',
+        route_skills=["google-workspace"],
+        metadata={"execution_contract": {"type": "calendar_write"}},
+    ) == ()
+
+
+def test_calendar_readback_false_does_not_allow_completion():
+    missing = calendar_completion_evidence_missing(
+        "Создай событие в календаре завтра в 18:30: созвон с Иваном",
+        '{"status":"incomplete","calendar_id":"primary","event_id":"evt-1","summary":"созвон с Иваном","event_link":"https://calendar.google.com/event?evt-1","read_back":false}',
+        route_skills=["google-workspace"],
+        metadata={"execution_contract": {"type": "calendar_write"}},
+    )
+    assert "start/начало" in missing
+    assert "end/окончание" in missing
+    assert "подтверждение read-back" in missing

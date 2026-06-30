@@ -98,20 +98,20 @@ _PURPOSE_RE = re.compile(
     re.I,
 )
 _CALENDAR_EVENT_REF_RE = re.compile(
-    r"\b(?:event[\s_-]*id|идентификатор\s+события)\b|"
-    r"https?://(?:calendar\.google\.com|www\.google\.com/calendar)",
+    r"\b(?:event[\s_-]*id|event_id|идентификатор\s+события)\b|"
+    r"\bevent_link\s*[:=]|https?://(?:calendar\.google\.com|www\.google\.com/calendar)",
     re.I,
 )
 _CALENDAR_ID_RE = re.compile(
-    r"\b(?:calendar[\s_-]*id|идентификатор\s+календаря|primary)\b|"
+    r"\b(?:calendar[\s_-]*id|calendar_id|идентификатор\s+календаря|primary)\b|"
     r"\bкалендарь\s*:\s*\S+",
     re.I,
 )
-_CALENDAR_SUMMARY_RE = re.compile(r"\b(?:summary|название)\s*:", re.I)
-_CALENDAR_START_RE = re.compile(r"\b(?:start|начало)\s*:", re.I)
-_CALENDAR_END_RE = re.compile(r"\b(?:end|окончание)\s*:", re.I)
+_CALENDAR_SUMMARY_RE = re.compile(r"\b(?:summary|название)\"?\s*:", re.I)
+_CALENDAR_START_RE = re.compile(r"\b(?:start|начало)\"?\s*:", re.I)
+_CALENDAR_END_RE = re.compile(r"\b(?:end|окончание)\"?\s*:", re.I)
 _CALENDAR_READBACK_RE = re.compile(
-    r"\b(?:read[- ]?back|повторн\w*\s+(?:чтени|проверк)\w*|"
+    r"\b(?:read_back\"?\s*[:=]\s*true|read[- ]?back|повторн\w*\s+(?:чтени|проверк)\w*|"
     r"подтвержден\w*\s+(?:в|через)\s+календар\w*)",
     re.I,
 )
