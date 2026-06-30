@@ -1,3 +1,4 @@
+import json
 import time
 
 from gateway.task_continuation import (
@@ -10,6 +11,8 @@ from gateway.task_continuation import (
 from gateway.task_router import route_turn
 from gateway.task_runtime import (
     calendar_completion_evidence_missing,
+    calendar_evidence_complete,
+    extract_calendar_evidence_from_result,
     prepare_task_turn,
     task_reported_non_success,
 )
@@ -850,3 +853,71 @@ def test_calendar_readback_false_does_not_allow_completion():
     assert "start/начало" in missing
     assert "end/окончание" in missing
     assert "подтверждение read-back" in missing
+
+
+
+def _calendar_evidence():
+    return {
+        "calendar_id": "primary",
+        "event_id": "evt-1",
+        "summary": "консультация по Hermes в Zoom",
+        "start": "2026-07-01T20:00:00+03:00",
+        "end": "2026-07-01T21:00:00+03:00",
+        "event_link": "https://calendar.google.com/event?evt-1",
+        "read_back": True,
+        "status": "created",
+    }
+
+
+def test_calendar_tool_result_extracts_structured_evidence():
+    evidence = _calendar_evidence()
+    result = {
+        "messages": [
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "tc1", "function": {"name": "terminal"}}]},
+            {"role": "tool", "tool_call_id": "tc1", "content": json.dumps(evidence)},
+        ]
+    }
+    assert extract_calendar_evidence_from_result(result) == evidence
+
+
+def test_calendar_metadata_evidence_allows_ready_without_final_text():
+    evidence = _calendar_evidence()
+    assert calendar_evidence_complete(evidence) is True
+    assert calendar_completion_evidence_missing(
+        "добавь в календарь мне",
+        "Готово, создал событие.",
+        route_skills=["google-workspace"],
+        metadata={"execution_contract": {"type": "calendar_write"}, "calendar_evidence": evidence},
+    ) == ()
+
+
+def test_calendar_metadata_missing_readback_blocks_ready():
+    evidence = _calendar_evidence()
+    evidence["read_back"] = False
+    evidence["status"] = "incomplete"
+    missing = calendar_completion_evidence_missing(
+        "добавь в календарь мне",
+        "READY\nСоздано",
+        route_skills=["google-workspace"],
+        metadata={"execution_contract": {"type": "calendar_write"}, "calendar_evidence": evidence},
+    )
+    assert "подтверждение read-back" in missing
+    assert "status=created" in missing
+
+
+def test_calendar_existing_event_id_result_uses_readback_not_create():
+    evidence = _calendar_evidence()
+    result = {"messages": [{"role": "tool", "content": json.dumps(evidence)}]}
+    extracted = extract_calendar_evidence_from_result(result)
+    assert extracted["event_id"] == "evt-1"
+    assert extracted["read_back"] is True
+    assert calendar_evidence_complete(extracted) is True
+
+
+def test_non_calendar_tool_result_not_calendar_evidence():
+    result = {
+        "messages": [
+            {"role": "tool", "content": json.dumps({"status": "created", "id": "file-1", "webViewLink": "https://drive"})},
+        ]
+    }
+    assert extract_calendar_evidence_from_result(result) is None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import json
 import re
 
 from gateway.task_continuation import (
@@ -289,6 +290,99 @@ def _calendar_source_request_id(platform_key: str, chat_id: str, ctx: MessageCon
     return f"{platform_key}:{chat_id}:{ctx.sender_id or ''}:{marker}:calendar_write"
 
 
+_CALENDAR_EVIDENCE_KEYS = (
+    "calendar_id", "event_id", "summary", "start", "end", "event_link", "read_back", "status"
+)
+
+
+def _calendar_evidence_missing(evidence: dict | None) -> tuple[str, ...]:
+    if not isinstance(evidence, dict):
+        return ("calendar evidence",)
+    missing: list[str] = []
+    labels = {
+        "calendar_id": "calendar ID",
+        "event_id": "event ID или штатная ссылка",
+        "summary": "summary/название",
+        "start": "start/начало",
+        "end": "end/окончание",
+        "event_link": "event ID или штатная ссылка",
+    }
+    for key in ("calendar_id", "event_id", "summary", "start", "end", "event_link"):
+        if not evidence.get(key):
+            label = labels[key]
+            if label not in missing:
+                missing.append(label)
+    if evidence.get("read_back") is not True:
+        missing.append("подтверждение read-back")
+    if str(evidence.get("status") or "").lower() != "created":
+        missing.append("status=created")
+    return tuple(missing)
+
+
+def calendar_evidence_complete(evidence: dict | None) -> bool:
+    return _calendar_evidence_missing(evidence) == ()
+
+
+def _coerce_calendar_evidence(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    if not ({"calendar_id", "event_id", "read_back"} <= set(value)):
+        return None
+    evidence = {key: value.get(key) for key in _CALENDAR_EVIDENCE_KEYS if key in value}
+    if "event_link" not in evidence and value.get("htmlLink"):
+        evidence["event_link"] = value.get("htmlLink")
+    if "event_id" not in evidence and value.get("id"):
+        evidence["event_id"] = value.get("id")
+    if "calendar_id" not in evidence and value.get("calendarId"):
+        evidence["calendar_id"] = value.get("calendarId")
+    return evidence
+
+
+def _json_objects_from_text(text: str) -> list[object]:
+    value = (text or "").strip()
+    if not value:
+        return []
+    candidates = [value]
+    start = value.find("{")
+    end = value.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(value[start:end + 1])
+    out = []
+    for candidate in candidates:
+        try:
+            out.append(json.loads(candidate))
+        except Exception:
+            pass
+    return out
+
+
+def extract_calendar_evidence_from_result(result: dict | None) -> dict | None:
+    if not isinstance(result, dict):
+        return None
+    candidates: list[object] = []
+    for key in ("calendar_evidence", "calendar_event_evidence"):
+        if key in result:
+            candidates.append(result[key])
+    for item in result.get("tools") or result.get("tool_calls") or ():
+        candidates.append(item)
+    for msg in result.get("messages") or ():
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool" or msg.get("tool_call_id") or msg.get("name"):
+            content = msg.get("content")
+            if isinstance(content, str):
+                candidates.extend(_json_objects_from_text(content))
+            elif content is not None:
+                candidates.append(content)
+        elif isinstance(msg.get("content"), str) and "calendar_id" in msg.get("content", ""):
+            candidates.extend(_json_objects_from_text(msg.get("content", "")))
+    for candidate in candidates:
+        evidence = _coerce_calendar_evidence(candidate)
+        if evidence is not None:
+            return evidence
+    return None
+
+
 def calendar_completion_evidence_missing(
     original_request: str,
     final_response: str,
@@ -306,6 +400,9 @@ def calendar_completion_evidence_missing(
         or _successful_calendar_write_tool_used(tool_calls)
     ):
         return ()
+    evidence = (metadata or {}).get("calendar_evidence") if isinstance(metadata, dict) else None
+    if evidence is not None:
+        return _calendar_evidence_missing(evidence)
     response = final_response or ""
     checks = (
         (_CALENDAR_EVENT_REF_RE, "event ID или штатная ссылка"),

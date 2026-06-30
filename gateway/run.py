@@ -15737,9 +15737,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     from gateway.task_runtime import (
                         calendar_completion_evidence_missing,
+                        calendar_evidence_complete,
+                        extract_calendar_evidence_from_result,
                         task_reported_non_success,
                     )
-                    _reported_non_success = task_reported_non_success(
+                    _task_metadata = dict(_active_task.metadata or {})
+                    _calendar_evidence = extract_calendar_evidence_from_result(result)
+                    if _calendar_evidence is not None:
+                        _task_metadata["calendar_evidence"] = _calendar_evidence
+                        _task_store.merge_metadata(_active_task.task_id, calendar_evidence=_calendar_evidence)
+                    _evidence_complete = calendar_evidence_complete(_calendar_evidence)
+                    _reported_non_success = None if _evidence_complete else task_reported_non_success(
                         str(final_response),
                         result_partial=bool(result.get("partial")),
                         result_failed=bool(result.get("failed")),
@@ -15767,7 +15775,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             str(final_response),
                             route_toolsets=routed_toolsets,
                             route_skills=getattr(_task_route, "skill_names", ()),
-                            metadata=_active_task.metadata,
+                            metadata=_task_metadata,
                             tool_calls=result.get("tool_calls") or result.get("tools"),
                         )
                         if _evidence_missing:
@@ -15784,6 +15792,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 last_error="missing calendar evidence: " + ",".join(_evidence_missing),
                             )
                         else:
+                            if _evidence_complete and not str(final_response or "").lstrip().startswith(("READY", "SUCCESS")):
+                                final_response = (
+                                    "READY\nCalendar event confirmed by read-back.\n"
+                                    + json.dumps(_calendar_evidence, ensure_ascii=False, sort_keys=True)
+                                )
+                                result["final_response"] = final_response
                             _task_store.merge_metadata(
                                 _active_task.task_id,
                                 final_response=str(final_response),
