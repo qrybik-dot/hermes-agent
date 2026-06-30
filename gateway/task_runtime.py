@@ -356,6 +356,32 @@ def _json_objects_from_text(text: str) -> list[object]:
     return out
 
 
+def _calendar_evidence_from_candidates(candidates: Iterable[object]) -> dict | None:
+    for candidate in candidates:
+        evidence = _coerce_calendar_evidence(candidate)
+        if evidence is not None:
+            return evidence
+    return None
+
+
+def extract_calendar_evidence_from_tool_result(function_result: object) -> dict | None:
+    candidates: list[object] = []
+    if isinstance(function_result, str):
+        candidates.extend(_json_objects_from_text(function_result))
+    elif isinstance(function_result, dict):
+        candidates.append(function_result)
+    elif isinstance(function_result, list):
+        candidates.extend(function_result)
+    return _calendar_evidence_from_candidates(candidates)
+
+
+def persist_calendar_evidence_from_tool_result(store: TaskStateStore, task_id: str, function_result: object) -> dict | None:
+    evidence = extract_calendar_evidence_from_tool_result(function_result)
+    if evidence is not None:
+        store.merge_metadata(task_id, calendar_evidence=evidence)
+    return evidence
+
+
 def extract_calendar_evidence_from_result(result: dict | None) -> dict | None:
     if not isinstance(result, dict):
         return None
@@ -376,11 +402,7 @@ def extract_calendar_evidence_from_result(result: dict | None) -> dict | None:
                 candidates.append(content)
         elif isinstance(msg.get("content"), str) and "calendar_id" in msg.get("content", ""):
             candidates.extend(_json_objects_from_text(msg.get("content", "")))
-    for candidate in candidates:
-        evidence = _coerce_calendar_evidence(candidate)
-        if evidence is not None:
-            return evidence
-    return None
+    return _calendar_evidence_from_candidates(candidates)
 
 
 def calendar_completion_evidence_missing(

@@ -14006,6 +14006,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "title": "",
             "formatter": None,
         }
+        runtime_calendar_evidence = [None]
 
         def _emit_task_status(percent: int, stage: str, *, done: bool = False, verdict: str | None = None, blocker: str | None = None) -> None:
             if not task_status_state["enabled"]:
@@ -14035,6 +14036,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if str(tool_name or "").startswith("browser"):
                     request_metrics["browser_call_count"] += 1
                     request_metrics["browser_total_ms"] += max(0, duration_ms)
+                try:
+                    from gateway.task_continuation import TaskStateStore as _RuntimeTaskStateStore
+                    from gateway.task_runtime import persist_calendar_evidence_from_tool_result
+                    evidence = persist_calendar_evidence_from_tool_result(
+                        _RuntimeTaskStateStore(),
+                        _active_task.task_id,
+                        kwargs.get("result"),
+                    ) if _active_task is not None else None
+                    if evidence is not None:
+                        runtime_calendar_evidence[0] = evidence
+                except NameError:
+                    pass
+                except Exception as _calendar_evidence_err:
+                    logger.debug("calendar tool evidence capture failed: %s", _calendar_evidence_err)
             if task_status_state["enabled"]:
                 if event_type == "tool.started":
                     stage_map = {
@@ -15742,7 +15757,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         task_reported_non_success,
                     )
                     _task_metadata = dict(_active_task.metadata or {})
-                    _calendar_evidence = extract_calendar_evidence_from_result(result)
+                    _calendar_evidence = runtime_calendar_evidence[0] or extract_calendar_evidence_from_result(result)
                     if _calendar_evidence is not None:
                         _task_metadata["calendar_evidence"] = _calendar_evidence
                         _task_store.merge_metadata(_active_task.task_id, calendar_evidence=_calendar_evidence)

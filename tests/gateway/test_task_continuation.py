@@ -13,6 +13,8 @@ from gateway.task_runtime import (
     calendar_completion_evidence_missing,
     calendar_evidence_complete,
     extract_calendar_evidence_from_result,
+    extract_calendar_evidence_from_tool_result,
+    persist_calendar_evidence_from_tool_result,
     prepare_task_turn,
     task_reported_non_success,
 )
@@ -921,3 +923,52 @@ def test_non_calendar_tool_result_not_calendar_evidence():
         ]
     }
     assert extract_calendar_evidence_from_result(result) is None
+
+
+def test_runtime_tool_result_persists_calendar_evidence_for_finalizer(tmp_path):
+    store = _store(tmp_path)
+    task = store.create(
+        platform="telegram",
+        chat_id="1",
+        session_key="s",
+        title="добавь в календарь мне",
+        original_request="добавь в календарь мне",
+        role="productivity",
+        toolsets=["terminal", "skills"],
+        required_toolsets=["skills"],
+        requires_execution=True,
+        metadata={"execution_contract": {"type": "calendar_write"}},
+    )
+    evidence = _calendar_evidence()
+    raw_result = "calendar tool stdout\n" + json.dumps(evidence, ensure_ascii=False)
+
+    assert extract_calendar_evidence_from_tool_result(raw_result) == evidence
+    assert persist_calendar_evidence_from_tool_result(store, task.task_id, raw_result) == evidence
+
+    saved = store.get(task.task_id).metadata
+    assert saved["calendar_evidence"] == evidence
+    assert calendar_completion_evidence_missing(
+        task.original_request,
+        "Готово, событие создано.",
+        route_skills=["google-workspace"],
+        metadata=saved,
+    ) == ()
+
+
+def test_runtime_tool_result_ignores_non_calendar_payload(tmp_path):
+    store = _store(tmp_path)
+    task = store.create(
+        platform="telegram",
+        chat_id="1",
+        session_key="s",
+        title="drive upload",
+        original_request="загрузи файл",
+        role="productivity",
+        toolsets=["drive"],
+        metadata={},
+    )
+    payload = json.dumps({"status": "created", "id": "file-1", "webViewLink": "https://drive"})
+
+    assert extract_calendar_evidence_from_tool_result(payload) is None
+    assert persist_calendar_evidence_from_tool_result(store, task.task_id, payload) is None
+    assert "calendar_evidence" not in store.get(task.task_id).metadata
