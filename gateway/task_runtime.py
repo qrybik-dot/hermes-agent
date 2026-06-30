@@ -356,23 +356,57 @@ def _json_objects_from_text(text: str) -> list[object]:
     return out
 
 
+_CALENDAR_RESULT_CONTAINER_KEYS = (
+    "calendar_evidence",
+    "calendar_event_evidence",
+    "result",
+    "output",
+    "stdout",
+    "content",
+    "data",
+    "response",
+    "body",
+)
+
+
+def _calendar_evidence_from_value(value: object, *, depth: int = 0) -> dict | None:
+    if depth > 6:
+        return None
+    evidence = _coerce_calendar_evidence(value)
+    if evidence is not None:
+        return evidence
+    if isinstance(value, str):
+        for parsed in _json_objects_from_text(value):
+            evidence = _calendar_evidence_from_value(parsed, depth=depth + 1)
+            if evidence is not None:
+                return evidence
+        return None
+    if isinstance(value, dict):
+        for key in _CALENDAR_RESULT_CONTAINER_KEYS:
+            if key not in value:
+                continue
+            evidence = _calendar_evidence_from_value(value[key], depth=depth + 1)
+            if evidence is not None:
+                return evidence
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            evidence = _calendar_evidence_from_value(item, depth=depth + 1)
+            if evidence is not None:
+                return evidence
+    return None
+
+
 def _calendar_evidence_from_candidates(candidates: Iterable[object]) -> dict | None:
     for candidate in candidates:
-        evidence = _coerce_calendar_evidence(candidate)
+        evidence = _calendar_evidence_from_value(candidate)
         if evidence is not None:
             return evidence
     return None
 
 
 def extract_calendar_evidence_from_tool_result(function_result: object) -> dict | None:
-    candidates: list[object] = []
-    if isinstance(function_result, str):
-        candidates.extend(_json_objects_from_text(function_result))
-    elif isinstance(function_result, dict):
-        candidates.append(function_result)
-    elif isinstance(function_result, list):
-        candidates.extend(function_result)
-    return _calendar_evidence_from_candidates(candidates)
+    return _calendar_evidence_from_value(function_result)
 
 
 def persist_calendar_evidence_from_tool_result(store: TaskStateStore, task_id: str, function_result: object) -> dict | None:

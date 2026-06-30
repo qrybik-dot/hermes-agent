@@ -1195,6 +1195,42 @@ def test_runtime_tool_result_persists_calendar_evidence_for_finalizer(tmp_path):
     ) == ()
 
 
+def test_runtime_terminal_wrapper_persists_calendar_evidence_for_finalizer(tmp_path):
+    store = _store(tmp_path)
+    task = store.create(
+        platform="telegram",
+        chat_id="1",
+        session_key="s",
+        title="добавь в календарь мне",
+        original_request="добавь в календарь мне",
+        role="productivity",
+        toolsets=["terminal", "skills"],
+        required_toolsets=["skills"],
+        requires_execution=True,
+        metadata={"execution_contract": {"type": "calendar_write"}},
+    )
+    evidence = _calendar_evidence()
+    terminal_result = json.dumps(
+        {
+            "output": "google_api calendar create output\n" + json.dumps(evidence, ensure_ascii=False, indent=2),
+            "exit_code": 0,
+            "error": None,
+        },
+        ensure_ascii=False,
+    )
+
+    assert extract_calendar_evidence_from_tool_result(terminal_result) == evidence
+    assert persist_calendar_evidence_from_tool_result(store, task.task_id, terminal_result) == evidence
+    saved = store.get(task.task_id).metadata
+    assert saved["calendar_evidence"] == evidence
+    assert calendar_completion_evidence_missing(
+        task.original_request,
+        "Готово, событие создано.",
+        route_skills=["google-workspace"],
+        metadata=saved,
+    ) == ()
+
+
 def test_runtime_tool_result_ignores_non_calendar_payload(tmp_path):
     store = _store(tmp_path)
     task = store.create(
