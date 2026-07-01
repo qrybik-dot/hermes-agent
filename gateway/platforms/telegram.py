@@ -95,7 +95,16 @@ _MEDIA_URL_RE = re.compile(
     r"https?://(?:www\.)?(?:instagram\.com/(?:reel|p)/[^\s?]+(?:\?[^\s]+)?|youtu\.be/[^\s?]+(?:\?[^\s]+)?|youtube\.com/(?:watch\?v=[^\s&]+(?:&[^\s]+)?|shorts/[^\s?]+(?:\?[^\s]+)?))",
     re.I,
 )
-_MEDIA_DOWNLOAD_RE = re.compile(r"^\s*(?:скачай|загрузи|пришли|отправь)(?:\s+(?:мне|это|этот|ролик|видео))*[.!?]*\s*$", re.I)
+_MEDIA_DOWNLOAD_RE = re.compile(r"^\s*(?:ск+ачай|загрузи|пришли|отправь)(?:\s+(?:мне|это|этот|ролик|видео))*[.!?]*\s*$", re.I)
+_MEDIA_VIDEO_INTENT_RE = re.compile(
+    r"(?:\bск+ачай\b|\bзагрузи\b|\bпришли\b|\bотправь\b).{0,80}?(?:\bвидео\b|\bролик\b|\bфайл\b)|(?:\bск+ачай\b|\bзагрузи\b)(?:\s|$)",
+    re.I | re.S,
+)
+_MEDIA_SUMMARY_INTENT_RE = re.compile(
+    r"\b(?:сам+ари|summary|резюме)\b|\bкратко\b|перескаж|какая\s+суть|\bсуть\b|чем.{0,30}полезн|ключев(?:ые|ая)\s+(?:мысли|тезисы)",
+    re.I | re.S,
+)
+_MEDIA_TEXT_INTENT_RE = re.compile(r"транскриб|расшифр|полный\s+текст|текстом", re.I)
 _MEDIA_STATE_TTL = 600.0
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -3960,31 +3969,30 @@ class TelegramAdapter(BasePlatformAdapter):
             if not record or time.monotonic() - float(record.get("created", 0)) > _MEDIA_STATE_TTL:
                 await query.answer(text="Кнопка устарела. Пришли ссылку ещё раз", show_alert=True)
                 return
-            if record.get("running"):
+            running_key = f"{action}_running"
+            done_key = f"{action}_done"
+            if record.get(running_key):
                 await query.answer(text="Уже выполняю")
                 return
-            if action == "video" and record.get("done"):
-                await query.answer(text="Видео уже отправлено")
+            if record.get(done_key):
+                await query.answer(text="Уже готово")
                 return
             label_map = {"video": "Видео", "audio": "Аудио", "text": "Текст", "summary": "Кратко"}
             label = label_map.get(action, action)
             await query.answer(text=f"Выбрано: {label}")
             try:
-                await query.edit_message_text(text=f"✓ {label}", reply_markup=None)
+                await query.edit_message_text(text=f"⏳ {label}", reply_markup=None)
             except Exception:
                 pass
             if action == "video":
                 asyncio.create_task(self._run_media_download(record, prompt_message=query.message))
                 return
-            # Other media actions still use the general agent, but with an explicit URL and intent.
-            action_text = {
-                "audio": "Извлеки аудио из этой ссылки",
-                "text": "Транскрибируй аудио по этой ссылке",
-                "summary": "Кратко перескажи содержимое по этой ссылке",
-            }.get(action)
-            if action_text and query.message:
+            if action in {"text", "summary"}:
+                asyncio.create_task(self._run_youtube_action(record, action))
+                return
+            if query.message:
                 event = self._build_message_event(query.message, MessageType.TEXT)
-                event.text = f"{action_text}: {record['url']}"
+                event.text = f"Извлеки аудио из этой ссылки: {record['url']}"
                 await self.handle_message(event)
             return
 
@@ -6212,9 +6220,9 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._send_message_with_thread_fallback(**kwargs)
 
     async def _run_media_download(self, record: Dict[str, Any], *, prompt_message=None) -> None:
-        if record.get("running") or record.get("done"):
+        if record.get("video_running") or record.get("video_done") or record.get("done"):
             return
-        record["running"] = True
+        record["video_running"] = True
         started = time.monotonic()
         chat_id = str(record["chat_id"])
         thread_id = record.get("thread_id")
@@ -6250,13 +6258,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if video_path and not os.path.isabs(video_path):
                 video_path = os.path.abspath(os.path.join('/home/hermes/media_downloader', video_path))
             if proc.returncode != 0 or not video_path or not os.path.isfile(video_path) or os.path.getsize(video_path) <= 0:
+                if "Sign in to confirm" in decoded or "LOGIN_REQUIRED" in decoded:
+                    raise RuntimeError("YouTube заблокировал загрузку с VPS: нужны cookies или прокси")
                 raise RuntimeError('загрузчик не вернул готовый файл')
             if status_id:
                 await self.edit_message(chat_id, str(status_id), f"Отправляю видео…\n{self._format_media_elapsed(started)}")
             sent = await self.send_video(chat_id, video_path, caption=None, metadata=metadata)
             if not sent.success:
                 raise RuntimeError(sent.error or 'Telegram не принял видео')
-            record['done'] = True
+            record['video_done'] = True
             if status_id:
                 await self.edit_message(chat_id, str(status_id), f"Готово 🎬\n{self._format_media_elapsed(started)}")
             await self._send_media_followup_menu(record)
@@ -6270,10 +6280,123 @@ class TelegramAdapter(BasePlatformAdapter):
         finally:
             stop.set()
             beat.cancel()
-            record['running'] = False
+            record['video_running'] = False
+
+    async def _run_youtube_action(self, record: Dict[str, Any], action: str) -> None:
+        if action not in {"summary", "text"}:
+            return
+        running_key = f"{action}_running"
+        done_key = f"{action}_done"
+        if record.get(running_key) or record.get(done_key):
+            return
+        record[running_key] = True
+        started = time.monotonic()
+        chat_id = str(record["chat_id"])
+        thread_id = record.get("thread_id")
+        metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+        label = "Готовлю саммари" if action == "summary" else "Получаю расшифровку"
+        status = await self.send(chat_id, f"{label}…\n0 сек", metadata=metadata)
+        status_id = getattr(status, "message_id", None)
+        stop = asyncio.Event()
+
+        async def heartbeat():
+            while not stop.is_set():
+                await asyncio.sleep(3)
+                if stop.is_set() or not status_id:
+                    break
+                try:
+                    await self.edit_message(
+                        chat_id,
+                        str(status_id),
+                        f"{label}…\n{self._format_media_elapsed(started)}",
+                    )
+                except Exception:
+                    pass
+
+        beat = asyncio.create_task(heartbeat())
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                '/home/hermes/.hermes/hermes-agent/venv/bin/python',
+                '/home/hermes/.hermes/hermes-agent/scripts/youtube_pipeline.py',
+                str(record['url']),
+                '--action',
+                action,
+                cwd='/home/hermes/media_downloader',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=330)
+            decoded = stdout.decode('utf-8', errors='replace').strip()
+            err_text = stderr.decode('utf-8', errors='replace').strip()
+            try:
+                payload = json.loads(decoded.splitlines()[-1]) if decoded else {}
+            except Exception:
+                payload = {}
+            if proc.returncode != 0 or payload.get('status') != 'success':
+                message = str(payload.get('message') or err_text or 'неизвестная ошибка')[:300]
+                raise RuntimeError(message)
+
+            if action == 'summary':
+                summary = str(payload.get('summary') or '').strip()
+                if not summary:
+                    raise RuntimeError('получен пустой результат саммари')
+                sent = await self.send(chat_id, summary, metadata=metadata)
+            else:
+                transcript_path = str(payload.get('transcript_path') or '')
+                if not transcript_path or not os.path.isfile(transcript_path):
+                    raise RuntimeError('файл расшифровки не создан')
+                sent = await self.send_document(
+                    chat_id,
+                    transcript_path,
+                    caption='Расшифровка YouTube-видео',
+                    file_name='youtube_transcript.txt',
+                    metadata=metadata,
+                )
+            if not getattr(sent, 'success', False):
+                raise RuntimeError(getattr(sent, 'error', None) or 'Telegram не принял результат')
+            record[done_key] = True
+            if status_id:
+                await self.edit_message(
+                    chat_id,
+                    str(status_id),
+                    f"Готово ✓\n{self._format_media_elapsed(started)}",
+                )
+        except asyncio.TimeoutError:
+            if status_id:
+                await self.edit_message(chat_id, str(status_id), 'Не удалось обработать видео за 5 минут')
+        except Exception as exc:
+            logger.warning("[%s] YouTube %s pipeline failed: %s", self.name, action, exc, exc_info=True)
+            if status_id:
+                await self.edit_message(chat_id, str(status_id), f"Не получилось: {str(exc)[:220]}")
+        finally:
+            stop.set()
+            beat.cancel()
+            record[running_key] = False
 
     async def _try_handle_media_fast_path(self, msg) -> bool:
         value = (msg.text or '').strip()
+        embedded = _MEDIA_URL_RE.search(value)
+        if embedded and not _MEDIA_URL_RE.fullmatch(value):
+            url = embedded.group(0).rstrip('.,);]')
+            if 'youtu' in url.lower():
+                wants_video = bool(_MEDIA_VIDEO_INTENT_RE.search(value))
+                wants_summary = bool(_MEDIA_SUMMARY_INTENT_RE.search(value))
+                wants_text = bool(_MEDIA_TEXT_INTENT_RE.search(value))
+                if wants_video or wants_summary or wants_text:
+                    record = {
+                        "url": url,
+                        "chat_id": str(msg.chat.id),
+                        "thread_id": getattr(msg, "message_thread_id", None),
+                        "created": time.monotonic(),
+                    }
+                    self._latest_media_by_chat[self._media_context_key(msg)] = record
+                    if wants_video:
+                        await self._run_media_download(record)
+                    if wants_summary:
+                        await self._run_youtube_action(record, 'summary')
+                    elif wants_text:
+                        await self._run_youtube_action(record, 'text')
+                    return True
         match = _MEDIA_URL_RE.fullmatch(value)
         if match:
             url = match.group(0)
