@@ -16021,7 +16021,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
-            if final_response and _active_task is not None:
+            if final_response and _active_task is not None and _task_route.role != "simple":
                 try:
                     from agent.report_finalizer_renderer import render_task_report_html as _render_task_report_html
                     _html_report = _render_task_report_html(

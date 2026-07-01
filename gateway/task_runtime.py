@@ -798,19 +798,34 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     working_toolsets = [name for name in route.toolsets if name not in {"no_mcp", "clarify"}]
     if requires_execution and not working_toolsets:
-        if task is not None:
-            store.update(task.task_id, status="blocked",
-                         last_error="router did not assign execution toolset")
-        return PreparedTaskTurn(
-            str(message or ""), route, task,
-            early_response(
-                "BLOCKED\nМаршрутизатор не назначил инструмент выполнения. "
-                "Фактические действия не выполнялись",
-                status="blocked", task_id=task.task_id if task else None,
-                role=route.role, reason="execution toolset preflight blocked",
-            ),
-            continued,
-        )
+        safe_fallback = {"clarify", "skills", "file", "web", "terminal"}
+        if platform_toolsets is not None:
+            safe_fallback &= set(platform_toolsets)
+        if safe_fallback - {"clarify"}:
+            route = TaskRoute(
+                role=route.role,
+                reason=route.reason + "; universal_safe_action_fallback",
+                toolsets=sorted(safe_fallback),
+                max_iterations=route.max_iterations,
+                skill_names=route.skill_names,
+                skip_context_files=route.skip_context_files,
+                operational_context=route.operational_context,
+            )
+            working_toolsets = [name for name in route.toolsets if name != "clarify"]
+        else:
+            if task is not None:
+                store.update(task.task_id, status="blocked",
+                             last_error="no safe execution capability available")
+            return PreparedTaskTurn(
+                str(message or ""), route, task,
+                early_response(
+                    "Не могу начать выполнение: в этом канале нет доступного инструмента. "
+                    "Пришли ссылку или файл напрямую либо уточни, какой результат нужен.",
+                    status="blocked", task_id=task.task_id if task else None,
+                    role=route.role, reason="no safe execution capability available",
+                ),
+                continued,
+            )
     missing = sorted(set(required) - set(route.toolsets))
     if missing:
         if task is not None:

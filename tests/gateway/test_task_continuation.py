@@ -342,7 +342,7 @@ def test_missing_google_workspace_skill_blocks_before_model(tmp_path, monkeypatc
     assert "google-workspace" in prepared.early_response["final_response"]
 
 
-def test_execution_without_working_toolsets_blocks_before_model(tmp_path, monkeypatch):
+def test_execution_without_working_toolsets_explains_missing_capability(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
     prepared = prepare_task_turn(
@@ -356,8 +356,10 @@ def test_execution_without_working_toolsets_blocks_before_model(tmp_path, monkey
     assert prepared.early_response["model"] == "deterministic"
     assert prepared.early_response["api_calls"] == 0
     assert prepared.early_response["tools"] == []
-    assert prepared.early_response["final_response"].startswith("BLOCKED")
-    assert "Маршрутизатор не назначил инструмент выполнения" in prepared.early_response["final_response"]
+    response = prepared.early_response["final_response"]
+    assert not response.startswith("BLOCKED")
+    assert "нет доступного инструмента" in response
+    assert "Пришли ссылку или файл" in response
 
 
 def test_travel_turn_is_tracked_and_requires_terminal_execution(tmp_path, monkeypatch):
@@ -1278,3 +1280,35 @@ def test_runtime_tool_result_ignores_non_calendar_payload(tmp_path):
     assert extract_calendar_evidence_from_tool_result(payload) is None
     assert persist_calendar_evidence_from_tool_result(store, task.task_id, payload) is None
     assert "calendar_evidence" not in store.get(task.task_id).metadata
+
+
+
+def test_execution_classifier_miss_uses_universal_safe_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+
+    from gateway.task_router import TaskRoute
+
+    monkeypatch.setattr(
+        "gateway.task_runtime.route_turn",
+        lambda *args, **kwargs: TaskRoute(
+            role="simple",
+            reason="synthetic unknown action",
+            toolsets=["no_mcp"],
+            max_iterations=12,
+        ),
+    )
+    prepared = prepare_task_turn(
+        message="Скачай ролик",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-universal-safe-fallback",
+        user_config={"agent": {}},
+        platform_toolsets=["clarify", "skills", "file", "web", "terminal", "no_mcp"],
+    )
+    assert prepared.early_response is None
+    assert prepared.route is not None
+    assert "universal_safe_action_fallback" in prepared.route.reason
+    assert prepared.route.toolsets == ["clarify", "file", "skills", "terminal", "web"]

@@ -3325,19 +3325,25 @@ class TelegramAdapter(BasePlatformAdapter):
             }
 
             if choices:
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.
+                # Telegram caps callback_data at 64 bytes. For 2–3 short
+                # choices, put the actual choice on the button so the user
+                # can answer with one tap. Long or numerous choices keep
+                # compact numeric labels; the full text stays in the body.
                 rows = []
-                for idx in range(len(choices)):
+                use_choice_labels = len(choices) <= 3 and all(
+                    len(str(choice).strip()) <= 32 for choice in choices
+                )
+                for idx, choice in enumerate(choices):
+                    label = str(choice).strip() if use_choice_labels else str(idx + 1)
                     rows.append([
                         InlineKeyboardButton(
-                            str(idx + 1),
+                            label,
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])
                 rows.append([
                     InlineKeyboardButton(
-                        "✏️ Other (type answer)",
+                        "✏️ Другой ответ",
                         callback_data=f"cl:{clarify_id}:other",
                     )
                 ])

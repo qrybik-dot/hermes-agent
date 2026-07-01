@@ -351,3 +351,87 @@ def test_adaptive_planner_install_request_routes_to_execution_tools():
     assert "file" in route.toolsets
     assert route.skill_names.count("plan") == 1
     assert "delegation" in route.toolsets
+
+
+
+def test_simple_external_action_gets_universal_safe_tools():
+    for text in (
+        "Скачай ролик",
+        "Проверь, что находится по этой ссылке",
+        "Отправь мне этот файл в телеграм",
+    ):
+        route = route_turn(
+            text,
+            command=None,
+            platform_key="telegram",
+            user_config={"agent": {}},
+            platform_toolsets=ALL_ALLOWED,
+        )
+        assert route.role == "simple"
+        assert "no_mcp" not in route.toolsets
+        assert {"clarify", "skills", "file", "web", "terminal"}.issubset(route.toolsets)
+
+
+def test_bare_url_routes_to_clarification_not_execution_guess():
+    route = route_turn(
+        "https://www.instagram.com/reel/example/",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "simple"
+    assert route.toolsets == ["clarify"]
+    assert "кнопки" in route.operational_context
+    assert "не переспрашивай очевидное" in route.operational_context
+
+
+def test_find_this_skill_is_recognized_as_skill_query():
+    route = route_turn(
+        "Найди этот скилл",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert "skills" in route.toolsets
+    assert "terminal" in route.toolsets
+    assert "file" in route.toolsets
+    assert "no_mcp" not in route.toolsets
+
+
+def test_chat_stays_fast_without_tools():
+    route = route_turn(
+        "Привет, как дела?",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.toolsets == ["no_mcp"]
+
+
+
+def test_ambiguous_save_prefers_clarify_buttons():
+    route = route_turn(
+        "Сохрани это для меня",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.toolsets == ["clarify"]
+
+
+def test_known_calendar_route_does_not_gain_generic_web_tool():
+    route = route_turn(
+        "Добавь в календарь",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert "skills" in route.toolsets
+    assert "terminal" in route.toolsets
+    assert "file" in route.toolsets
+    assert "web" not in route.toolsets
