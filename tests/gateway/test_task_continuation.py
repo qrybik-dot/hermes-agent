@@ -18,6 +18,7 @@ from gateway.task_runtime import (
     prepare_task_turn,
     task_reported_non_success,
 )
+from gateway.quick_note_capture import detect_quick_note
 from tools.session_search_tool import (
     _consume_search_budget,
     reset_turn_search_budget,
@@ -1312,3 +1313,114 @@ def test_execution_classifier_miss_uses_universal_safe_fallback(tmp_path, monkey
     assert prepared.route is not None
     assert "universal_safe_action_fallback" in prepared.route.reason
     assert prepared.route.toolsets == ["clarify", "file", "skills", "terminal", "web"]
+
+
+def test_quick_note_detects_location_address_without_enrichment():
+    note = detect_quick_note(
+        "Г. О. Мытищи, дер. Пирогово, ул. Береговая, 1, стр. 1\n\n"
+        "запиши локацию пляжа в пирогово"
+    )
+    assert note is not None
+    assert note.payload["knowledge_project"] == "travel"
+    assert note.payload["title"] == "Локация: Пляж в Пирогово"
+    assert note.payload["summary"] == (
+        "Пляж в Пирогово. Адрес: Г. О. Мытищи, дер. Пирогово, ул. Береговая, 1, стр. 1"
+    )
+    assert "Флагман" not in json.dumps(note.payload, ensure_ascii=False)
+
+
+def test_quick_note_rejects_calendar_mail_vps_links_and_unclear():
+    blocked = [
+        "запиши заметку создать напоминание завтра",
+        "сохрани адрес https://example.com",
+        "зафиксируй место настройка VPS",
+        "сохрани адрес это",
+    ]
+    for text in blocked:
+        assert detect_quick_note(text) is None
+
+
+def test_prepare_task_turn_quick_note_returns_no_llm(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "gateway.task_runtime.run_quick_save",
+        lambda note: {
+            "status": "saved",
+            "saved": True,
+            "already_exists": False,
+            "title": note.payload["title"],
+            "summary": note.payload["summary"],
+            "readback_count": 1,
+        },
+    )
+    prepared = prepare_task_turn(
+        message=(
+            "Г. О. Мытищи, дер. Пирогово, ул. Береговая, 1, стр. 1\n\n"
+            "запиши локацию пляжа в пирогово"
+        ),
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-quick-note",
+        user_config={"agent": {}},
+        platform_toolsets=["clarify", "skills", "file", "web", "terminal", "no_mcp"],
+    )
+    assert prepared.task is None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["task_level"] == "no_llm"
+    assert prepared.early_response["final_response"] == (
+        "Записал: Пляж в Пирогово\n"
+        "Г. О. Мытищи, дер. Пирогово, ул. Береговая, 1, стр. 1"
+    )
+    store = TaskStateStore(tmp_path / ".hermes" / "state.db")
+    assert store.active("telegram", "1") == []
+
+
+def test_quick_note_uses_general_for_non_travel_note():
+    note = detect_quick_note("\u041a\u0443\u043f\u0438\u0442\u044c \u043c\u043e\u043b\u043e\u043a\u043e\n\n\u0437\u0430\u043f\u0438\u0448\u0438 \u0437\u0430\u043c\u0435\u0442\u043a\u0443 \u043f\u043e\u043a\u0443\u043f\u043a\u0438")
+    assert note is not None
+    assert note.payload["knowledge_project"] == "general"
+
+
+def test_quick_note_rejects_continuation_and_unsafe_actions():
+    sample = "\u0413. \u041e. \u041c\u044b\u0442\u0438\u0449\u0438, \u0443\u043b. \u0411\u0435\u0440\u0435\u0433\u043e\u0432\u0430\u044f, 1\n\n\u0437\u0430\u043f\u0438\u0448\u0438 \u043b\u043e\u043a\u0430\u0446\u0438\u044e \u043f\u043b\u044f\u0436\u0430"
+    assert detect_quick_note(sample, continued=True) is None
+    for text in (
+        "\u0437\u0430\u043f\u0438\u0448\u0438 \u043d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u0435 \u0437\u0430\u0432\u0442\u0440\u0430 \u0432 10",
+        "\u0441\u043e\u0445\u0440\u0430\u043d\u0438 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u044f \u0432 Python-\u0444\u0430\u0439\u043b\u0435",
+        "\u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u0442\u0438 gateway \u0438 \u0437\u0430\u043f\u0438\u0448\u0438 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442",
+        "\u0441\u043e\u0445\u0440\u0430\u043d\u0438 \u044d\u0442\u043e",
+    ):
+        assert detect_quick_note(text) is None
+
+
+def test_quick_note_location_without_address_stays_in_travel():
+    note = detect_quick_note("пляж в Пирогово\n\nзапиши локацию любимое место")
+    assert note is not None
+    assert note.payload["knowledge_project"] == "travel"
+
+
+def test_quick_note_duplicate_and_failure_responses():
+    from gateway.quick_note_capture import format_quick_save_response
+
+    duplicate, duplicate_status = format_quick_save_response({
+        "saved": False,
+        "already_exists": True,
+        "readback_count": 1,
+        "title": "Локация: Пляж в Пирогово",
+        "summary": "Пляж в Пирогово. Адрес: тестовый адрес",
+    })
+    assert duplicate_status == "success"
+    assert duplicate == "Эта локация уже сохранена"
+
+    failure, failure_status = format_quick_save_response({
+        "saved": False,
+        "already_exists": False,
+        "readback_count": 0,
+        "message": "publication read-back was not confirmed",
+    })
+    assert failure_status == "failed"
+    assert failure.startswith("Не удалось подтвердить сохранение:")
+    assert "Сохранено" not in failure

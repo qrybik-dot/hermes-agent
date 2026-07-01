@@ -174,3 +174,33 @@ def test_ordinary_turn_has_no_final_delivery_task_key():
 
 def test_managed_task_has_final_delivery_task_key():
     assert _final_delivery_task_id({"task_id": "task-123", "session_id": "same-session"}) == "task-123"
+
+
+def test_adaptive_progress_theme_selection():
+    assert TelegramTaskStatusState("исправить баг в Telegram").resolved_theme() == "developer"
+    assert TelegramTaskStatusState("исследовать причину сбоя").resolved_theme() == "detective"
+    assert TelegramTaskStatusState("подготовить документ").resolved_theme() == "runner"
+
+
+def test_adaptive_progress_uses_telegram_safe_emoji_bar():
+    state = TelegramTaskStatusState("исправить код")
+    rendered = state.render(stage="applied")
+    assert "🧑‍💻" in rendered
+    assert "▰" in rendered and "▱" in rendered
+    assert "60%" in rendered
+    assert "Задача: исправить код" in rendered
+
+
+def test_detective_and_runner_finish_with_semantic_icons():
+    detective = TelegramTaskStatusState("провести исследование")
+    runner = TelegramTaskStatusState("подготовить документ")
+    assert "💡" in detective.render(stage="delivery", verdict="READY")
+    assert "🏆" in runner.render(stage="delivery", verdict="READY")
+
+
+def test_blocked_progress_uses_warning_and_never_claims_completion():
+    state = TelegramTaskStatusState("исправить сервер")
+    rendered = state.render(stage="delivery", verdict="BLOCKED", blocker="нет доступа")
+    assert "⚠️" in rendered
+    assert "100%" not in rendered
+    assert "Блокер: нет доступа" in rendered

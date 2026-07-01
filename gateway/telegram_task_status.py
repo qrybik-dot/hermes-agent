@@ -37,6 +37,32 @@ _STAGE_PCT = {
     "done": 100,
 }
 
+_PROGRESS_THEMES = {
+    "developer": ("💭", "🔍", "🧑‍💻", "🧑‍💻", "🧪", "🚀", "🚀"),
+    "detective": ("❓", "🔍", "🕵️", "🧩", "🧪", "💡", "💡"),
+    "runner": ("🧍", "🚶", "🏃", "🏃", "🏃‍♂️💨", "🏆", "🏆"),
+}
+
+_DEVELOPER_TASK_RE = re.compile(
+    r"код|разработ|баг|ошиб|фикс|сервер|vps|gateway|telegram|интеграц|настро|конфиг|"
+    r"депло|deploy|git|тест|skill|router|маршрутиз|автоматизац",
+    re.I,
+)
+_DETECTIVE_TASK_RE = re.compile(
+    r"исслед|анализ|аудит|диагност|проверь|проверка|сравн|найд|поиск|причин|"
+    r"разбер|изучи|расслед|источник|логи",
+    re.I,
+)
+
+
+def progress_theme_for_title(title: str) -> str:
+    value = str(title or "")
+    if _DEVELOPER_TASK_RE.search(value):
+        return "developer"
+    if _DETECTIVE_TASK_RE.search(value):
+        return "detective"
+    return "runner"
+
 
 @dataclass
 class TelegramTaskStatusState:
@@ -54,6 +80,21 @@ class TelegramTaskStatusState:
     heartbeat_seconds: float = 55.0
     critical_tests_started: bool = False
     final_verdict: str | None = None
+    theme: str = "auto"
+
+    def resolved_theme(self) -> str:
+        return progress_theme_for_title(self.title) if self.theme == "auto" else self.theme
+
+    def stage_icon(self) -> str:
+        if self.final_verdict in {"BLOCKED", "INCOMPLETE", "PARTIAL"}:
+            return "⚠️"
+        ordered = ["accepted", "audit", "prepared", "applied", "tests", "delivery", "done"]
+        try:
+            index = ordered.index("done" if self.final_verdict in {"READY", "SUCCESS"} else self.current_stage)
+        except ValueError:
+            index = 0
+        icons = _PROGRESS_THEMES.get(self.resolved_theme(), _PROGRESS_THEMES["runner"])
+        return icons[min(index, len(icons) - 1)]
 
     def mark_stage(self, stage: str) -> None:
         if stage in self.stages:
@@ -103,11 +144,11 @@ class TelegramTaskStatusState:
         elapsed = max(0, int(time.monotonic() - self.started))
         minutes, seconds = divmod(elapsed, 60)
         elapsed_text = f"{minutes} мин {seconds:02d} сек" if minutes else f"{seconds} сек"
+        icon = self.stage_icon()
         lines = [
-            f"⏳ В работе: {self.title}",
-            f"[{'█' * filled}{'░' * (10 - filled)}] {pct}%",
-            f"Идёт: {elapsed_text}",
-            f"Этап: {stage_name}",
+            f"{icon} {'▰' * filled}{'▱' * (10 - filled)} {pct}%",
+            f"{stage_name.capitalize()} · {elapsed_text}",
+            f"Задача: {self.title}",
             "",
         ]
         for item in self.stages:

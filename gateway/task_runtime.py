@@ -16,6 +16,11 @@ from gateway.task_continuation import (
     should_track_task,
 )
 from gateway.task_router import TaskRoute, route_turn
+from gateway.quick_note_capture import (
+    detect_quick_note,
+    format_quick_save_response,
+    run_quick_save,
+)
 
 _TASK_OUTCOME_RE = re.compile(
     r"(?m)^\s*(?:[-*#>]+\s*)?(?:[^:\n]{0,40}:\s*)?"
@@ -654,6 +659,25 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             + str(task.metadata.get("checkpoint") or task.metadata.get("final_response") or task.last_error or "not recorded")[:1800]
             + "\n\nContinuation message:\n" + original
         )
+
+    if task is None:
+        quick_note = detect_quick_note(current_text, continued=False)
+        if quick_note is not None:
+            try:
+                quick_result = run_quick_save(quick_note)
+            except Exception as exc:
+                quick_result = {"status": "error", "saved": False, "message": str(exc)}
+            response, status = format_quick_save_response(quick_result)
+            return PreparedTaskTurn(
+                original, None, None,
+                early_response(
+                    response,
+                    status=status,
+                    role="no_llm",
+                    reason="deterministic quick note capture",
+                ),
+                False,
+            )
 
     if is_pause_request(original):
         pending = store.active(platform_key, str(chat_id))

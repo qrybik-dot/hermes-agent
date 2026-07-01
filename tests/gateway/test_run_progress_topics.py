@@ -1018,6 +1018,20 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert "final response 1" in sent_texts
 
 
+def test_background_review_notification_is_short_and_localized():
+    gateway_run = importlib.import_module("gateway.run")
+
+    assert gateway_run._format_background_review_notification(
+        "💾 Self-improvement review: Memory updated"
+    ) == "🧠 Память обновлена"
+    assert gateway_run._format_background_review_notification(
+        "💾 Skill 'prospect-scanner' created."
+    ) == "🛠 Создан навык: prospect-scanner"
+    assert gateway_run._format_background_review_notification(
+        "💾 Self-improvement review: User profile updated · Skill 'travel' patched"
+    ) == "👤 Профиль обновлён · 🛠 Обновлён навык: travel"
+
+
 @pytest.mark.asyncio
 async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
@@ -1030,6 +1044,14 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+    assert len(adapter._post_delivery_callbacks) == 1
+
+    next(iter(adapter._post_delivery_callbacks.values()))()
+    await asyncio.sleep(0.05)
+
+    assert [call["content"] for call in adapter.sent] == [
+        "🛠 Создан навык: prospect-scanner"
+    ]
 
 
 @pytest.mark.asyncio

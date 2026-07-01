@@ -81,6 +81,55 @@ def _final_delivery_task_id(agent_result: dict[str, Any]) -> str:
     return str(agent_result.get("task_id") or "")
 
 
+def _format_background_review_notification(message: str) -> Optional[str]:
+    """Render a short Russian notice for successful background learning actions."""
+    text = str(message or "").strip()
+    text = re.sub(
+        r"^\s*💾\s*(?:Self-improvement review:\s*)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not text:
+        return None
+
+    rendered: list[str] = []
+    for raw_action in re.split(r"\s+·\s+", text):
+        action = raw_action.strip().rstrip(".")
+        lower = action.lower()
+        if lower == "memory updated":
+            rendered.append("🧠 Память обновлена")
+            continue
+        if lower == "user profile updated":
+            rendered.append("👤 Профиль обновлён")
+            continue
+
+        skill_match = re.fullmatch(
+            r"Skill ['\"](.+?)['\"] (created|updated|patched)",
+            action,
+            flags=re.IGNORECASE,
+        )
+        if skill_match:
+            skill_name = skill_match.group(1).strip()[:80]
+            verb = skill_match.group(2).lower()
+            if verb == "created":
+                rendered.append(f"🛠 Создан навык: {skill_name}")
+            else:
+                rendered.append(f"🛠 Обновлён навык: {skill_name}")
+            continue
+
+        if "memory" in lower:
+            rendered.append("🧠 Память обновлена")
+        elif "profile" in lower:
+            rendered.append("👤 Профиль обновлён")
+        elif "skill" in lower:
+            rendered.append("🛠 Навык обновлён")
+        else:
+            rendered.append("🧠 Самообучение обновлено")
+
+    return " · ".join(dict.fromkeys(rendered)) if rendered else None
+
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -15247,12 +15296,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for queued in pending:
                     _deliver_bg_review_message(queued)
 
-            # Background review delivery is intentionally internal-only for
-            # Telegram UX: users should not receive "Self-improvement review:
-            # Skill ... updated" system messages after the final answer.
+            # Deliver only compact, localized notices after a successful
+            # memory/profile/skill update. Nothing-to-save and failed reviews
+            # never call this callback, so they stay silent.
             def _bg_review_send(message: str) -> None:
                 request_metrics["self_improvement_call_count"] += 1
-                logger.info("Background review summary suppressed from user delivery: %s", message)
+                notification = _format_background_review_notification(message)
+                if not notification:
+                    return
+                logger.info("Background review summary queued for user delivery: %s", notification)
+                if not _status_adapter or not _run_still_current():
+                    return
+                if not _bg_review_release.is_set():
+                    with _bg_review_pending_lock:
+                        if not _bg_review_release.is_set():
+                            _bg_review_pending.append(notification)
+                            return
+                _deliver_bg_review_message(notification)
 
             agent.background_review_callback = _bg_review_send
             # Register the release hook on the adapter so base.py's finally
@@ -16292,9 +16352,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                _blocks = min(10, max(1, int((_elapsed_mins * 10) / 10)))
-                _bar = "█" * _blocks + "░" * (10 - _blocks)
-                _heartbeat_text = f"⏳ В работе: задача Hermes\n[{_bar}] идёт {_elapsed_mins} мин{_status_detail}"
+                # Generic heartbeat cannot know honest completion percent. Animate a
+                # runner across the route instead of presenting elapsed time as progress.
+                _runner_pos = min(8, max(1, (_elapsed_mins % 9)))
+                _route = "━" * _runner_pos + "🏃" + "━" * (9 - _runner_pos) + "🏁"
+                _heartbeat_text = f"{_route}\nВыполняю задачу · {_elapsed_mins} мин{_status_detail}"
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:

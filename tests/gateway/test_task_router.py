@@ -183,7 +183,7 @@ def test_gateway_run_sync_scoping_regression():
     assert "agent_cache_status" in source
     assert "agent_prepare_ms" in source
     assert "gateway_overhead_ms" in source
-    assert "_emit_task_status(0, \"подготовка\")" in source
+    assert "_emit_task_status(0, \"accepted\")" in source
     assert "task:{_active_task.task_id}" in source
 
 
