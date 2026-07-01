@@ -39,6 +39,19 @@ The text usually arrives one of three ways:
 
 Always show the rewrite to the user. For file edits, show a diff or the changed section — don't silently overwrite.
 
+## Compact Russian profile
+
+For Russian user-facing prose, use this small pass instead of mechanically applying every pattern below:
+
+1. Start with the result; remove empty introductions and meta-commentary.
+2. Replace bureaucratic wording, AI clichés, inflated significance, and false “не просто X, а Y” contrasts with direct language.
+3. Keep natural rhythm, but do not add artificial mess, emotions, first-person opinions, jokes, examples, or personal experience.
+4. Preserve every fact, limitation, uncertainty, link, number, and requested action. Never invent specifics to make text feel human.
+5. Do not expand a simple answer into headings or repeated lists. Do not rewrite text that is already clear and natural.
+6. Match the user's established Russian voice when available; otherwise prefer plain, concise Russian without long dashes.
+
+**Scope and precedence:** apply this pass to substantial final prose, public posts, letters, documentation, and reports. Do not apply it to commands, logs, code, evidence blocks, short live statuses, button labels, or structured clarification flows. Gateway and Telegram UX contracts for clarifying questions, missing inputs, buttons, task states, and factual completion reports always take precedence over this skill. Humanization may improve wording but must not change the action, status, available choices, or required evidence.
+
 ## Your task
 
 When given text to humanize:

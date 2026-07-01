@@ -483,3 +483,62 @@ async def test_stale_numeric_choice_reports_expired():
     assert "expired" in query.answer.call_args.kwargs["text"].lower()
     assert query.answer.call_args.kwargs["show_alert"] is True
     assert "expired" in query.edit_message_text.call_args.kwargs["text"].lower()
+
+
+
+@pytest.mark.asyncio
+async def test_media_menu_uses_two_by_two_grid(monkeypatch):
+    adapter = _make_adapter()
+    sent = {}
+
+    async def fake_send(**kwargs):
+        sent.update(kwargs)
+        return MagicMock(message_id=200)
+
+    adapter._send_message_with_thread_fallback = fake_send
+    msg = MagicMock()
+    msg.chat.id = 12345
+    msg.message_id = 77
+    msg.message_thread_id = None
+
+    ok = await adapter._send_media_action_menu(
+        msg,
+        'https://www.instagram.com/reel/example/',
+    )
+
+    assert ok is True
+    assert len(adapter._media_action_state) == 1
+    assert sent['text'] == 'Что сделать со ссылкой?'
+
+
+@pytest.mark.asyncio
+async def test_explicit_download_uses_latest_media_without_agent(monkeypatch):
+    adapter = _make_adapter()
+    msg = MagicMock()
+    msg.chat.id = 12345
+    msg.message_thread_id = None
+    msg.text = 'Скачай ролик'
+    record = {
+        'url': 'https://www.instagram.com/reel/example/',
+        'chat_id': '12345',
+        'thread_id': None,
+        'created': __import__('time').monotonic(),
+        'running': False,
+        'done': False,
+    }
+    adapter._latest_media_by_chat[adapter._media_context_key(msg)] = record
+    called = AsyncMock()
+    monkeypatch.setattr(adapter, '_run_media_download', called)
+
+    handled = await adapter._try_handle_media_fast_path(msg)
+
+    assert handled is True
+    called.assert_awaited_once_with(record)
+
+
+def test_media_elapsed_includes_seconds_and_minutes():
+    adapter = _make_adapter()
+    import time as _time
+    now = _time.monotonic()
+    assert adapter._format_media_elapsed(now - 8).endswith('сек')
+    assert 'мин' in adapter._format_media_elapsed(now - 68)

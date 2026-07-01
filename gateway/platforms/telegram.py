@@ -16,6 +16,8 @@ import os
 import tempfile
 import html as _html
 import re
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -88,6 +90,13 @@ from gateway.platforms.telegram_network import (
     parse_fallback_ip_env,
 )
 from utils import atomic_replace
+
+_MEDIA_URL_RE = re.compile(
+    r"https?://(?:www\.)?(?:instagram\.com/(?:reel|p)/[^\s?]+|youtu\.be/[^\s?]+|youtube\.com/(?:watch\?v=|shorts/)[^\s&]+)",
+    re.I,
+)
+_MEDIA_DOWNLOAD_RE = re.compile(r"^\s*(?:скачай|загрузи|пришли|отправь)(?:\s+(?:мне|это|этот|ролик|видео))*[.!?]*\s*$", re.I)
+_MEDIA_STATE_TTL = 600.0
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -498,6 +507,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        self._media_action_state: Dict[str, Dict[str, Any]] = {}
+        self._latest_media_by_chat: Dict[str, Dict[str, Any]] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -3928,6 +3939,52 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        # --- Direct media callbacks (md:token:action) ---
+        if data.startswith("md:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Некорректная кнопка")
+                return
+            token, action = parts[1], parts[2]
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ Нет доступа")
+                return
+            record = self._media_action_state.get(token)
+            if not record or time.monotonic() - float(record.get("created", 0)) > _MEDIA_STATE_TTL:
+                await query.answer(text="Кнопка устарела. Пришли ссылку ещё раз", show_alert=True)
+                return
+            if record.get("running") or record.get("done"):
+                await query.answer(text="Уже выполняю" if record.get("running") else "Уже готово")
+                return
+            label_map = {"video": "Видео", "audio": "Аудио", "text": "Текст", "summary": "Кратко"}
+            label = label_map.get(action, action)
+            await query.answer(text=f"Выбрано: {label}")
+            try:
+                await query.edit_message_text(text=f"✓ {label}", reply_markup=None)
+            except Exception:
+                pass
+            if action == "video":
+                asyncio.create_task(self._run_media_download(record, prompt_message=query.message))
+                return
+            # Other media actions still use the general agent, but with an explicit URL and intent.
+            action_text = {
+                "audio": "Извлеки аудио из этой ссылки",
+                "text": "Транскрибируй аудио по этой ссылке",
+                "summary": "Кратко перескажи содержимое по этой ссылке",
+            }.get(action)
+            if action_text and query.message:
+                event = self._build_message_event(query.message, MessageType.TEXT)
+                event.text = f"{action_text}: {record['url']}"
+                await self.handle_message(event)
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -6087,6 +6144,127 @@ class TelegramAdapter(BasePlatformAdapter):
             pass
         return True
 
+    @staticmethod
+    def _format_media_elapsed(started: float) -> str:
+        elapsed = max(0, int(time.monotonic() - started))
+        minutes, seconds = divmod(elapsed, 60)
+        return f"{minutes} мин {seconds:02d} сек" if minutes else f"{seconds} сек"
+
+    def _media_context_key(self, msg) -> str:
+        thread_id = getattr(msg, "message_thread_id", None)
+        return f"{getattr(msg.chat, 'id', '')}:{thread_id or ''}"
+
+    async def _send_media_action_menu(self, msg, url: str) -> bool:
+        if not self._bot:
+            return False
+        token = uuid.uuid4().hex[:12]
+        key = self._media_context_key(msg)
+        record = {
+            "url": url,
+            "chat_id": str(msg.chat.id),
+            "thread_id": getattr(msg, "message_thread_id", None),
+            "reply_to": str(msg.message_id),
+            "created": time.monotonic(),
+            "running": False,
+            "done": False,
+        }
+        self._media_action_state[token] = record
+        self._latest_media_by_chat[key] = record
+        rows = [
+            [
+                InlineKeyboardButton("🎬 Видео", callback_data=f"md:{token}:video"),
+                InlineKeyboardButton("🎵 Аудио", callback_data=f"md:{token}:audio"),
+            ],
+            [
+                InlineKeyboardButton("📝 Текст", callback_data=f"md:{token}:text"),
+                InlineKeyboardButton("✨ Кратко", callback_data=f"md:{token}:summary"),
+            ],
+        ]
+        kwargs = {
+            "chat_id": int(msg.chat.id),
+            "text": "Что сделать со ссылкой?",
+            "reply_markup": InlineKeyboardMarkup(rows),
+            "reply_to_message_id": msg.message_id,
+            **self._notification_kwargs(None),
+        }
+        thread_id = getattr(msg, "message_thread_id", None)
+        if thread_id is not None:
+            kwargs.update(self._thread_kwargs_for_send(str(msg.chat.id), str(thread_id), {"thread_id": str(thread_id)}))
+        await self._send_message_with_thread_fallback(**kwargs)
+        return True
+
+    async def _run_media_download(self, record: Dict[str, Any], *, prompt_message=None) -> None:
+        if record.get("running") or record.get("done"):
+            return
+        record["running"] = True
+        started = time.monotonic()
+        chat_id = str(record["chat_id"])
+        thread_id = record.get("thread_id")
+        metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+        status = await self.send(chat_id, "Скачиваю видео…\n0 сек", metadata=metadata)
+        status_id = getattr(status, "message_id", None)
+        stop = asyncio.Event()
+
+        async def heartbeat():
+            while not stop.is_set():
+                await asyncio.sleep(2)
+                if stop.is_set() or not status_id:
+                    break
+                try:
+                    await self.edit_message(chat_id, str(status_id), f"Скачиваю видео…\n{self._format_media_elapsed(started)}")
+                except Exception:
+                    pass
+
+        beat = asyncio.create_task(heartbeat())
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                '/home/hermes/.hermes/hermes-agent/venv/bin/python',
+                '/home/hermes/media_downloader/download.py',
+                str(record['url']),
+                cwd='/home/hermes/media_downloader',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            output, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
+            decoded = output.decode('utf-8', errors='replace')
+            match = re.search(r'^RESULT_PATH:(.+)$', decoded, re.M)
+            video_path = match.group(1).strip() if match else ''
+            if video_path and not os.path.isabs(video_path):
+                video_path = os.path.abspath(os.path.join('/home/hermes/media_downloader', video_path))
+            if proc.returncode != 0 or not video_path or not os.path.isfile(video_path) or os.path.getsize(video_path) <= 0:
+                raise RuntimeError('загрузчик не вернул готовый файл')
+            if status_id:
+                await self.edit_message(chat_id, str(status_id), f"Отправляю видео…\n{self._format_media_elapsed(started)}")
+            sent = await self.send_video(chat_id, video_path, caption=None, metadata=metadata)
+            if not sent.success:
+                raise RuntimeError(sent.error or 'Telegram не принял видео')
+            record['done'] = True
+            if status_id:
+                await self.edit_message(chat_id, str(status_id), f"Готово 🎬\n{self._format_media_elapsed(started)}")
+        except asyncio.TimeoutError:
+            if status_id:
+                await self.edit_message(chat_id, str(status_id), "Не успел скачать видео за 90 секунд. Попробуй ещё раз или пришли файл напрямую")
+        except Exception as exc:
+            logger.warning("[%s] media fast-path failed: %s", self.name, exc, exc_info=True)
+            if status_id:
+                await self.edit_message(chat_id, str(status_id), f"Не получилось скачать: {str(exc)[:120]}")
+        finally:
+            stop.set()
+            beat.cancel()
+            record['running'] = False
+
+    async def _try_handle_media_fast_path(self, msg) -> bool:
+        value = (msg.text or '').strip()
+        match = _MEDIA_URL_RE.fullmatch(value)
+        if match:
+            return await self._send_media_action_menu(msg, match.group(0))
+        if _MEDIA_DOWNLOAD_RE.fullmatch(value):
+            record = self._latest_media_by_chat.get(self._media_context_key(msg))
+            if record and time.monotonic() - float(record.get('created', 0)) <= _MEDIA_STATE_TTL:
+                await self._run_media_download(record)
+                return True
+        return False
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -6102,6 +6280,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            return
+        if await self._try_handle_media_fast_path(msg):
             return
         await self._ensure_forum_commands(update.message)
 

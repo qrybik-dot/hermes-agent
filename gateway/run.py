@@ -15641,6 +15641,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _llm_before_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0)
                 _emit_task_status(25, "анализ и выполнение")
                 _conversation_started = time.monotonic()
+                agent._suppress_background_review_for_turn = (_task_route.role == "simple")
+                agent._suppress_html_report_for_turn = (_task_route.role == "simple")
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
                 _conversation_wall_ms = int(
                     (time.monotonic() - _conversation_started) * 1000
