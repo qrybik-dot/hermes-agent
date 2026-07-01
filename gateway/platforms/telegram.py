@@ -6198,20 +6198,13 @@ class TelegramAdapter(BasePlatformAdapter):
         return True
 
     async def _send_media_followup_menu(self, record: Dict[str, Any]) -> None:
-        token = str(record.get("token") or "")
-        if not token or not self._bot:
+        if not self._bot:
             return
         chat_id = str(record["chat_id"])
         thread_id = record.get("thread_id")
-        rows = [[
-            InlineKeyboardButton("🎵 Аудио", callback_data=f"md:{token}:audio"),
-            InlineKeyboardButton("📝 Текст", callback_data=f"md:{token}:text"),
-            InlineKeyboardButton("✨ Кратко", callback_data=f"md:{token}:summary"),
-        ]]
         kwargs = {
             "chat_id": int(chat_id),
-            "text": "Ещё с этим видео:\nНовый ролик — просто пришли следующую ссылку",
-            "reply_markup": InlineKeyboardMarkup(rows),
+            "text": "Новый ролик — просто пришли следующую ссылку",
             **self._notification_kwargs(None),
         }
         if thread_id is not None:

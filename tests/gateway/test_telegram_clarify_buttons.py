@@ -569,21 +569,9 @@ async def test_instagram_link_auto_downloads_without_menu(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_media_followup_menu_has_three_buttons_in_one_row(monkeypatch):
+async def test_media_followup_message_has_no_buttons(monkeypatch):
     adapter = _make_adapter()
     sent = {}
-
-    class Button:
-        def __init__(self, text, callback_data=None, **kwargs):
-            self.text = text
-            self.callback_data = callback_data
-
-    class Markup:
-        def __init__(self, rows):
-            self.inline_keyboard = rows
-
-    monkeypatch.setattr('gateway.platforms.telegram.InlineKeyboardButton', Button)
-    monkeypatch.setattr('gateway.platforms.telegram.InlineKeyboardMarkup', Markup)
 
     async def fake_send(**kwargs):
         sent.update(kwargs)
@@ -598,7 +586,5 @@ async def test_media_followup_menu_has_three_buttons_in_one_row(monkeypatch):
 
     await adapter._send_media_followup_menu(record)
 
-    rows = sent['reply_markup'].inline_keyboard
-    assert len(rows) == 1
-    assert [button.text for button in rows[0]] == ['🎵 Аудио', '📝 Текст', '✨ Кратко']
-    assert 'Новый ролик' in sent['text']
+    assert 'reply_markup' not in sent
+    assert sent['text'] == 'Новый ролик — просто пришли следующую ссылку'
