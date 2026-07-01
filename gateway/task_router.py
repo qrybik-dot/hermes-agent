@@ -136,6 +136,20 @@ _TRAVEL_RE = re.compile(
     r"\b(?:яндекс\s*карт|2гис)\b.{0,100}\b(?:маршрут|парковк|кафе|мест)\w*\b",
     re.I | re.S,
 )
+_TRAVEL_CAFE_CURRENT_RE = re.compile(
+    r"\b(?:рейтинг|рейтингами|отзыв|отзывам|открыто|закрыто|час(?:ы|ов)\s+работы|"
+    r"актуальн\w*\s+(?:отзыв|час|рейтинг)|сравни\s+кафе)\w*\b",
+    re.I,
+)
+_TRAVEL_LIVE_TRAFFIC_RE = re.compile(
+    r"\b(?:пробк|traffic|live\s*traffic|актуальн\w*\s+(?:дорог|трафик|время\s+в\s+пути))\w*\b",
+    re.I,
+)
+_TRAVEL_ROUTE_PARKING_RE = re.compile(
+    r"\b(?:сколько|как)\s+(?:ехать|идти|добираться|доехать)\b|"
+    r"\b(?:маршрут|дорог[аи]|доехать|ехать|парковк|припарковаться|яндекс\s*карт|2гис)\w*\b",
+    re.I,
+)
 _CONTEXT7_RE = re.compile(
     r"\bcontext7\b|официальн\w*\s+документац|документац\w*\s+(?:api|sdk|библиотек)|"
     r"\b(?:next\.js|react|supabase)\b",
@@ -317,6 +331,16 @@ def _intent_flags(text: str) -> dict[str, bool]:
     }
 
 
+def travel_needs_web_or_browser(text: str) -> bool:
+    value = text or ""
+    return bool(_TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
+
+
+def travel_is_route_or_parking(text: str) -> bool:
+    value = text or ""
+    return bool(_TRAVEL_RE.search(value) and _TRAVEL_ROUTE_PARKING_RE.search(value))
+
+
 def external_provider_fallback_safe(
     text: str,
     role: str,
@@ -431,7 +455,9 @@ def select_toolsets(
         requested.add("tutu")
     if flags["travel"]:
         requested.discard("no_mcp")
-        requested.update({"browser", "file", "skills", "terminal", "web"})
+        requested.update({"skills", "terminal"})
+        if travel_needs_web_or_browser(text):
+            requested.update({"browser", "web"})
     if flags["context7"] and role in {"coding", "research", "planning"}:
         requested.discard("no_mcp")
         requested.add("context7")
@@ -512,9 +538,16 @@ def skills_facts_operational_context() -> str:
 def travel_operational_context() -> str:
     return (
         "Контракт городских поездок: используй предзагруженный skill city-travel-concierge и реальные "
-        "инструменты до ответа. Для адресов, маршрутов, ETA, мест и парковок сначала вызывай helper skill "
-        "через terminal; для текущих отзывов, рейтингов, режима работы, тарифов и дорожной ситуации используй "
-        "web или browser. Не оценивай время в пути, расстояние, парковку или рейтинг по памяти. "
+        "инструменты до ответа. Для обычных маршрутов, ETA, ссылки Яндекс Карт и парковок сначала вызови "
+        "один агрегирующий helper через terminal: `city_travel_trip.py --start ... --destination ...`. "
+        "Не ищи реализацию skill через search_files и не перечитывай SKILL.md, если skill уже предзагружен. "
+        "Не читай, не выводи и не проверяй содержимое credential store; helper сам получает credentials. "
+        "Access denied на credential store не повторяй: используй helper либо верни точный блокер. "
+        "Если helper вернул маршрут, ссылку и хотя бы parking candidates, данных достаточно для ответа: сразу "
+        "сформируй короткий пользовательский ответ и не выполняй web_search для уверенности. "
+        "Максимум одна альтернативная попытка при падении конкретного provider; после двух одинаковых ошибок остановись. "
+        "Для текущих отзывов, рейтингов, режима работы и актуальных часов кафе используй web или browser. "
+        "Не оценивай время в пути, расстояние, парковку или рейтинг по памяти. "
         "Geoapify не учитывает live traffic: всегда помечай это и давай ссылку Яндекс Карт для проверки перед "
         "выездом. Парковку называй бесплатной только при официальном подтверждении или свежем подтверждении "
         "пользователя; OSM fee=no допускает лишь статус likely_free, остальные кандидаты unverified. "
@@ -616,7 +649,10 @@ def route_turn(
         operational_context = (operational_context + "\n\n" + skills_facts_operational_context()).strip()
     if flags["travel"]:
         operational_context = (operational_context + "\n\n" + travel_operational_context()).strip()
-        max_iterations = max(max_iterations, 20)
+        if travel_needs_web_or_browser(text):
+            max_iterations = max(max_iterations, 20)
+        else:
+            max_iterations = min(max_iterations, 8)
     if flags["notebooklm"]:
         operational_context = (operational_context + "\n\n" + notebooklm_operational_context()).strip()
         max_iterations = max(max_iterations, 36)

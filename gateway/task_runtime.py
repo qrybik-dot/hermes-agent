@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import json
+import os
+from pathlib import Path
 import re
+import subprocess
+import sys
 
 from gateway.task_continuation import (
     TaskRecord,
@@ -15,7 +19,7 @@ from gateway.task_continuation import (
     is_pause_request,
     should_track_task,
 )
-from gateway.task_router import TaskRoute, route_turn
+from gateway.task_router import TaskRoute, route_turn, travel_is_route_or_parking, travel_needs_web_or_browser
 from gateway.quick_note_capture import (
     detect_quick_note,
     format_quick_save_response,
@@ -528,7 +532,8 @@ class PreparedTaskTurn:
 
 
 def early_response(text: str, *, status: str = "success", task_id: str | None = None,
-                   role: str = "no_llm", reason: str = "deterministic task state") -> dict:
+                   role: str = "no_llm", reason: str = "deterministic task state",
+                   tools: list[dict] | None = None, diagnostics: dict | None = None) -> dict:
     return {
         "final_response": text,
         "messages": [],
@@ -538,7 +543,7 @@ def early_response(text: str, *, status: str = "success", task_id: str | None = 
         "partial": status != "success",
         "failed": status == "failed",
         "error": None if status == "success" else status,
-        "tools": [],
+        "tools": tools or [],
         "history_offset": 0,
         "session_id": "",
         "model": "deterministic",
@@ -551,10 +556,108 @@ def early_response(text: str, *, status: str = "success", task_id: str | None = 
         "routing_reason": reason,
         "selected_toolsets": [],
         "llm_total_ms": 0,
-        "diagnostics": {},
+        "diagnostics": diagnostics or {},
         "context_length": 0,
         "task_id": task_id,
     }
+
+
+_TRAVEL_TO_FROM_RE = re.compile(
+    r"\b(?:до|в)\s+(?P<destination>.+?)\s+от\s+(?P<start>.+?)(?:\s+и\s+|[?.!]|$)",
+    re.I | re.S,
+)
+
+
+def _parse_route_trip_request(text: str) -> tuple[str, str] | None:
+    value = " ".join((text or "").strip().split())
+    match = _TRAVEL_TO_FROM_RE.search(value)
+    if not match:
+        return None
+    destination = match.group("destination").strip(" ,.;")
+    start = match.group("start").strip(" ,.;")
+    if len(destination) < 3 or len(start) < 3:
+        return None
+    return start, destination
+
+
+def _trip_helper_path() -> Path:
+    hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    return hermes_home / "skills" / "productivity" / "city-travel-concierge" / "scripts" / "city_travel_trip.py"
+
+
+def _run_city_travel_trip_fast_path(text: str, route: TaskRoute) -> dict | None:
+    if "city-travel-concierge" not in route.skill_names:
+        return None
+    if not travel_is_route_or_parking(text) or travel_needs_web_or_browser(text):
+        return None
+    parsed = _parse_route_trip_request(text)
+    if parsed is None:
+        return None
+    start, destination = parsed
+    helper = _trip_helper_path()
+    if not helper.exists():
+        return None
+    command = [
+        sys.executable or "python3",
+        str(helper),
+        "--start",
+        start,
+        "--destination",
+        destination,
+        "--parking-radius",
+        "1200",
+        "--parking-limit",
+        "5",
+        "--timeout",
+        "8",
+        "--parking-timeout",
+        "3",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return early_response(
+            "BLOCKED\ncity-travel-concierge trip helper timed out before returning route data.",
+            status="blocked",
+            role=route.role,
+            reason="city travel trip helper timeout",
+            tools=[{"name": "city_travel_trip.py", "status": "timeout"}],
+        )
+    if completed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return None
+    answer = str(payload.get("answer_text") or "").strip()
+    if not answer or "BLOCKED" in answer or "INCOMPLETE" in answer:
+        return None
+    tool_meta = {
+        "name": "city_travel_trip.py",
+        "status": "ok",
+        "answer_ready": bool(payload.get("answer_ready")),
+        "degraded_sections": payload.get("degraded_sections") or [],
+        "provider_status": payload.get("provider_status") or [],
+    }
+    return early_response(
+        answer,
+        role=route.role,
+        reason="deterministic city travel route parking fast path",
+        tools=[tool_meta],
+        diagnostics={
+            "tool_call_count": 1,
+            "aggregate_helper": "city_travel_trip.py",
+            "approximate_start": bool(payload.get("approximate_start")),
+            "traffic_status": payload.get("traffic_status"),
+            "html_report_created": False,
+        },
+    )
 
 
 def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
@@ -746,6 +849,17 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 + "Reserve the last 5 iterations for tests, Definition of Done checks, checkpoint persistence, and final delivery."
             ).strip(),
         )
+
+    if task is None:
+        travel_fast_response = _run_city_travel_trip_fast_path(base_text, route)
+        if travel_fast_response is not None:
+            return PreparedTaskTurn(
+                str(message or ""),
+                route,
+                None,
+                travel_fast_response,
+                continued,
+            )
 
     preflight = _deterministic_input_preflight(base_text, route)
     if preflight is not None:

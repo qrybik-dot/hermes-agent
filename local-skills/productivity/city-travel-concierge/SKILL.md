@@ -1,7 +1,7 @@
 ---
 name: city-travel-concierge
 description: "City travel concierge: addresses, routes, weather, events, nearby places, parking candidates, and map links."
-version: 0.4.1
+version: 0.4.2
 author: Hermes local
 license: MIT
 platforms: [linux, macos, windows]
@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [travel, city, maps, routes, weather, events, parking, cafes, dadata, geoapify, kudago, overpass]
     category: productivity
-    requires_toolsets: [terminal, web, browser, file]
+    requires_toolsets: [terminal]
     related_skills: [maps, travel-search-ru]
 ---
 
@@ -22,10 +22,12 @@ drive, where to stop, nearby places, parking, weather, events, and cafes.
 
 - Use the helper scripts before answering. Never estimate routes, coordinates,
   parking, ratings, or review counts from memory.
-- Credentials live only in `${HERMES_HOME:-~/.hermes}/.env`:
-  `DADATA_API_KEY` and `GEOAPIFY_API_KEY`.
-- Never print keys, request headers, provider URLs containing keys, or raw env
-  values.
+- Never read, print, inspect, or verify the credential store. Helper scripts
+  load provider credentials internally and return safe provider status only.
+- To check configuration, run the relevant helper and inspect its exit status,
+  `provider_status`, result counts, and non-secret error codes. If credential
+  access is denied, do not retry direct reads; use the helper or report the
+  exact blocker.
 - Geoapify route time does not include live traffic. State this and include a
   Yandex Maps link for final checking before departure.
 - OpenStreetMap identifies parking candidates only. Never call a place legally
@@ -45,7 +47,19 @@ CTC="python3 $BASE/city_travel_concierge.py"
 CTC2="python3 $BASE/city_travel_itinerary.py"
 CTC3="python3 $BASE/city_travel_discovery.py"
 CTCP="python3 $BASE/city_travel_parking.py"
+CTCT="python3 $BASE/city_travel_trip.py"
 ```
+
+## One-call route and parking
+
+```bash
+$CTCT --start "Королёв, ул. Лесная" --destination "парк Останкино" --parking-radius 1200 --parking-limit 5
+```
+
+For route, ETA, map-link, and parking requests, call `city_travel_trip.py`
+first. If it returns `answer_ready=true`, a Yandex route link, and parking
+candidates, answer immediately from that JSON. Do not run additional web
+searches for confidence.
 
 ## Addresses and nearby POI
 

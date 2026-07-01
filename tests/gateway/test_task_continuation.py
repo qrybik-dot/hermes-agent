@@ -1,5 +1,6 @@
 import json
 import time
+from types import SimpleNamespace
 
 from gateway.task_continuation import (
     TaskStateStore,
@@ -137,6 +138,66 @@ def test_prepare_task_turn_restores_role_and_tools(tmp_path, monkeypatch):
     assert "terminal" in prepared.route.toolsets
     assert "Saved task" in prepared.message
 
+
+def test_simple_travel_route_parking_uses_deterministic_trip_helper(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    helper = state_dir / "skills" / "productivity" / "city-travel-concierge" / "scripts" / "city_travel_trip.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# helper", encoding="utf-8")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "answer_ready": True,
+                    "approximate_start": True,
+                    "traffic_status": "not_available",
+                    "answer_text": (
+                        "Маршрут: примерно 35 мин, 28.1 км.\n"
+                        "Старт без номера дома, точка приблизительная.\n"
+                        "Geoapify не учитывает live traffic; проверьте пробки в Яндекс Картах перед выездом.\n"
+                        "Яндекс Карты: https://yandex.ru/maps/?rtext=55.920000,37.820000~55.824000,37.614000\n"
+                        "Есть кандидат со статусом likely_free, но бесплатность не подтверждена официально: Parking.\n"
+                        "Перед парковкой проверьте знаки, разметку, шлагбаум и платную зону на месте."
+                    ),
+                    "degraded_sections": ["data.mos.ru"],
+                    "provider_status": [{"provider": "geoapify", "success": True}],
+                }
+            ),
+        )
+
+    monkeypatch.setattr("gateway.task_runtime.subprocess.run", fake_run)
+    prepared = prepare_task_turn(
+        message="сколько ехать до парка Останкино от Королёва, ул. Лесная и где там бесплатные парковки?",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-travel",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"],
+    )
+    assert prepared.early_response is not None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["completed"] is True
+    assert prepared.early_response["diagnostics"]["tool_call_count"] == 1
+    assert prepared.early_response["diagnostics"]["aggregate_helper"] == "city_travel_trip.py"
+    assert prepared.early_response["diagnostics"]["html_report_created"] is False
+    assert "html_report_path" not in prepared.early_response
+    assert "document_delivery_generation" not in prepared.early_response
+    assert "INCOMPLETE" not in prepared.early_response["final_response"]
+    assert "BLOCKED" not in prepared.early_response["final_response"]
+    assert "live traffic" in prepared.early_response["final_response"]
+    assert "Яндекс Карты" in prepared.early_response["final_response"]
+    assert "не подтверждена официально" in prepared.early_response["final_response"]
+    assert calls and "city_travel_trip.py" in calls[0][1]
+    assert "/.hermes/.env" not in " ".join(calls[0])
 
 
 def test_reply_context_continuation_command(tmp_path):
