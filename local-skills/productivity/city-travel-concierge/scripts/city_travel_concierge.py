@@ -290,6 +290,17 @@ def dadata_address(query: str, limit: int = 5, *, timeout: float = DEFAULT_TIMEO
             result["coordinates"] = {"lat": lat, "lon": lon} if lat is not None and lon is not None else None
             result["address"] = {"formatted": title, "raw": item.get("value")}
             result["administrative"] = {"country": data.get("country"), "region": data.get("region_with_type") or data.get("region"), "area": data.get("area_with_type") or data.get("area"), "city": data.get("city_with_type") or data.get("city"), "settlement": data.get("settlement_with_type") or data.get("settlement"), "street": data.get("street_with_type") or data.get("street"), "house": data.get("house"), "postal_code": data.get("postal_code"), "fias_id": data.get("fias_id"), "fias_level": data.get("fias_level"), "fias_actuality_state": data.get("fias_actuality_state"), "kladr_id": data.get("kladr_id"), "qc_geo": data.get("qc_geo")}
+            result["approximate_start"] = bool(result["administrative"].get("street") and not result["administrative"].get("house"))
+            result["precision_warning"] = (
+                "Адрес распознан до улицы без номера дома; стартовая точка приблизительная."
+                if result["approximate_start"]
+                else None
+            )
+            result["ambiguity_key"] = {
+                "city": result["administrative"].get("city") or result["administrative"].get("settlement"),
+                "street": result["administrative"].get("street"),
+                "house": result["administrative"].get("house"),
+            }
             result["provider_payload"] = {"value": item.get("value"), "unrestricted_value": item.get("unrestricted_value")}
             result["deep_links"] = {"yandex_maps": yandex_place_link(lat, lon, title), "2gis": twogis_place_link(title)}
             results.append(result)

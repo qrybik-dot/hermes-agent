@@ -1,7 +1,7 @@
 ---
 name: city-travel-concierge
 description: "City travel concierge: addresses, routes, weather, events, nearby places, parking candidates, and map links."
-version: 0.4.0
+version: 0.4.1
 author: Hermes local
 license: MIT
 platforms: [linux, macos, windows]
@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [travel, city, maps, routes, weather, events, parking, cafes, dadata, geoapify, kudago, overpass]
     category: productivity
-    requires_toolsets: [terminal]
+    requires_toolsets: [terminal, web, browser, file]
     related_skills: [maps, travel-search-ru]
 ---
 
@@ -32,6 +32,9 @@ drive, where to stop, nearby places, parking, weather, events, and cafes.
   confirmed or definitely free from OSM data alone.
 - For current ratings, reviews, opening hours, tariffs, traffic, and road rules,
   use `web` or `browser` and preserve direct source links.
+- Russian street addresses without a house number are approximate starts; say so
+  explicitly and ask a clarifying question only when the alternatives materially
+  change the route.
 - Failure of one provider must not erase successful sections.
 
 ## Helpers
@@ -104,6 +107,15 @@ Parking statuses:
 Do not recommend `access=private`, `customers`, `permit`, `residents`, or other
 restricted candidates. Every answer must include the warning to check signs,
 markings, barriers, and the paid-parking layer before leaving the car.
+For Moscow paid parking, use the official city open-data source
+`data.mos.ru/opendata/623` (`Платные парковки на улично-дорожной сети`) or the
+same dataset through an open raw API. Treat it only as official paid-zone
+evidence. Never promote OSM `fee=no` to `official`, and prefer official evidence
+when OSM conflicts with the official paid zone.
+
+Recent user confirmations may be stored only under
+`${HERMES_HOME:-~/.hermes}/state/city-travel-concierge/parking_confirmations.json`.
+Do not put movement history, personal data, or confirmations into Git.
 
 ## Cafe ranking by reviews
 
@@ -114,6 +126,8 @@ markings, barriers, and the paid-parking layer before leaving the car.
 4. Return no more than 3 ranked options with rating, review count, distance,
    child-related reason, and direct source link.
 5. Do not rank a venue when current review data cannot be verified.
+6. If `web` or `browser` is unavailable, return Geoapify candidates without
+   ratings and state the degradation. Unknown child suitability is `unknown`.
 
 ## Output contract
 

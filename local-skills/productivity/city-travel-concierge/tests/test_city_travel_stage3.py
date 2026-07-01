@@ -259,6 +259,36 @@ class Stage3Tests(unittest.TestCase):
         self.assertGreaterEqual(len(result["results"]), 2)
         self.assertTrue(all("rank_score" in item for item in result["results"]))
 
+    def test_cafe_ranking_requires_verified_rating_source(self):
+        candidates = [
+            {"place_id": "a", "title": "A", "distance_m": 300},
+            {"place_id": "b", "title": "B", "distance_m": 100},
+            {"place_id": "c", "title": "C", "distance_m": 200},
+            {"place_id": "d", "title": "D", "distance_m": 50},
+        ]
+        verifications = {
+            "a": {"rating": 4.8, "review_count": 120, "rating_source": "Yandex Maps", "source_url": "https://yandex.ru/maps/org/a", "is_open": True, "family_evidence": "confirmed"},
+            "b": {"rating": 5.0, "review_count": 5, "rating_source": "2GIS", "source_url": "https://2gis.ru/test/b", "is_open": True},
+            "c": {"rating": 4.9, "review_count": 300, "is_open": True},
+            "d": {"rating": 4.7, "review_count": 200, "rating_source": "Yandex Maps", "source_url": "https://yandex.ru/maps/org/d", "is_open": False},
+        }
+        result = stage3.rank_verified_cafes(candidates, verifications, limit=3)
+        self.assertTrue(result["ok"])
+        self.assertEqual([item["title"] for item in result["results"]], ["B", "A"])
+        self.assertTrue(all(item["rating_source"] for item in result["results"]))
+        self.assertTrue(all(item["review_count"] is not None for item in result["results"]))
+        self.assertNotIn("D", [item["title"] for item in result["results"]])
+        self.assertEqual(result["results"][1]["family_evidence"], "confirmed")
+
+    def test_cafe_ranking_degrades_without_web_browser(self):
+        candidates = [{"place_id": "a", "title": "A", "distance_m": 300}]
+        result = stage3.rank_verified_cafes(candidates, web_available=False)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["metadata"]["degraded"])
+        self.assertIsNone(result["results"][0]["rating"])
+        self.assertEqual(result["results"][0]["family_evidence"], "unknown")
+        self.assertFalse(result["results"][0]["rankable"])
+
     def test_overpass_failure_does_not_break_kudago(self):
         def overpass_fails(req, timeout):
             parsed = urllib.parse.urlparse(req.full_url)

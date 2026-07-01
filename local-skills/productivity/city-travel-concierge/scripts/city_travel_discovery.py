@@ -723,6 +723,85 @@ def rank_results(
     )
 
 
+def normalize_cafe_verification(candidate: dict[str, Any], verification: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge a Geoapify cafe candidate with browser/web-verified facts."""
+    item = dict(candidate)
+    verification = verification if isinstance(verification, dict) else {}
+    rating = core.as_float(verification.get("rating"))
+    review_count_raw = verification.get("review_count")
+    try:
+        review_count = int(review_count_raw) if review_count_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        review_count = None
+    rating_source = str(verification.get("rating_source") or "").strip()
+    source_url = str(verification.get("source_url") or "").strip()
+    is_open = verification.get("is_open")
+    family_evidence = verification.get("family_evidence")
+    if family_evidence not in {"confirmed", "not_found"}:
+        family_evidence = "unknown"
+    item["rating"] = rating if rating is not None and rating_source and source_url else None
+    item["review_count"] = review_count if item["rating"] is not None else None
+    item["rating_source"] = rating_source or None
+    item["source_url"] = source_url or item.get("source_url")
+    item["opening_hours"] = verification.get("opening_hours")
+    item["is_open"] = bool(is_open) if isinstance(is_open, bool) else None
+    item["family_evidence"] = family_evidence
+    item["checked_at"] = verification.get("checked_at") or item.get("checked_at")
+    item["verification_status"] = "verified_rating" if item["rating"] is not None else "unverified_rating"
+    item["rankable"] = bool(item["rating"] is not None and item["review_count"] is not None and item["is_open"] is not False)
+    return item
+
+
+def rank_verified_cafes(
+    candidates: list[dict[str, Any]],
+    verifications: dict[str, dict[str, Any]] | None = None,
+    *,
+    web_available: bool = True,
+    limit: int = 3,
+) -> dict[str, Any]:
+    """Return top verified cafes without inventing ratings when web/browser is unavailable."""
+    verifications = verifications or {}
+    checked = core.utc_now()
+    if not web_available:
+        degraded = [
+            dict(
+                item,
+                rating=None,
+                review_count=None,
+                rating_source=None,
+                family_evidence="unknown",
+                verification_status="candidate_only",
+                rankable=False,
+            )
+            for item in candidates[: max(0, min(10, len(candidates)))]
+        ]
+        return _envelope(
+            "cafe-ranking",
+            degraded,
+            [_status("web/browser", "cafe-rating", False, error_code="tool_unavailable")],
+            checked=checked,
+            ttl_seconds=KUDAGO_TTL_SECONDS,
+            metadata={"degraded": True, "reason": "ratings_require_web_or_browser"},
+        )
+    normalized: list[dict[str, Any]] = []
+    for candidate in candidates:
+        key = str(candidate.get("place_id") or candidate.get("title") or "")
+        item = normalize_cafe_verification(candidate, verifications.get(key))
+        if item.get("is_open") is False:
+            continue
+        if item.get("rankable"):
+            normalized.append(item)
+    normalized.sort(key=lambda item: (-(item.get("rating") or 0), -(item.get("review_count") or 0), item.get("distance_m") or 10**9))
+    return _envelope(
+        "cafe-ranking",
+        normalized[: max(1, min(3, int(limit)))],
+        [_status("web/browser", "cafe-rating", True, result_count=len(normalized))],
+        checked=checked,
+        ttl_seconds=KUDAGO_TTL_SECONDS,
+        metadata={"degraded": False, "ranking_policy": "rating_source_and_review_count_required"},
+    )
+
+
 def discover(
     *,
     lat: float,
