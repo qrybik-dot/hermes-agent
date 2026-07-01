@@ -3960,8 +3960,11 @@ class TelegramAdapter(BasePlatformAdapter):
             if not record or time.monotonic() - float(record.get("created", 0)) > _MEDIA_STATE_TTL:
                 await query.answer(text="Кнопка устарела. Пришли ссылку ещё раз", show_alert=True)
                 return
-            if record.get("running") or record.get("done"):
-                await query.answer(text="Уже выполняю" if record.get("running") else "Уже готово")
+            if record.get("running"):
+                await query.answer(text="Уже выполняю")
+                return
+            if action == "video" and record.get("done"):
+                await query.answer(text="Видео уже отправлено")
                 return
             label_map = {"video": "Видео", "audio": "Аудио", "text": "Текст", "summary": "Кратко"}
             label = label_map.get(action, action)
@@ -6160,6 +6163,7 @@ class TelegramAdapter(BasePlatformAdapter):
         token = uuid.uuid4().hex[:12]
         key = self._media_context_key(msg)
         record = {
+            "token": token,
             "url": url,
             "chat_id": str(msg.chat.id),
             "thread_id": getattr(msg, "message_thread_id", None),
@@ -6192,6 +6196,27 @@ class TelegramAdapter(BasePlatformAdapter):
             kwargs.update(self._thread_kwargs_for_send(str(msg.chat.id), str(thread_id), {"thread_id": str(thread_id)}))
         await self._send_message_with_thread_fallback(**kwargs)
         return True
+
+    async def _send_media_followup_menu(self, record: Dict[str, Any]) -> None:
+        token = str(record.get("token") or "")
+        if not token or not self._bot:
+            return
+        chat_id = str(record["chat_id"])
+        thread_id = record.get("thread_id")
+        rows = [[
+            InlineKeyboardButton("🎵 Аудио", callback_data=f"md:{token}:audio"),
+            InlineKeyboardButton("📝 Текст", callback_data=f"md:{token}:text"),
+            InlineKeyboardButton("✨ Кратко", callback_data=f"md:{token}:summary"),
+        ]]
+        kwargs = {
+            "chat_id": int(chat_id),
+            "text": "Ещё с этим видео:\nНовый ролик — просто пришли следующую ссылку",
+            "reply_markup": InlineKeyboardMarkup(rows),
+            **self._notification_kwargs(None),
+        }
+        if thread_id is not None:
+            kwargs.update(self._thread_kwargs_for_send(chat_id, str(thread_id), {"thread_id": str(thread_id)}))
+        await self._send_message_with_thread_fallback(**kwargs)
 
     async def _run_media_download(self, record: Dict[str, Any], *, prompt_message=None) -> None:
         if record.get("running") or record.get("done"):
@@ -6241,6 +6266,7 @@ class TelegramAdapter(BasePlatformAdapter):
             record['done'] = True
             if status_id:
                 await self.edit_message(chat_id, str(status_id), f"Готово 🎬\n{self._format_media_elapsed(started)}")
+            await self._send_media_followup_menu(record)
         except asyncio.TimeoutError:
             if status_id:
                 await self.edit_message(chat_id, str(status_id), "Не успел скачать видео за 90 секунд. Попробуй ещё раз или пришли файл напрямую")
@@ -6257,7 +6283,25 @@ class TelegramAdapter(BasePlatformAdapter):
         value = (msg.text or '').strip()
         match = _MEDIA_URL_RE.fullmatch(value)
         if match:
-            return await self._send_media_action_menu(msg, match.group(0))
+            url = match.group(0)
+            if "instagram.com" in url.lower():
+                token = uuid.uuid4().hex[:12]
+                key = self._media_context_key(msg)
+                record = {
+                    "token": token,
+                    "url": url,
+                    "chat_id": str(msg.chat.id),
+                    "thread_id": getattr(msg, "message_thread_id", None),
+                    "reply_to": str(msg.message_id),
+                    "created": time.monotonic(),
+                    "running": False,
+                    "done": False,
+                }
+                self._media_action_state[token] = record
+                self._latest_media_by_chat[key] = record
+                await self._run_media_download(record)
+                return True
+            return await self._send_media_action_menu(msg, url)
         if _MEDIA_DOWNLOAD_RE.fullmatch(value):
             record = self._latest_media_by_chat.get(self._media_context_key(msg))
             if record and time.monotonic() - float(record.get('created', 0)) <= _MEDIA_STATE_TTL:

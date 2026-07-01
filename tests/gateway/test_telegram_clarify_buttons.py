@@ -542,3 +542,63 @@ def test_media_elapsed_includes_seconds_and_minutes():
     now = _time.monotonic()
     assert adapter._format_media_elapsed(now - 8).endswith('сек')
     assert 'мин' in adapter._format_media_elapsed(now - 68)
+
+
+
+@pytest.mark.asyncio
+async def test_instagram_link_auto_downloads_without_menu(monkeypatch):
+    adapter = _make_adapter()
+    msg = MagicMock()
+    msg.chat.id = 12345
+    msg.message_id = 88
+    msg.message_thread_id = None
+    msg.text = 'https://www.instagram.com/reel/example/?utm_source=test'
+    called = AsyncMock()
+    menu = AsyncMock()
+    monkeypatch.setattr(adapter, '_run_media_download', called)
+    monkeypatch.setattr(adapter, '_send_media_action_menu', menu)
+
+    handled = await adapter._try_handle_media_fast_path(msg)
+
+    assert handled is True
+    called.assert_awaited_once()
+    menu.assert_not_awaited()
+    record = called.await_args.args[0]
+    assert record['url'] == msg.text
+    assert record['token'] in adapter._media_action_state
+
+
+@pytest.mark.asyncio
+async def test_media_followup_menu_has_three_buttons_in_one_row(monkeypatch):
+    adapter = _make_adapter()
+    sent = {}
+
+    class Button:
+        def __init__(self, text, callback_data=None, **kwargs):
+            self.text = text
+            self.callback_data = callback_data
+
+    class Markup:
+        def __init__(self, rows):
+            self.inline_keyboard = rows
+
+    monkeypatch.setattr('gateway.platforms.telegram.InlineKeyboardButton', Button)
+    monkeypatch.setattr('gateway.platforms.telegram.InlineKeyboardMarkup', Markup)
+
+    async def fake_send(**kwargs):
+        sent.update(kwargs)
+        return MagicMock(message_id=201)
+
+    adapter._send_message_with_thread_fallback = fake_send
+    record = {
+        'token': 'abc123',
+        'chat_id': '12345',
+        'thread_id': None,
+    }
+
+    await adapter._send_media_followup_menu(record)
+
+    rows = sent['reply_markup'].inline_keyboard
+    assert len(rows) == 1
+    assert [button.text for button in rows[0]] == ['🎵 Аудио', '📝 Текст', '✨ Кратко']
+    assert 'Новый ролик' in sent['text']
