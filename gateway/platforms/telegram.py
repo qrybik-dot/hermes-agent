@@ -92,7 +92,7 @@ from gateway.platforms.telegram_network import (
 from utils import atomic_replace
 
 _MEDIA_URL_RE = re.compile(
-    r"https?://(?:www\.)?(?:instagram\.com/(?:reel|p)/[^\s?]+|youtu\.be/[^\s?]+|youtube\.com/(?:watch\?v=|shorts/)[^\s&]+)",
+    r"https?://(?:www\.)?(?:instagram\.com/(?:reel|p)/[^\s?]+(?:\?[^\s]+)?|youtu\.be/[^\s?]+(?:\?[^\s]+)?|youtube\.com/(?:watch\?v=[^\s&]+(?:&[^\s]+)?|shorts/[^\s?]+(?:\?[^\s]+)?))",
     re.I,
 )
 _MEDIA_DOWNLOAD_RE = re.compile(r"^\s*(?:скачай|загрузи|пришли|отправь)(?:\s+(?:мне|это|этот|ролик|видео))*[.!?]*\s*$", re.I)
