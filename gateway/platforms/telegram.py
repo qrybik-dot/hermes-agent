@@ -6714,22 +6714,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if lat is None or lon is None:
             return
 
-        # Build a text message with coordinates and context
-        parts = ["[The user shared a location pin.]"]
-        if venue:
-            title = getattr(venue, "title", None)
-            address = getattr(venue, "address", None)
-            if title:
-                parts.append(f"Venue: {title}")
-            if address:
-                parts.append(f"Address: {address}")
-        parts.append(f"latitude: {lat}")
-        parts.append(f"longitude: {lon}")
-        parts.append(f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}")
-        parts.append("Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences.")
-
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
-        event.text = "\n".join(parts)
+        event.text = "[Telegram location received]"
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
 

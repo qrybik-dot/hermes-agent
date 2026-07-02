@@ -113,6 +113,20 @@ class GatewaySlashCommandsMixin:
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 
+        # Clear short-lived deterministic follow-up state from the previous
+        # conversation.  This keeps /new from reusing stale travel/parking or
+        # pending location intents while preserving canonical personal places.
+        try:
+            from gateway.task_runtime import clear_ephemeral_contexts_for_session
+            clear_ephemeral_contexts_for_session(
+                platform=source.platform.value if source.platform else "",
+                chat_id=source.chat_id or "",
+                session_key=session_key,
+                sender_id=source.user_id,
+            )
+        except Exception:
+            logger.debug("Failed to clear deterministic ephemeral state on /new", exc_info=True)
+
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)

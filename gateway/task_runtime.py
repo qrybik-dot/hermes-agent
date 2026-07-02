@@ -638,6 +638,13 @@ class CityTravelContextStore:
         now = time.time()
         expires_at = now + _TRAVEL_CONTEXT_TTL_SECONDS
         payload = dict(context)
+        if isinstance(payload.get("parking_candidates"), list):
+            normalized_candidates = []
+            for item in payload.get("parking_candidates") or []:
+                normalized = _normalize_parking_candidate(item)
+                if normalized is not None:
+                    normalized_candidates.append(normalized)
+            payload["parking_candidates"] = sorted(normalized_candidates, key=_parking_rank_key)
         payload["ttl_seconds"] = _TRAVEL_CONTEXT_TTL_SECONDS
         payload["expires_at_epoch"] = expires_at
         with self._connect() as conn:
@@ -671,6 +678,20 @@ class CityTravelContextStore:
             return None
         return value if isinstance(value, dict) else None
 
+    def clear(self, *, platform: str, chat_id: str, session_key: str | None = None) -> int:
+        with self._connect() as conn:
+            if session_key is None:
+                cur = conn.execute(
+                    "DELETE FROM city_travel_contexts WHERE platform=? AND chat_id=?",
+                    (platform, str(chat_id)),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM city_travel_contexts WHERE platform=? AND chat_id=? AND session_key=?",
+                    (platform, str(chat_id), session_key or ""),
+                )
+            return int(cur.rowcount or 0)
+
 
 _LOCATION_CONTEXT_TTL_SECONDS = 15 * 60
 _PLACE_SAVE_RE = re.compile(
@@ -681,6 +702,11 @@ _PLACE_SAVE_RE = re.compile(
 _AMBIGUOUS_PLACE_SAVE_RE = re.compile(r"^\s*(?:сохрани|запомни|зафиксируй)\s+(?:это|тут|здесь|эту\s+точку)\s*[.!?]*$", re.I)
 _UPDATE_PLACE_RE = re.compile(r"\b(?:обнови|теперь|новый|новая)\b", re.I)
 _LOCATION_ONLY_TEXT_RE = re.compile(r"^\s*\[Telegram location received\]\s*$", re.I)
+_PLACE_LOOKUP_RE = re.compile(
+    r"\b(?:где|покажи|показать|пришли|дай|открой|координат\w*)\b.{0,80}\b(?P<label>дом|дома|работа|работу|работы|офис|дача|дачу|дачи)\b|"
+    r"\b(?P<label2>дом|работа|работы|офис|дача|дачи)\b.{0,80}\b(?:яндекс|карт|координат|ссылк)\w*",
+    re.I | re.S,
+)
 
 
 class PendingLocationStore:
@@ -773,6 +799,127 @@ class PendingLocationStore:
             )
         return payload
 
+    def clear(self, *, platform: str, chat_id: str, sender_id: str | None = None, session_key: str | None = None) -> int:
+        clauses = ["platform=?", "chat_id=?"]
+        params: list[Any] = [platform, str(chat_id)]
+        if sender_id is not None:
+            clauses.append("sender_id=?")
+            params.append(str(sender_id or ""))
+        if session_key is not None:
+            clauses.append("session_key=?")
+            params.append(session_key or "")
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM telegram_location_contexts WHERE " + " AND ".join(clauses), params)
+            return int(cur.rowcount or 0)
+
+
+class PersonalPlaceStore:
+    """Canonical personal-place index for deterministic Telegram lookup."""
+
+    def __init__(self, db_path: Path | str | None = None):
+        self.db_path = Path(db_path or Path.home() / ".hermes" / "state.db")
+        self.ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    def ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS personal_places (
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    latitude REAL NOT NULL,
+                    longitude REAL NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY(platform, chat_id, sender_id, label)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_personal_places_lookup "
+                "ON personal_places(platform, chat_id, sender_id, label)"
+            )
+
+    def upsert(self, *, platform: str, chat_id: str, sender_id: str, label: str, latitude: float, longitude: float, payload: dict[str, Any]) -> None:
+        now = time.time()
+        canonical = canonical_place_label(label) or label
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO personal_places (
+                    platform, chat_id, sender_id, label, latitude, longitude, source, confidence, payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, chat_id, sender_id, label) DO UPDATE SET
+                    latitude=excluded.latitude,
+                    longitude=excluded.longitude,
+                    source=excluded.source,
+                    confidence=excluded.confidence,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    platform, str(chat_id), str(sender_id or ""), canonical, float(latitude), float(longitude),
+                    "telegram_location", "explicit_user_location",
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True), now, now,
+                ),
+            )
+
+    def get(self, *, platform: str, chat_id: str, sender_id: str, label: str) -> dict[str, Any] | None:
+        canonical = canonical_place_label(label) or label
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM personal_places
+                WHERE platform=? AND chat_id=? AND sender_id=? AND label=?
+                """,
+                (platform, str(chat_id), str(sender_id or ""), canonical),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        return {
+            "label": row["label"],
+            "latitude": float(row["latitude"]),
+            "longitude": float(row["longitude"]),
+            "source": row["source"],
+            "confidence": row["confidence"],
+            "created_at_epoch": row["created_at"],
+            "updated_at_epoch": row["updated_at"],
+            "payload": payload if isinstance(payload, dict) else {},
+        }
+
+
+def clear_ephemeral_contexts_for_session(*, platform: str, chat_id: str, session_key: str | None = None, sender_id: str | None = None) -> dict[str, int]:
+    result = {"city_travel_contexts": 0, "telegram_location_contexts": 0}
+    try:
+        result["city_travel_contexts"] = CityTravelContextStore().clear(platform=platform, chat_id=str(chat_id), session_key=None)
+    except Exception:
+        pass
+    try:
+        result["telegram_location_contexts"] = PendingLocationStore().clear(platform=platform, chat_id=str(chat_id), sender_id=sender_id, session_key=None)
+    except Exception:
+        pass
+    return result
+
+
+def _yandex_point_url(latitude: float, longitude: float) -> str:
+    return f"https://yandex.ru/maps/?pt={float(longitude):.6f},{float(latitude):.6f}&z=18&l=map"
+
 
 def _location_coords(location: dict[str, Any] | None) -> tuple[float, float] | None:
     if not isinstance(location, dict):
@@ -834,21 +981,74 @@ def _quick_save_readback_ok(result: dict[str, Any]) -> bool:
         return False
 
 
-def _save_location_place(label: str, location: dict[str, Any], *, update_requested: bool) -> tuple[str, str, dict[str, Any]]:
+def _place_lookup_intent(text: str) -> str | None:
+    value = " ".join(str(text or "").strip().split())
+    if not value:
+        return None
+    match = _PLACE_LOOKUP_RE.search(value)
+    if not match:
+        return None
+    label = match.groupdict().get("label") or match.groupdict().get("label2")
+    return canonical_place_label(label) if label else None
+
+
+def _deterministic_place_lookup(*, text: str, route: TaskRoute, platform_key: str, chat_id: str, msg_ctx: MessageContext) -> dict | None:
+    label = _place_lookup_intent(text)
+    if not label:
+        return None
+    sender_id = str(msg_ctx.sender_id or "")
+    place = PersonalPlaceStore().get(platform=platform_key, chat_id=str(chat_id), sender_id=sender_id, label=label)
+    diagnostics = {"tool_call_count": 0, "html_report_created": False, "personal_place_lookup": label}
+    if place is None:
+        return early_response(
+            f"{label} пока не сохранён. Пришли геолокацию и напиши “Запомни мой {label.casefold()}”.",
+            role=route.role or "no_llm",
+            reason="deterministic personal place missing",
+            diagnostics=diagnostics,
+        )
+    url = _yandex_point_url(place["latitude"], place["longitude"])
+    return early_response(
+        f"{label} сохранён здесь:\nЯндекс Карты: {url}",
+        role=route.role or "no_llm",
+        reason="deterministic personal place lookup",
+        diagnostics={**diagnostics, "personal_place_readback_ok": True},
+    )
+
+
+def _save_location_place(label: str, location: dict[str, Any], *, update_requested: bool, platform_key: str, chat_id: str, sender_id: str) -> tuple[str, str, dict[str, Any]]:
     coords = _location_coords(location)
     if coords is None:
         return "Не вижу координаты в геолокации. Пришли точку ещё раз.", "failed", {"tool_call_count": 0, "html_report_created": False}
-    note = build_location_place_note(label=label, latitude=coords[0], longitude=coords[1], source_message_id=_location_source_message_id(location))
+    canonical = canonical_place_label(label) or label
+    note = build_location_place_note(label=canonical, latitude=coords[0], longitude=coords[1], source_message_id=_location_source_message_id(location))
+    quick_result: dict[str, Any] = {}
+    quick_status = "not_run"
     try:
-        result = run_quick_save(note)
+        quick_result = run_quick_save(note)
+        quick_status = str(quick_result.get("status") or "unknown")
     except Exception as exc:
-        return "Память сейчас недоступна, место не сохранено.", "blocked", {"tool_call_count": 1, "html_report_created": False, "location_save_error": exc.__class__.__name__}
-    success = _quick_save_succeeded(result)
-    readback_ok = _quick_save_readback_ok(result)
-    if not success or not readback_ok:
-        return "Не удалось подтвердить сохранение места в памяти.", "blocked", {"tool_call_count": 1, "html_report_created": False, "location_readback_ok": False}
-    updated = update_requested or bool(result.get("already_exists") or result.get("updated") or result.get("status") in {"duplicate", "already_exists", "updated"})
-    return _place_saved_response(canonical_place_label(label) or label, updated=updated), "success", {"tool_call_count": 1, "html_report_created": False, "location_readback_ok": True}
+        quick_status = "error:" + exc.__class__.__name__
+    payload = {
+        "label": canonical,
+        "latitude": round(float(coords[0]), 6),
+        "longitude": round(float(coords[1]), 6),
+        "source": "telegram_location",
+        "confidence": "explicit_user_location",
+        "source_message_id": _location_source_message_id(location),
+        "quick_save_status": quick_status,
+    }
+    store = PersonalPlaceStore()
+    store.upsert(platform=platform_key, chat_id=str(chat_id), sender_id=str(sender_id or ""), label=canonical, latitude=coords[0], longitude=coords[1], payload=payload)
+    readback = store.get(platform=platform_key, chat_id=str(chat_id), sender_id=str(sender_id or ""), label=canonical)
+    readback_ok = bool(
+        readback
+        and round(float(readback.get("latitude")), 6) == round(float(coords[0]), 6)
+        and round(float(readback.get("longitude")), 6) == round(float(coords[1]), 6)
+    )
+    if not readback_ok:
+        return "Не удалось подтвердить сохранение места в памяти.", "blocked", {"tool_call_count": 1, "html_report_created": False, "location_readback_ok": False, "quick_save_status": quick_status}
+    updated = update_requested or bool(readback and float(readback.get("updated_at_epoch") or 0) > float(readback.get("created_at_epoch") or 0))
+    return _place_saved_response(canonical, updated=updated), "success", {"tool_call_count": 1, "html_report_created": False, "location_readback_ok": True, "quick_save_status": quick_status}
 
 
 def _deterministic_location_place_flow(*, text: str, route: TaskRoute, platform_key: str, chat_id: str, session_key: str, msg_ctx: MessageContext) -> dict | None:
@@ -866,7 +1066,7 @@ def _deterministic_location_place_flow(*, text: str, route: TaskRoute, platform_
     if location_only:
         pending_intent = store.consume(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="intent")
         if isinstance(pending_intent, dict) and pending_intent.get("label"):
-            response, status, diagnostics = _save_location_place(str(pending_intent["label"]), current_location, update_requested=bool(pending_intent.get("update")))
+            response, status, diagnostics = _save_location_place(str(pending_intent["label"]), current_location, update_requested=bool(pending_intent.get("update")), platform_key=platform_key, chat_id=str(chat_id), sender_id=sender_id)
             if status == "success":
                 store.consume(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="location")
             return early_response(response, status=status, role=route.role or "no_llm", reason="deterministic telegram location place save", diagnostics={**diagnostics, "location_intent": "pending_text_then_location"})
@@ -900,7 +1100,7 @@ def _deterministic_location_place_flow(*, text: str, route: TaskRoute, platform_
             reason="deterministic place save waiting for telegram location",
             diagnostics={"tool_call_count": 0, "html_report_created": False, "location_intent": "waiting_for_location"},
         )
-    response, status, diagnostics = _save_location_place(label, location, update_requested=bool(intent.get("update")))
+    response, status, diagnostics = _save_location_place(label, location, update_requested=bool(intent.get("update")), platform_key=platform_key, chat_id=str(chat_id), sender_id=sender_id)
     if status == "success" and reply_location is None:
         store.consume(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="location")
     return early_response(response, status=status, role=route.role or "no_llm", reason="deterministic telegram location place save", diagnostics={**diagnostics, "location_intent": "location_then_text" if reply_location is None else "reply_location"})
@@ -925,20 +1125,38 @@ def _parking_candidate_id(candidate: dict[str, Any]) -> str:
 
 
 def _candidate_yandex_url(candidate: dict[str, Any]) -> str:
-    deep_links = candidate.get("deep_links") if isinstance(candidate.get("deep_links"), dict) else {}
-    url = str(deep_links.get("yandex_maps") or "").strip()
-    if url:
-        return url
     coords = candidate.get("coordinates") if isinstance(candidate.get("coordinates"), dict) else {}
     lat = _as_float(coords.get("lat"))
     lon = _as_float(coords.get("lon"))
     if lat is None or lon is None:
         return ""
-    return f"https://yandex.ru/maps/?pt={lon:.6f},{lat:.6f}&z=18&l=map"
+    deep_links = candidate.get("deep_links") if isinstance(candidate.get("deep_links"), dict) else {}
+    url = str(deep_links.get("yandex_maps") or "").strip()
+    lowered = url.lower()
+    generic_search = "text=parking" in lowered or "query=parking" in lowered or "search" in lowered and "parking" in lowered
+    has_point = "pt=" in lowered or (f"{lon:.6f}" in lowered and f"{lat:.6f}" in lowered)
+    if url and has_point and not generic_search:
+        return url
+    return _yandex_point_url(lat, lon)
+
+
+def _parking_address_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        street = str(value.get("street") or "").strip()
+        housenumber = str(value.get("housenumber") or "").strip()
+        city = str(value.get("city") or "").strip()
+        suburb = str(value.get("suburb") or "").strip()
+        postcode = str(value.get("postcode") or "").strip()
+        line = " ".join(part for part in (street, housenumber) if part)
+        parts = [part for part in (line, suburb, city, postcode) if part]
+        return ", ".join(parts)
+    return ""
 
 
 def _trim_parking_evidence(candidate: dict[str, Any]) -> dict[str, Any]:
-    evidence = candidate.get("parking_evidence") if isinstance(candidate.get("parking_evidence"), dict) else {}
+    evidence = candidate.get("parking_evidence") if isinstance(candidate.get("parking_evidence"), dict) else (candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {})
     trimmed: dict[str, Any] = {}
     for key in ("source", "fee", "access", "parking_type", "reason", "checked_at"):
         if evidence.get(key) is not None:
@@ -959,7 +1177,7 @@ def _normalize_parking_candidate(candidate: Any) -> dict[str, Any] | None:
         return None
     normalized = {
         "title": str(candidate.get("title") or "парковка").strip() or "парковка",
-        "address": str(candidate.get("address") or "").strip(),
+        "address": _parking_address_text(candidate.get("address")),
         "coordinates": {"lat": lat, "lon": lon},
         "distance_m": _as_float(candidate.get("distance_m")),
         "parking_status": str(candidate.get("parking_status") or candidate.get("verification_status") or "unverified"),
@@ -1017,7 +1235,7 @@ def _travel_context_from_payload(payload: dict[str, Any], *, start: str, destina
     }
 
 
-_PARKING_LINK_RE = re.compile(r"\b(?:пришл\w*|дай|дайте|открой\w*|скинь\w*|координат\w*)\b.{0,120}\b(?:парковк\w*|яндекс\w*|карт\w*)\b|\b(?:парковк\w*)\b.{0,80}\b(?:ссылк\w*|координат\w*|яндекс\w*)\b", re.I | re.S)
+_PARKING_LINK_RE = re.compile(r"\b(?:пришл\w*|дай|дайте|открой\w*|скинь\w*|координат\w*)\b.{0,120}\b(?:парковк\w*|припарков\w*|парковочн\w*)\b|\b(?:парковк\w*|припарков\w*|парковочн\w*)\b.{0,120}\b(?:ссылк\w*|координат\w*|яндекс\w*|карт\w*|кандидат\w*)\b", re.I | re.S)
 _MORE_PARKING_RE = re.compile(r"\b(?:ещ[её]|друг\w*|альтернатив\w*)\b.{0,120}\b(?:парковк\w*|бесплатн\w*|дешев\w*|вариант\w*)\b|\b(?:парковк\w*)\b.{0,120}\b(?:ещ[её]|друг\w*|альтернатив\w*)\b", re.I | re.S)
 _PARKING_CLOSEST_RE = re.compile(r"\b(?:сам\w*\s+близк\w*|ближайш\w*|по\s+расстоянию)\b", re.I)
 _PARKING_CHEAP_RE = re.compile(r"\b(?:сам\w*\s+дешев\w*|дешев\w*|цена|тариф|бесплатн\w*)\b", re.I)
@@ -1308,6 +1526,16 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     )
     if location_response is not None:
         return PreparedTaskTurn(original, initial_route, None, location_response, False)
+
+    place_lookup_response = _deterministic_place_lookup(
+        text=current_text,
+        route=initial_route,
+        platform_key=platform_key,
+        chat_id=str(chat_id),
+        msg_ctx=msg_ctx,
+    )
+    if place_lookup_response is not None:
+        return PreparedTaskTurn(original, initial_route, None, place_lookup_response, False)
 
     travel_followup_response = _deterministic_city_travel_followup(
         text=current_text,

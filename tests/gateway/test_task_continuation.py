@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 from gateway.task_continuation import (
@@ -252,7 +253,7 @@ def test_city_travel_multiturn_followups_use_saved_context(tmp_path, monkeypatch
     assert second.early_response["diagnostics"]["tool_call_count"] == 0
     assert "кандидат" in second.early_response["final_response"].lower()
     assert "likely_free" in second.early_response["final_response"]
-    assert "https://yandex.ru/a" in second.early_response["final_response"]
+    assert "pt=37.614100,55.824100" in second.early_response["final_response"]
     assert "лучший" not in second.early_response["final_response"].lower()
     assert "html_report_path" not in second.early_response
 
@@ -1832,7 +1833,7 @@ def test_city_travel_parking_ux_plural_fallback_and_selection_reason(tmp_path, m
     assert "Самый близкий кандидат" in text
     assert "Парковка-кандидат №1" in text
     assert "parking" not in text
-    assert "https://yandex.ru/lf" in text
+    assert "pt=37.300000,55.300000" in text
 
     more = prepare_task_turn(message="дай еще три варианта бесплатной или самой дешевой парковки", request_id="more", **common)
     more_text = more.early_response["final_response"]
@@ -1855,8 +1856,103 @@ def test_city_travel_parking_closest_and_plural_one_candidate(tmp_path, monkeypa
     common = dict(platform_key="telegram", chat_id="1", session_key="s1", session_id="session", user_config={"agent": {}}, platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"])
     closest = prepare_task_turn(message="дай самую близкую парковку", request_id="closest", **common)
     assert "Самый близкий кандидат" in closest.early_response["final_response"]
-    assert "https://yandex.ru/near" in closest.early_response["final_response"]
+    assert "pt=37.100000,55.100000" in closest.early_response["final_response"]
 
     more = prepare_task_turn(message="покажи другие парковки рядом", request_id="more-one", **common)
     assert "Показываю ещё 1 сохранённый вариант парковки" in more.early_response["final_response"]
-    assert "https://yandex.ru/far" in more.early_response["final_response"]
+    assert "pt=37.200000,55.200000" in more.early_response["final_response"]
+
+
+def test_personal_place_lookup_preempts_stale_parking_context(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    monkeypatch.setattr("gateway.task_runtime.run_quick_save", lambda note: {"status": "error", "saved": False, "readback_count": 0})
+    from gateway.task_runtime import CityTravelContextStore
+    state_db = tmp_path / ".hermes" / "state.db"
+    CityTravelContextStore(state_db).save(platform="telegram", chat_id="1", session_key="s1", context={"route_url": "https://yandex.ru/route", "shown_parking_ids": [], "parking_candidates": [{"id": "p", "title": "parking", "coordinates": {"lat": 55.3, "lon": 37.3}, "distance_m": 571, "parking_status": "likely_free", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/parking"}]})
+    loc = dict(common["message_context"], location=_location_context(lat=55.92, lon=37.82, message_id="home"))
+    prepare_task_turn(message="[Telegram location received]", request_id="loc-home", **{**common, "message_context": loc})
+    saved = prepare_task_turn(message="Запомни мой дом", request_id="save-home", **common)
+    assert saved.early_response["final_response"] == "Дом сохранён в памяти."
+    assert saved.early_response["diagnostics"]["location_readback_ok"] is True
+
+    lookup = prepare_task_turn(message="Где мой дом? Пришли ссылку на Яндекс Карты", request_id="lookup-home", **common)
+    text = lookup.early_response["final_response"]
+    assert lookup.task is None
+    assert lookup.early_response["api_calls"] == 0
+    assert lookup.early_response["diagnostics"]["tool_call_count"] == 0
+    assert "Дом сохранён здесь" in text
+    assert "pt=37.820000,55.920000" in text
+    assert "parking" not in text.lower()
+    assert "Парковка" not in text
+
+
+def test_personal_place_missing_does_not_fall_back_to_parking(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    from gateway.task_runtime import CityTravelContextStore
+    CityTravelContextStore(tmp_path / ".hermes" / "state.db").save(platform="telegram", chat_id="1", session_key="s1", context={"route_url": "https://yandex.ru/route", "shown_parking_ids": [], "parking_candidates": [{"id": "p", "title": "parking", "coordinates": {"lat": 55.3, "lon": 37.3}, "distance_m": 571, "parking_status": "likely_free", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/parking"}]})
+    for message in ("Где мой дом? Пришли ссылку на Яндекс Карты", "Дай координаты моей работы", "Покажи дачу на карте"):
+        result = prepare_task_turn(message=message, request_id="missing-" + message[:8], **common)
+        assert result.task is None
+        assert result.early_response["api_calls"] == 0
+        assert "пока не сохран" in result.early_response["final_response"]
+        assert "Парков" not in result.early_response["final_response"]
+
+
+def test_new_cleanup_removes_ephemeral_context_but_keeps_personal_place(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    monkeypatch.setattr("gateway.task_runtime.run_quick_save", lambda note: {"status": "saved", "saved": True, "readback_count": 1})
+    from gateway.task_runtime import CityTravelContextStore, PendingLocationStore, clear_ephemeral_contexts_for_session
+    db = tmp_path / ".hermes" / "state.db"
+    CityTravelContextStore(db).save(platform="telegram", chat_id="1", session_key="s1", context={"route_url": "https://yandex.ru/route", "shown_parking_ids": [], "parking_candidates": [{"id":"p","title":"parking","coordinates":{"lat":55.3,"lon":37.3},"distance_m":571,"parking_status":"likely_free","eligible_for_recommendation":True,"raw_yandex_maps_url":"https://yandex.ru/parking"}]})
+    PendingLocationStore(db).save(platform="telegram", chat_id="1", session_key="s1", sender_id="42", kind="intent", payload={"label":"Дом"})
+    loc = dict(common["message_context"], location=_location_context(lat=55.92, lon=37.82))
+    prepare_task_turn(message="[Telegram location received]", request_id="loc", **{**common, "message_context": loc})
+    prepare_task_turn(message="Запомни мой дом", request_id="save", **common)
+    cleared = clear_ephemeral_contexts_for_session(platform="telegram", chat_id="1", session_key="s1", sender_id="42")
+    assert cleared["city_travel_contexts"] >= 1
+    assert CityTravelContextStore(db).get(platform="telegram", chat_id="1", session_key="s1") is None
+    lookup = prepare_task_turn(message="Где мой дом?", request_id="lookup-after-new", **common)
+    assert "Дом сохранён здесь" in lookup.early_response["final_response"]
+    assert "pt=37.820000,55.920000" in lookup.early_response["final_response"]
+
+
+def test_personal_place_update_changes_canonical_coordinates(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    monkeypatch.setattr("gateway.task_runtime.run_quick_save", lambda note: {"status": "saved", "saved": True, "readback_count": 1})
+    loc_a = dict(common["message_context"], location=_location_context(lat=55.0, lon=37.0, message_id="a"))
+    prepare_task_turn(message="[Telegram location received]", request_id="a", **{**common, "message_context": loc_a})
+    prepare_task_turn(message="Запомни мой дом", request_id="save-a", **common)
+    loc_b = dict(common["message_context"], location=_location_context(lat=56.0, lon=38.0, message_id="b"))
+    prepare_task_turn(message="[Telegram location received]", request_id="b", **{**common, "message_context": loc_b})
+    updated = prepare_task_turn(message="Теперь мой дом здесь", request_id="save-b", **common)
+    assert updated.early_response["final_response"] == "Дом обновлён в памяти."
+    lookup = prepare_task_turn(message="Где мой дом?", request_id="lookup-b", **common)
+    assert "pt=38.000000,56.000000" in lookup.early_response["final_response"]
+    assert "pt=37.000000,55.000000" not in lookup.early_response["final_response"]
+
+
+def test_parking_followup_requires_explicit_parking_word_and_uses_point_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    from gateway.task_runtime import CityTravelContextStore
+    CityTravelContextStore(state_dir / "state.db").save(platform="telegram", chat_id="1", session_key="s1", context={"route_url": "https://yandex.ru/route", "shown_parking_ids": [], "parking_candidates": [{"id": "p", "title": "parking", "address": {"city": None, "housenumber": None, "street": None}, "coordinates": {"lat": 55.8241, "lon": 37.6141}, "distance_m": 120, "parking_status": "likely_free", "eligible_for_recommendation": True, "deep_links": {"yandex_maps": "https://yandex.ru/maps/?ll=37.6141,55.8241&text=parking"}}]})
+    common = dict(platform_key="telegram", chat_id="1", session_key="s1", session_id="session", user_config={"agent": {}}, platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"])
+    non_parking = prepare_task_turn(message="Где мой дом? Пришли ссылку на Яндекс Карты", request_id="not-parking", message_context={"chat_id":"1","sender_id":"42","session_key":"s1"}, **common)
+    assert "Парков" not in non_parking.early_response["final_response"]
+    parking = prepare_task_turn(message="Пришли ссылку на выбранную парковку", request_id="parking", **common)
+    text = parking.early_response["final_response"]
+    assert "Парковка-кандидат №1" in text
+    assert "{'city'" not in text
+    assert "None" not in text
+    assert "text=parking" not in text
+    assert "pt=37.614100,55.824100" in text
+
+
+def test_bare_telegram_location_sentinel_has_no_old_prompt_in_adapter():
+    source = Path("gateway/platforms/telegram.py").read_text(encoding="utf-8")
+    handler = source[source.index("async def _handle_location_message"):source.index("# ------------------------------------------------------------------", source.index("async def _handle_location_message"))]
+    assert "[Telegram location received]" in handler
+    assert "Ask what they'd like to find nearby" not in handler
+    assert "[The user shared a location pin.]" not in handler
