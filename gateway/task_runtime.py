@@ -24,6 +24,8 @@ from gateway.task_continuation import (
 )
 from gateway.task_router import TaskRoute, route_turn, travel_is_route_or_parking, travel_needs_web_or_browser
 from gateway.quick_note_capture import (
+    build_location_place_note,
+    canonical_place_label,
     detect_quick_note,
     format_quick_save_response,
     run_quick_save,
@@ -193,6 +195,9 @@ class MessageContext:
     reply_caption: str | None = None
     reply_message_id: str | None = None
     reply_sender_id: str | None = None
+    location: dict[str, Any] | None = None
+    reply_location: dict[str, Any] | None = None
+    session_key: str | None = None
 
 
 def _normalize_message_context(value: dict | MessageContext | None, *, fallback_text: str = "", chat_id: str = "") -> MessageContext:
@@ -209,6 +214,9 @@ def _normalize_message_context(value: dict | MessageContext | None, *, fallback_
         reply_caption=str(data["reply_caption"]) if data.get("reply_caption") else None,
         reply_message_id=str(data["reply_message_id"]) if data.get("reply_message_id") is not None else None,
         reply_sender_id=str(data["reply_sender_id"]) if data.get("reply_sender_id") is not None else None,
+        location=data.get("location") if isinstance(data.get("location"), dict) else None,
+        reply_location=data.get("reply_location") if isinstance(data.get("reply_location"), dict) else None,
+        session_key=str(data["session_key"]) if data.get("session_key") is not None else None,
     )
 
 
@@ -664,6 +672,240 @@ class CityTravelContextStore:
         return value if isinstance(value, dict) else None
 
 
+_LOCATION_CONTEXT_TTL_SECONDS = 15 * 60
+_PLACE_SAVE_RE = re.compile(
+    r"\b(?:запомни|сохрани|зафиксируй|обнови)\w*\b.{0,80}\b(?P<label>дом|дома|работу|работа|офис|дачу|дача|место|геолокаци[юя]|точк[уа])\b|"
+    r"\b(?:это|здесь|тут|теперь)\s+(?:мой|моя|моё|мое)?\s*(?P<label2>дом|домашний\s+адрес|работа|офис|дача)\b",
+    re.I | re.S,
+)
+_AMBIGUOUS_PLACE_SAVE_RE = re.compile(r"^\s*(?:сохрани|запомни|зафиксируй)\s+(?:это|тут|здесь|эту\s+точку)\s*[.!?]*$", re.I)
+_UPDATE_PLACE_RE = re.compile(r"\b(?:обнови|теперь|новый|новая)\b", re.I)
+_LOCATION_ONLY_TEXT_RE = re.compile(r"^\s*\[Telegram location received\]\s*$", re.I)
+
+
+class PendingLocationStore:
+    """Short-lived Telegram location/intent state, scoped to chat, sender and session."""
+
+    def __init__(self, db_path: Path | str | None = None):
+        self.db_path = Path(db_path or Path.home() / ".hermes" / "state.db")
+        self.ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    def ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS telegram_location_contexts (
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    used_at REAL,
+                    PRIMARY KEY(platform, chat_id, session_key, sender_id, kind)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_telegram_location_contexts_expiry "
+                "ON telegram_location_contexts(expires_at)"
+            )
+
+    def save(self, *, platform: str, chat_id: str, session_key: str, sender_id: str, kind: str, payload: dict[str, Any]) -> None:
+        now = time.time()
+        expires_at = now + _LOCATION_CONTEXT_TTL_SECONDS
+        body = dict(payload)
+        body["ttl_seconds"] = _LOCATION_CONTEXT_TTL_SECONDS
+        body["expires_at_epoch"] = expires_at
+        with self._connect() as conn:
+            conn.execute("DELETE FROM telegram_location_contexts WHERE expires_at<=? OR used_at IS NOT NULL", (now,))
+            conn.execute(
+                """
+                INSERT INTO telegram_location_contexts (
+                    platform, chat_id, session_key, sender_id, kind, payload_json, created_at, updated_at, expires_at, used_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(platform, chat_id, session_key, sender_id, kind) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at,
+                    used_at=NULL
+                """,
+                (platform, str(chat_id), session_key or "", str(sender_id or ""), kind, json.dumps(body, ensure_ascii=False, sort_keys=True), now, now, expires_at),
+            )
+
+    def get(self, *, platform: str, chat_id: str, session_key: str, sender_id: str, kind: str) -> dict[str, Any] | None:
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM telegram_location_contexts WHERE expires_at<=? OR used_at IS NOT NULL", (now,))
+            row = conn.execute(
+                """
+                SELECT payload_json FROM telegram_location_contexts
+                WHERE platform=? AND chat_id=? AND session_key=? AND sender_id=? AND kind=? AND expires_at>? AND used_at IS NULL
+                """,
+                (platform, str(chat_id), session_key or "", str(sender_id or ""), kind, now),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["payload_json"] or "{}")
+        except Exception:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def consume(self, *, platform: str, chat_id: str, session_key: str, sender_id: str, kind: str) -> dict[str, Any] | None:
+        payload = self.get(platform=platform, chat_id=chat_id, session_key=session_key, sender_id=sender_id, kind=kind)
+        if payload is None:
+            return None
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE telegram_location_contexts SET used_at=?, updated_at=? WHERE platform=? AND chat_id=? AND session_key=? AND sender_id=? AND kind=?",
+                (time.time(), time.time(), platform, str(chat_id), session_key or "", str(sender_id or ""), kind),
+            )
+        return payload
+
+
+def _location_coords(location: dict[str, Any] | None) -> tuple[float, float] | None:
+    if not isinstance(location, dict):
+        return None
+    lat = _as_float(location.get("latitude"))
+    lon = _as_float(location.get("longitude"))
+    if lat is None or lon is None:
+        return None
+    return lat, lon
+
+
+def _place_intent_from_text(text: str) -> dict[str, Any] | None:
+    value = " ".join(str(text or "").strip().split())
+    if not value:
+        return None
+    if _AMBIGUOUS_PLACE_SAVE_RE.fullmatch(value):
+        return {"ambiguous": True}
+    match = _PLACE_SAVE_RE.search(value)
+    if not match:
+        return None
+    raw_label = match.groupdict().get("label") or match.groupdict().get("label2") or ""
+    raw_label = re.sub(r"\s+адрес$", "", raw_label, flags=re.I).strip()
+    if re.search(r"место|геолокаци|точк", raw_label, re.I):
+        raw_label = "Место"
+    label = canonical_place_label(raw_label) or "Место"
+    return {"label": label, "update": bool(_UPDATE_PLACE_RE.search(value))}
+
+
+def _location_source_message_id(location: dict[str, Any]) -> str | None:
+    value = location.get("message_id") if isinstance(location, dict) else None
+    return str(value) if value is not None else None
+
+
+def _place_saved_response(label: str, *, updated: bool) -> str:
+    if label == "Дом":
+        return "Дом обновлён в памяти." if updated else "Дом сохранён в памяти."
+    if label == "Работа":
+        return "Работа обновлена в памяти." if updated else "Работа сохранена в памяти."
+    if label == "Дача":
+        return "Дача обновлена в памяти." if updated else "Дача сохранена в памяти."
+    return f"{label} обновлено в памяти." if updated else f"{label} сохранено в памяти."
+
+
+def _quick_save_succeeded(result: dict[str, Any]) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return bool(result.get("saved") or result.get("already_exists") or result.get("updated") or result.get("status") in {"saved", "success", "duplicate", "already_exists", "updated"})
+
+
+def _quick_save_readback_ok(result: dict[str, Any]) -> bool:
+    if not isinstance(result, dict):
+        return False
+    readback = result.get("readback_count")
+    if readback is None:
+        return bool(result.get("readback_ok") or result.get("read_back_ok") or result.get("saved") or result.get("updated") or result.get("already_exists"))
+    try:
+        return int(readback) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _save_location_place(label: str, location: dict[str, Any], *, update_requested: bool) -> tuple[str, str, dict[str, Any]]:
+    coords = _location_coords(location)
+    if coords is None:
+        return "Не вижу координаты в геолокации. Пришли точку ещё раз.", "failed", {"tool_call_count": 0, "html_report_created": False}
+    note = build_location_place_note(label=label, latitude=coords[0], longitude=coords[1], source_message_id=_location_source_message_id(location))
+    try:
+        result = run_quick_save(note)
+    except Exception as exc:
+        return "Память сейчас недоступна, место не сохранено.", "blocked", {"tool_call_count": 1, "html_report_created": False, "location_save_error": exc.__class__.__name__}
+    success = _quick_save_succeeded(result)
+    readback_ok = _quick_save_readback_ok(result)
+    if not success or not readback_ok:
+        return "Не удалось подтвердить сохранение места в памяти.", "blocked", {"tool_call_count": 1, "html_report_created": False, "location_readback_ok": False}
+    updated = update_requested or bool(result.get("already_exists") or result.get("updated") or result.get("status") in {"duplicate", "already_exists", "updated"})
+    return _place_saved_response(canonical_place_label(label) or label, updated=updated), "success", {"tool_call_count": 1, "html_report_created": False, "location_readback_ok": True}
+
+
+def _deterministic_location_place_flow(*, text: str, route: TaskRoute, platform_key: str, chat_id: str, session_key: str, msg_ctx: MessageContext) -> dict | None:
+    store = PendingLocationStore()
+    sender_id = str(msg_ctx.sender_id or "")
+    effective_session = str(msg_ctx.session_key or session_key or "")
+    current_location = msg_ctx.location if _location_coords(msg_ctx.location) else None
+    reply_location = msg_ctx.reply_location if _location_coords(msg_ctx.reply_location) else None
+    location_only = current_location is not None and _LOCATION_ONLY_TEXT_RE.fullmatch(text or "") is not None
+    intent = _place_intent_from_text(text)
+
+    if current_location is not None:
+        store.save(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="location", payload=current_location)
+
+    if location_only:
+        pending_intent = store.consume(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="intent")
+        if isinstance(pending_intent, dict) and pending_intent.get("label"):
+            response, status, diagnostics = _save_location_place(str(pending_intent["label"]), current_location, update_requested=bool(pending_intent.get("update")))
+            if status == "success":
+                store.consume(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="location")
+            return early_response(response, status=status, role=route.role or "no_llm", reason="deterministic telegram location place save", diagnostics={**diagnostics, "location_intent": "pending_text_then_location"})
+        return early_response(
+            "Геолокацию получил. Напиши, что сделать: запомнить место, построить маршрут или найти что-то рядом.",
+            role=route.role or "no_llm",
+            reason="deterministic telegram bare location",
+            diagnostics={"tool_call_count": 0, "html_report_created": False, "location_intent": "bare_location"},
+        )
+
+    if intent is None:
+        return None
+    if intent.get("ambiguous"):
+        location = reply_location or store.get(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="location")
+        if location is not None:
+            return early_response(
+                "Как назвать место: Дом, Работа или своё название? Ответьте сообщением.",
+                role=route.role or "no_llm",
+                reason="deterministic ambiguous telegram location save",
+                diagnostics={"tool_call_count": 0, "html_report_created": False, "location_intent": "ambiguous_place_save"},
+            )
+        return None
+
+    label = str(intent.get("label") or "Место")
+    location = reply_location or store.get(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="location")
+    if location is None:
+        store.save(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="intent", payload={"label": label, "update": bool(intent.get("update"))})
+        return early_response(
+            "Пришли геолокацию, и я сохраню место.",
+            role=route.role or "no_llm",
+            reason="deterministic place save waiting for telegram location",
+            diagnostics={"tool_call_count": 0, "html_report_created": False, "location_intent": "waiting_for_location"},
+        )
+    response, status, diagnostics = _save_location_place(label, location, update_requested=bool(intent.get("update")))
+    if status == "success" and reply_location is None:
+        store.consume(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="location")
+    return early_response(response, status=status, role=route.role or "no_llm", reason="deterministic telegram location place save", diagnostics={**diagnostics, "location_intent": "location_then_text" if reply_location is None else "reply_location"})
+
+
 def _as_float(value: Any) -> float | None:
     try:
         if value is None:
@@ -735,6 +977,20 @@ def _parking_rank_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
     return (not bool(candidate.get("eligible_for_recommendation")), status_priority.get(str(candidate.get("parking_status") or "unverified"), 9), candidate.get("distance_m") is None, candidate.get("distance_m") or 0, candidate.get("title") or "")
 
 
+def _parking_distance_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    return (not bool(candidate.get("eligible_for_recommendation")), candidate.get("distance_m") is None, candidate.get("distance_m") or 0, _parking_rank_key(candidate))
+
+
+def _has_official_tariff(candidate: dict[str, Any]) -> bool:
+    evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {}
+    official = evidence.get("official") if isinstance(evidence.get("official"), dict) else {}
+    return bool(official.get("tariffs"))
+
+
+def _parking_cheapest_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    return (not _has_official_tariff(candidate), _parking_rank_key(candidate))
+
+
 def _travel_context_from_payload(payload: dict[str, Any], *, start: str, destination: str) -> dict[str, Any]:
     route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
     route_links = route.get("deep_links") if isinstance(route.get("deep_links"), dict) else {}
@@ -763,6 +1019,8 @@ def _travel_context_from_payload(payload: dict[str, Any], *, start: str, destina
 
 _PARKING_LINK_RE = re.compile(r"\b(?:пришл\w*|дай|дайте|открой\w*|скинь\w*|координат\w*)\b.{0,120}\b(?:парковк\w*|яндекс\w*|карт\w*)\b|\b(?:парковк\w*)\b.{0,80}\b(?:ссылк\w*|координат\w*|яндекс\w*)\b", re.I | re.S)
 _MORE_PARKING_RE = re.compile(r"\b(?:ещ[её]|друг\w*|альтернатив\w*)\b.{0,120}\b(?:парковк\w*|бесплатн\w*|дешев\w*|вариант\w*)\b|\b(?:парковк\w*)\b.{0,120}\b(?:ещ[её]|друг\w*|альтернатив\w*)\b", re.I | re.S)
+_PARKING_CLOSEST_RE = re.compile(r"\b(?:сам\w*\s+близк\w*|ближайш\w*|по\s+расстоянию)\b", re.I)
+_PARKING_CHEAP_RE = re.compile(r"\b(?:сам\w*\s+дешев\w*|дешев\w*|цена|тариф|бесплатн\w*)\b", re.I)
 _ROUTE_REPEAT_RE = re.compile(r"\b(?:пришл\w*|дай|дайте|открой\w*|повтори\w*)\b.{0,100}\b(?:маршрут\w*|ссылк\w*\s+яндекс|яндекс\s+карт\w*)\b", re.I | re.S)
 _DESTINATION_CLARIFICATION_RE = re.compile(r"\b(?:парк\w*|усадьб\w*|музе\w*|вднх|останкин\w*|точнее|около|рядом)\b", re.I)
 _CAFE_OR_REVIEW_RE = re.compile(r"\b(?:кафе|ресторан|отзыв\w*|рейтинг\w*|ранжир\w*|покушать|поесть)\b", re.I)
@@ -790,6 +1048,28 @@ def _format_distance(distance: Any) -> str:
     return f"{round(value)} м от точки назначения"
 
 
+def _ru_plural(count: int, one: str, few: str, many: str) -> str:
+    n = abs(int(count))
+    if n % 100 in {11, 12, 13, 14}:
+        return many
+    if n % 10 == 1:
+        return one
+    if n % 10 in {2, 3, 4}:
+        return few
+    return many
+
+
+def _parking_display_title(candidate: dict[str, Any], *, index: int | None = None) -> str:
+    raw = str(candidate.get("title") or "").strip()
+    generic = not raw or raw.casefold() in {"parking", "парковка", "car park", "parking lot"}
+    if not generic:
+        return raw
+    address = str(candidate.get("address") or "").strip()
+    if address:
+        return "Парковка-кандидат у " + address
+    return f"Парковка-кандидат №{index}" if index is not None else "Парковка-кандидат"
+
+
 def _parking_status_note(candidate: dict[str, Any]) -> str:
     status = str(candidate.get("parking_status") or "unverified")
     if status == "likely_free":
@@ -804,7 +1084,8 @@ def _parking_status_note(candidate: dict[str, Any]) -> str:
 def _format_parking_candidate(candidate: dict[str, Any], *, index: int | None = None) -> str:
     prefix = f"{index}. " if index is not None else ""
     coords = candidate.get("coordinates") or {}
-    lines = [f"{prefix}{candidate.get('title') or 'парковка'} - {_format_distance(candidate.get('distance_m'))}.", _parking_status_note(candidate), f"Координаты: {float(coords.get('lat')):.6f}, {float(coords.get('lon')):.6f}", f"Яндекс Карты: {candidate.get('raw_yandex_maps_url') or 'ссылка недоступна'}"]
+    title = _parking_display_title(candidate, index=index)
+    lines = [f"{prefix}{title} - {_format_distance(candidate.get('distance_m'))}.", _parking_status_note(candidate), f"Координаты: {float(coords.get('lat')):.6f}, {float(coords.get('lon')):.6f}", f"Яндекс Карты: {candidate.get('raw_yandex_maps_url') or 'ссылка недоступна'}"]
     evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {}
     if evidence.get("reason"):
         lines.append("Основание: " + str(evidence.get("reason")))
@@ -828,6 +1109,27 @@ def _update_city_travel_context(*, platform_key: str, chat_id: str, session_key:
         pass
 
 
+def _parking_selection(candidates: list[dict[str, Any]], text: str) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
+    eligible = [item for item in candidates if item.get("eligible_for_recommendation")]
+    if _PARKING_CLOSEST_RE.search(text or ""):
+        sorted_items = sorted(eligible, key=_parking_distance_key)
+        return sorted_items[0], "Самый близкий кандидат:", None
+    if _PARKING_CHEAP_RE.search(text or "") and any(_has_official_tariff(item) for item in eligible):
+        sorted_items = sorted(eligible, key=_parking_cheapest_key)
+        return sorted_items[0], "Кандидат с официальным тарифом:", None
+    sorted_items = sorted(eligible, key=_parking_rank_key)
+    selected = sorted_items[0]
+    nearest = sorted(eligible, key=_parking_distance_key)[0]
+    status = str(selected.get("parking_status") or "unverified")
+    if status == "likely_free":
+        if nearest.get("id") != selected.get("id"):
+            return selected, "Вероятно бесплатный кандидат (выбран по признаку likely_free, не как самый близкий):", nearest
+        return selected, "Ближайший кандидат с признаком likely_free:", None
+    if status in {"official", "user_confirmed"}:
+        return selected, f"Кандидат со статусом {status}:", None
+    return selected, "Самый близкий допустимый кандидат:", None
+
+
 def _deterministic_city_travel_followup(*, text: str, route: TaskRoute, platform_key: str, chat_id: str, session_key: str) -> dict | None:
     intent = _city_travel_followup_intent(text)
     if intent is None:
@@ -845,12 +1147,17 @@ def _deterministic_city_travel_followup(*, text: str, route: TaskRoute, platform
         eligible = [item for item in candidates if item.get("eligible_for_recommendation")]
         if not eligible:
             return early_response("В сохранённом маршруте нет подходящих кандидатов парковки. Бесплатность или доступность не подтверждаю.", role=route.role, reason="deterministic city travel no eligible parking candidates", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
-        selected = eligible[0]
+        selected, header, nearest = _parking_selection(candidates, text)
         shown = set(str(x) for x in context.get("shown_parking_ids") or [])
         shown.add(str(selected.get("id") or _parking_candidate_id(selected)))
         context["shown_parking_ids"] = sorted(shown)
         _update_city_travel_context(platform_key=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
-        return early_response("Ближайший подходящий кандидат парковки:\n" + _format_parking_candidate(selected), role=route.role, reason="deterministic city travel parking link follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+        body = [header, _format_parking_candidate(selected, index=1)]
+        if nearest is not None:
+            body.extend(["Самый близкий кандидат:", _format_parking_candidate(nearest, index=2)])
+        if _PARKING_CHEAP_RE.search(text or "") and not any(_has_official_tariff(item) for item in eligible):
+            body.append("Официальных тарифов в сохранённых данных нет; likely_free не считаю доказанной нулевой ценой.")
+        return early_response("\n".join(body), role=route.role, reason="deterministic city travel parking link follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
     if intent == "more_parking":
         shown = set(str(x) for x in context.get("shown_parking_ids") or [])
         candidates = sorted([item for item in context.get("parking_candidates") or [] if isinstance(item, dict)], key=_parking_rank_key)
@@ -861,7 +1168,10 @@ def _deterministic_city_travel_followup(*, text: str, route: TaskRoute, platform
             shown.add(str(item.get("id") or _parking_candidate_id(item)))
         context["shown_parking_ids"] = sorted(shown)
         _update_city_travel_context(platform_key=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
-        body = [f"Показываю {len(selected)} сохранённ(ых) кандидат(а/ов) парковки. likely_free не считаю официально бесплатной парковкой."]
+        count = len(selected)
+        body = [f"Показываю ещё {count} {_ru_plural(count, 'сохранённый вариант', 'сохранённых варианта', 'сохранённых вариантов')} парковки. likely_free не считаю официально бесплатной парковкой."]
+        if _PARKING_CHEAP_RE.search(text or "") and not any(_has_official_tariff(item) for item in candidates):
+            body.append("Официальных тарифов в сохранённых данных нет; likely_free не считаю доказанной нулевой ценой.")
         body.extend(_format_parking_candidate(item, index=index) for index, item in enumerate(selected, 1))
         return early_response("\n\n".join(body), role=route.role, reason="deterministic city travel more parking follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
     if intent == "destination_clarification":
@@ -988,6 +1298,17 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             )
     initial_route = route_turn(current_text, command=None, platform_key=platform_key,
                                user_config=user_config, platform_toolsets=platform_toolsets)
+    location_response = _deterministic_location_place_flow(
+        text=current_text,
+        route=initial_route,
+        platform_key=platform_key,
+        chat_id=str(chat_id),
+        session_key=session_key,
+        msg_ctx=msg_ctx,
+    )
+    if location_response is not None:
+        return PreparedTaskTurn(original, initial_route, None, location_response, False)
+
     travel_followup_response = _deterministic_city_travel_followup(
         text=current_text,
         route=initial_route,

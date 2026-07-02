@@ -173,3 +173,57 @@ def format_quick_save_response(result: dict[str, Any]) -> tuple[str, str]:
         return f"Сохранено: {subject}", "success"
     message = _clean(result.get("message") or "публикация не подтверждена")
     return f"Не удалось подтвердить сохранение: {message}", "failed"
+
+
+_PLACE_LABELS = {
+    "дом": "Дом",
+    "дома": "Дом",
+    "домой": "Дом",
+    "работа": "Работа",
+    "работу": "Работа",
+    "офис": "Работа",
+    "дача": "Дача",
+    "дачу": "Дача",
+}
+
+
+def canonical_place_label(raw: str | None) -> str | None:
+    value = _clean(raw or "").casefold()
+    if not value:
+        return None
+    return _PLACE_LABELS.get(value) or (value[:1].upper() + value[1:])
+
+
+def build_location_place_note(*, label: str, latitude: float, longitude: float, source_message_id: str | None = None) -> QuickNote:
+    canonical = canonical_place_label(label) or "Место"
+    rounded_lat = round(float(latitude), 6)
+    rounded_lon = round(float(longitude), 6)
+    summary = (
+        f"{canonical}. Координаты сохранены из Telegram location. "
+        f"lat={rounded_lat:.6f}; lon={rounded_lon:.6f}. "
+        "confidence=explicit_user_location."
+    )
+    accepted_facts = [
+        {"kind": "personal_place_label", "value": canonical},
+        {"kind": "latitude", "value": f"{rounded_lat:.6f}"},
+        {"kind": "longitude", "value": f"{rounded_lon:.6f}"},
+        {"kind": "source", "value": "telegram_location"},
+        {"kind": "confidence", "value": "explicit_user_location"},
+    ]
+    if source_message_id:
+        accepted_facts.append({"kind": "source_message_id", "value": str(source_message_id)})
+    payload = {
+        "knowledge_project": "travel",
+        "type": "note",
+        "title": f"Личное место: {canonical}",
+        "summary": summary[:4000],
+        "accepted_facts": accepted_facts,
+        "sensitivity": "personal_sensitive",
+        "gpt_access": "restricted",
+        "source_system": "hermes",
+        "source_workspace": "telegram",
+    }
+    return QuickNote(
+        payload=payload,
+        idempotency_key="personal-place:" + hashlib.sha256(canonical.casefold().encode("utf-8")).hexdigest(),
+    )

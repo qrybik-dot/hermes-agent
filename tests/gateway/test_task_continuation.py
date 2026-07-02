@@ -26,10 +26,8 @@ from tools.session_search_tool import (
     set_turn_search_budget,
 )
 
-
 def _store(tmp_path):
     return TaskStateStore(tmp_path / "state.db")
-
 
 def test_resume_one_task(tmp_path):
     store = _store(tmp_path)
@@ -41,7 +39,6 @@ def test_resume_one_task(tmp_path):
     decision = store.resolve("Готов продолжить", "telegram", "1")
     assert decision.kind == "selected"
     assert decision.task.task_id == task.task_id
-
 
 def test_explicit_task_prefix_with_followup_text_resumes_task(tmp_path):
     store = _store(tmp_path)
@@ -56,7 +53,6 @@ def test_explicit_task_prefix_with_followup_text_resumes_task(tmp_path):
     assert decision.kind == "selected"
     assert decision.task.task_id == task.task_id
 
-
 def test_resume_choice_and_number(tmp_path):
     store = _store(tmp_path)
     store.create(platform="telegram", chat_id="1", session_key="s", title="First",
@@ -68,7 +64,6 @@ def test_resume_choice_and_number(tmp_path):
     assert "Продолжить 1" in format_choice(decision.candidates)
     chosen = store.resolve("Продолжить 1", "telegram", "1")
     assert chosen.kind == "selected"
-
 
 def test_pause_progress_and_contract():
     assert is_pause_request("Повторим утром")
@@ -84,14 +79,12 @@ def test_pause_progress_and_contract():
     assert plan is False
     assert required_plan == ()
 
-
 def test_status_message_persists(tmp_path):
     store = _store(tmp_path)
     task = store.create(platform="telegram", chat_id="1", session_key="s", title="Task",
                         original_request="x", role="planning", toolsets=["file"])
     store.set_status_message_id(task.task_id, 42)
     assert store.get(task.task_id).status_message_id == "42"
-
 
 def test_git_audit_routes_to_terminal_server_debug():
     route = route_turn(
@@ -104,7 +97,6 @@ def test_git_audit_routes_to_terminal_server_debug():
     assert route.role == "server_debug"
     assert "terminal" in route.toolsets
 
-
 def test_session_search_budget_is_two_calls():
     token = set_turn_search_budget(2)
     try:
@@ -113,7 +105,6 @@ def test_session_search_budget_is_two_calls():
         assert _consume_search_budget() is False
     finally:
         reset_turn_search_budget(token)
-
 
 def test_prepare_task_turn_restores_role_and_tools(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -137,7 +128,6 @@ def test_prepare_task_turn_restores_role_and_tools(tmp_path, monkeypatch):
     assert prepared.route.role == "server_debug"
     assert "terminal" in prepared.route.toolsets
     assert "Saved task" in prepared.message
-
 
 def test_simple_travel_route_parking_uses_deterministic_trip_helper(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -211,7 +201,6 @@ def test_simple_travel_route_parking_uses_deterministic_trip_helper(tmp_path, mo
     assert calls and "city_travel_trip.py" in calls[0][1]
     assert "/.hermes/.env" not in " ".join(calls[0])
 
-
 def test_city_travel_multiturn_followups_use_saved_context(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / ".hermes"
@@ -261,7 +250,8 @@ def test_city_travel_multiturn_followups_use_saved_context(tmp_path, monkeypatch
     assert second.early_response["api_calls"] == 0
     assert second.early_response["tools"] == []
     assert second.early_response["diagnostics"]["tool_call_count"] == 0
-    assert "Ближайший подходящий кандидат" in second.early_response["final_response"]
+    assert "кандидат" in second.early_response["final_response"].lower()
+    assert "likely_free" in second.early_response["final_response"]
     assert "https://yandex.ru/a" in second.early_response["final_response"]
     assert "лучший" not in second.early_response["final_response"].lower()
     assert "html_report_path" not in second.early_response
@@ -276,7 +266,6 @@ def test_city_travel_multiturn_followups_use_saved_context(tmp_path, monkeypatch
     assert "Parking D" in third.early_response["final_response"]
     assert "INCOMPLETE" not in third.early_response["final_response"]
     assert len(calls) == 1
-
 
 def test_city_travel_context_is_session_chat_scoped_and_ttl_bound(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -294,7 +283,6 @@ def test_city_travel_context_is_session_chat_scoped_and_ttl_bound(tmp_path, monk
     with sqlite3.connect(state_dir / "state.db") as conn:
         conn.execute("UPDATE city_travel_contexts SET expires_at=?", (time.time() - 1,))
     assert store.get(platform="telegram", chat_id="1", session_key="s1") is None
-
 
 def test_city_travel_route_repeat_and_no_eligible_are_deterministic(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -328,7 +316,6 @@ def test_city_travel_route_repeat_and_no_eligible_are_deterministic(tmp_path, mo
     assert parking.task is None
     assert parking.early_response["api_calls"] == 0
     assert "нет подходящих кандидатов" in parking.early_response["final_response"]
-
 
 def test_city_travel_more_parking_one_candidate_and_official_tariff(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -374,7 +361,6 @@ def test_city_travel_more_parking_one_candidate_and_official_tariff(tmp_path, mo
     assert prepared.early_response["diagnostics"]["travel_followup_intent"] == "more_parking"
     assert "Official Parking" in prepared.early_response["final_response"]
     assert "Официальный тариф: 100 руб/час" in prepared.early_response["final_response"]
-
 
 def test_city_travel_destination_clarification_uses_saved_start(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -429,7 +415,6 @@ def test_city_travel_destination_clarification_uses_saved_start(tmp_path, monkey
     assert "Королёв, ул. Лесная" in calls[0]
     assert "парк усадьба останкино около вднх, точнее сказать не могу" in calls[0]
 
-
 def test_city_travel_followup_does_not_catch_cafe_rating(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / ".hermes"
@@ -450,7 +435,6 @@ def test_city_travel_followup_does_not_catch_cafe_rating(tmp_path, monkeypatch):
         and prepared.early_response.get("diagnostics", {}).get("travel_followup_intent")
     )
 
-
 def test_reply_context_continuation_command(tmp_path):
     store = _store(tmp_path)
     task = store.create(
@@ -462,12 +446,10 @@ def test_reply_context_continuation_command(tmp_path):
     assert decision.kind == "selected"
     assert decision.task.task_id == task.task_id
 
-
 def test_continuation_without_active_tasks_is_deterministic(tmp_path):
     store = _store(tmp_path)
     decision = store.resolve('[Replying to: "old report"]\nГотов продолжить', "telegram", "1")
     assert decision.kind == "empty"
-
 
 def test_google_workspace_continuation_recomputes_skill_names(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -494,7 +476,6 @@ def test_google_workspace_continuation_recomputes_skill_names(tmp_path, monkeypa
     assert prepared.task.task_id == task.task_id
     assert prepared.route.skill_names == ("google-workspace",)
     assert "GOOGLE WORKSPACE SKILL" in prepared.route.operational_context
-
 
 def test_calendar_missing_image_and_datetime_blocks_before_model(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -546,7 +527,6 @@ def test_calendar_missing_image_and_datetime_blocks_before_model(tmp_path, monke
     assert "конкретное время" in prepared.early_response["final_response"]
     assert store.get(task.task_id).status == "blocked"
 
-
 def test_output_screenshot_artifacts_do_not_require_vision_context(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / ".hermes"
@@ -592,7 +572,6 @@ def test_output_screenshot_artifacts_do_not_require_vision_context(tmp_path, mon
     assert prepared.route is not None
     assert "terminal" in prepared.route.toolsets
 
-
 def test_completed_task_replays_saved_result_without_model(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / ".hermes"
@@ -635,7 +614,6 @@ def test_completed_task_replays_saved_result_without_model(tmp_path, monkeypatch
     assert "event-123" in prepared.early_response["final_response"]
     assert store.get(task.task_id).status == "completed"
 
-
 def test_missing_google_workspace_skill_blocks_before_model(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
@@ -653,7 +631,6 @@ def test_missing_google_workspace_skill_blocks_before_model(tmp_path, monkeypatc
     assert prepared.early_response["model"] == "deterministic"
     assert prepared.early_response["api_calls"] == 0
     assert "google-workspace" in prepared.early_response["final_response"]
-
 
 def test_execution_without_working_toolsets_explains_missing_capability(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -673,7 +650,6 @@ def test_execution_without_working_toolsets_explains_missing_capability(tmp_path
     assert not response.startswith("BLOCKED")
     assert "нет доступного инструмента" in response
     assert "Пришли ссылку или файл" in response
-
 
 def test_travel_turn_is_tracked_and_requires_terminal_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -704,8 +680,6 @@ def test_travel_turn_is_tracked_and_requires_terminal_execution(tmp_path, monkey
     assert prepared.task.required_toolsets == ("terminal",)
     assert "terminal" in prepared.task.toolsets
 
-
-
 def test_bare_numeric_choice_requires_recent_choice_prompt(tmp_path):
     store = _store(tmp_path)
     first = store.create(platform="telegram", chat_id="1", session_key="s", title="First", original_request="one", role="planning", toolsets=["file"], status="paused")
@@ -718,7 +692,6 @@ def test_bare_numeric_choice_requires_recent_choice_prompt(tmp_path):
     assert chosen.task.task_id == second.task_id
     assert chosen.task.task_id != first.task_id
 
-
 def test_contextual_confirmation_opens_choice_instead_of_new_task(tmp_path):
     store = _store(tmp_path)
     store.create(platform="telegram", chat_id="1", session_key="s", title="Creative smoke test", original_request="Run smoke-test", role="simple", toolsets=["terminal"], status="incomplete")
@@ -726,13 +699,10 @@ def test_contextual_confirmation_opens_choice_instead_of_new_task(tmp_path):
     decision = store.resolve("\u0414\u0430, \u0437\u0430\u043f\u0443\u0441\u0442\u0438 \u0442\u0435\u0441\u0442", "telegram", "1")
     assert decision.kind == "choice"
 
-
 def test_task_reported_partial_or_blocked_is_non_success():
     assert task_reported_non_success("\u0412\u0435\u0440\u0434\u0438\u043a\u0442: PARTIAL\nSmoke-test was not run") == ("incomplete", "reported verdict PARTIAL")
     assert task_reported_non_success("BLOCKED\nMissing approval") == ("blocked", "reported verdict BLOCKED")
     assert task_reported_non_success("READY\nAll checks passed") is None
-
-
 
 def test_skill_inventory_question_is_execution_contract():
     execution, required = infer_execution_contract(
@@ -743,7 +713,6 @@ def test_skill_inventory_question_is_execution_contract():
     assert execution is True
     assert required == ()
 
-
 def test_execution_contract_does_not_match_log_inside_unrelated_words():
     execution, required = infer_execution_contract(
         "Создай аналог методологического skill и сохрани результат",
@@ -752,7 +721,6 @@ def test_execution_contract_does_not_match_log_inside_unrelated_words():
     )
     assert execution is True
     assert required == ()
-
 
 def test_prepare_task_turn_restores_required_terminal_from_platform_allowlist(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -784,7 +752,6 @@ def test_prepare_task_turn_restores_required_terminal_from_platform_allowlist(tm
     assert "terminal" in prepared.route.toolsets
     assert "restored_required=terminal" in prepared.route.reason
 
-
 def test_opaque_followup_resumes_single_task(tmp_path):
     store = _store(tmp_path)
     task = store.create(
@@ -798,7 +765,6 @@ def test_opaque_followup_resumes_single_task(tmp_path):
     assert decision.kind == "selected"
     assert decision.task.task_id == task.task_id
 
-
 def test_opaque_followup_does_not_hijack_new_question(tmp_path):
     store = _store(tmp_path)
     store.create(
@@ -809,8 +775,6 @@ def test_opaque_followup_does_not_hijack_new_question(tmp_path):
     )
     assert store.resolve("What is the weather tomorrow?", "telegram", "1").kind == "none"
 
-
-
 def test_technical_events_do_not_activate_calendar_verifier():
     assert calendar_completion_evidence_missing(
         "Исправь progress events и status events для live-status, события не календарные",
@@ -818,7 +782,6 @@ def test_technical_events_do_not_activate_calendar_verifier():
         route_toolsets=["terminal", "file"],
         route_skills=[],
     ) == ()
-
 
 def test_real_calendar_write_still_requires_evidence():
     missing = calendar_completion_evidence_missing(
@@ -830,7 +793,6 @@ def test_real_calendar_write_still_requires_evidence():
     )
     assert "event ID или штатная ссылка" in missing
     assert "подтверждение read-back" in missing
-
 
 def test_continuation_uses_checkpoint_and_does_not_repeat_audit(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -870,7 +832,6 @@ def test_continuation_uses_checkpoint_and_does_not_repeat_audit(tmp_path, monkey
     assert "Do not repeat completed audit" in prepared.message
     assert "Reserve the last 5 iterations" in prepared.route.operational_context
 
-
 def test_after_two_budget_exhaustions_continuation_escalates_without_model(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / ".hermes"
@@ -906,8 +867,6 @@ def test_after_two_budget_exhaustions_continuation_escalates_without_model(tmp_p
     assert prepared.early_response["model"] == "deterministic"
     assert prepared.early_response["final_response"].startswith("BLOCKED")
     assert "двух исчерпаний" in prepared.early_response["final_response"]
-
-
 
 def test_calendar_reply_context_supplies_structured_event(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -951,7 +910,6 @@ def test_calendar_reply_context_supplies_structured_event(tmp_path, monkeypatch)
     assert "Summary: консультация по Hermes в Zoom" in prepared.message
     assert "google-workspace" in prepared.route.skill_names
 
-
 def test_calendar_reply_caption_used_when_text_absent(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
@@ -979,7 +937,6 @@ def test_calendar_reply_caption_used_when_text_absent(tmp_path, monkeypatch):
 
     assert prepared.early_response is None
     assert prepared.task.metadata["calendar_event_draft"]["summary"] == "консультация по Hermes в Zoom"
-
 
 def test_calendar_wrapper_lines_not_used_as_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1011,7 +968,6 @@ def test_calendar_wrapper_lines_not_used_as_summary(tmp_path, monkeypatch):
     assert "Записал" not in prepared.message
     assert "Часовой пояс" not in summary
 
-
 def test_calendar_missing_reply_data_blocks_before_model(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
@@ -1037,7 +993,6 @@ def test_calendar_missing_reply_data_blocks_before_model(tmp_path, monkeypatch):
     assert "конкретная дата" in prepared.early_response["final_response"]
     assert "конкретное время" in prepared.early_response["final_response"]
     assert "назначение события" in prepared.early_response["final_response"]
-
 
 def test_calendar_pending_continuation_requires_calendar_action_and_same_user(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1107,7 +1062,6 @@ def test_calendar_pending_continuation_requires_calendar_action_and_same_user(tm
     assert same_user.task.metadata["calendar_draft_source_task_id"] == task.task_id
     assert "Structured calendar event from pending_task" in same_user.message
 
-
 def test_calendar_duplicate_update_reuses_task(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
@@ -1137,7 +1091,6 @@ def test_calendar_duplicate_update_reuses_task(tmp_path, monkeypatch):
 
     assert first.task.task_id == second.task.task_id
     assert second.task.source_request_id == "telegram:1:u1:777:calendar_write"
-
 
 def test_new_calendar_message_after_incomplete_task_creates_new_task_id(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1206,7 +1159,6 @@ def test_new_calendar_message_after_incomplete_task_creates_new_task_id(tmp_path
     assert "calendar_evidence" not in prepared.task.metadata
     assert "Structured calendar event from pending_task" in prepared.message
 
-
 def test_new_calendar_update_with_same_text_is_not_duplicate(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
@@ -1248,7 +1200,6 @@ def test_new_calendar_update_with_same_text_is_not_duplicate(tmp_path, monkeypat
     assert first.task.source_request_id == "telegram:1:u1:777:calendar_write"
     assert second.task.source_request_id == "telegram:1:u1:778:calendar_write"
 
-
 def test_stale_event_id_without_readback_does_not_complete_calendar_task():
     evidence = _calendar_evidence()
     evidence.update({"read_back": False, "status": "not_found", "read_back_error": "404 notFound"})
@@ -1262,7 +1213,6 @@ def test_stale_event_id_without_readback_does_not_complete_calendar_task():
 
     assert "подтверждение read-back" in missing
     assert "status=created" in missing
-
 
 def test_after_stale_invalidation_new_update_can_create_again(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1310,7 +1260,6 @@ def test_after_stale_invalidation_new_update_can_create_again(tmp_path, monkeypa
     assert "calendar_evidence" not in prepared.task.metadata
     assert "terminal" in prepared.route.toolsets
 
-
 def test_calendar_summary_preserves_full_zoom_text_from_reply(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
@@ -1338,7 +1287,6 @@ def test_calendar_summary_preserves_full_zoom_text_from_reply(tmp_path, monkeypa
 
     assert prepared.task.metadata["calendar_event_draft"]["summary"] == "консультация по Hermes в Zoom"
     assert "Summary: консультация по Hermes в Zoom" in prepared.message
-
 
 def test_new_calendar_create_uses_runtime_callback_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1377,7 +1325,6 @@ def test_new_calendar_create_uses_runtime_callback_evidence(tmp_path, monkeypatc
         metadata=metadata,
     ) == ()
 
-
 def test_calendar_tool_error_does_not_count_as_successful_write():
     missing = calendar_completion_evidence_missing(
         "Создай событие в календаре завтра в 18:30: созвон с Иваном",
@@ -1388,7 +1335,6 @@ def test_calendar_tool_error_does_not_count_as_successful_write():
     )
     assert "event ID или штатная ссылка" in missing
 
-
 def test_calendar_successful_tool_still_needs_readback_evidence():
     missing = calendar_completion_evidence_missing(
         "Создай событие в календаре завтра в 18:30: созвон с Иваном",
@@ -1398,7 +1344,6 @@ def test_calendar_successful_tool_still_needs_readback_evidence():
         tool_calls=[{"name": "google_calendar_create_event", "success": True}],
     )
     assert missing == ("подтверждение read-back",)
-
 
 def test_calendar_old_numeric_date_still_passes_preflight(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1419,8 +1364,6 @@ def test_calendar_old_numeric_date_still_passes_preflight(tmp_path, monkeypatch)
     )
     assert prepared.early_response is None
 
-
-
 def test_calendar_readback_evidence_allows_completion():
     assert calendar_completion_evidence_missing(
         "Создай событие в календаре завтра в 18:30: созвон с Иваном",
@@ -1428,7 +1371,6 @@ def test_calendar_readback_evidence_allows_completion():
         route_skills=["google-workspace"],
         metadata={"execution_contract": {"type": "calendar_write"}},
     ) == ()
-
 
 def test_calendar_readback_false_does_not_allow_completion():
     missing = calendar_completion_evidence_missing(
@@ -1440,8 +1382,6 @@ def test_calendar_readback_false_does_not_allow_completion():
     assert "start/начало" in missing
     assert "end/окончание" in missing
     assert "подтверждение read-back" in missing
-
-
 
 def _calendar_evidence():
     return {
@@ -1455,7 +1395,6 @@ def _calendar_evidence():
         "status": "created",
     }
 
-
 def test_calendar_tool_result_extracts_structured_evidence():
     evidence = _calendar_evidence()
     result = {
@@ -1466,7 +1405,6 @@ def test_calendar_tool_result_extracts_structured_evidence():
     }
     assert extract_calendar_evidence_from_result(result) == evidence
 
-
 def test_calendar_metadata_evidence_allows_ready_without_final_text():
     evidence = _calendar_evidence()
     assert calendar_evidence_complete(evidence) is True
@@ -1476,7 +1414,6 @@ def test_calendar_metadata_evidence_allows_ready_without_final_text():
         route_skills=["google-workspace"],
         metadata={"execution_contract": {"type": "calendar_write"}, "calendar_evidence": evidence},
     ) == ()
-
 
 def test_calendar_metadata_missing_readback_blocks_ready():
     evidence = _calendar_evidence()
@@ -1491,7 +1428,6 @@ def test_calendar_metadata_missing_readback_blocks_ready():
     assert "подтверждение read-back" in missing
     assert "status=created" in missing
 
-
 def test_calendar_existing_event_id_result_uses_readback_not_create():
     evidence = _calendar_evidence()
     result = {"messages": [{"role": "tool", "content": json.dumps(evidence)}]}
@@ -1500,7 +1436,6 @@ def test_calendar_existing_event_id_result_uses_readback_not_create():
     assert extracted["read_back"] is True
     assert calendar_evidence_complete(extracted) is True
 
-
 def test_non_calendar_tool_result_not_calendar_evidence():
     result = {
         "messages": [
@@ -1508,7 +1443,6 @@ def test_non_calendar_tool_result_not_calendar_evidence():
         ]
     }
     assert extract_calendar_evidence_from_result(result) is None
-
 
 def test_runtime_tool_result_persists_calendar_evidence_for_finalizer(tmp_path):
     store = _store(tmp_path)
@@ -1538,7 +1472,6 @@ def test_runtime_tool_result_persists_calendar_evidence_for_finalizer(tmp_path):
         route_skills=["google-workspace"],
         metadata=saved,
     ) == ()
-
 
 def test_runtime_terminal_wrapper_persists_calendar_evidence_for_finalizer(tmp_path):
     store = _store(tmp_path)
@@ -1575,7 +1508,6 @@ def test_runtime_terminal_wrapper_persists_calendar_evidence_for_finalizer(tmp_p
         metadata=saved,
     ) == ()
 
-
 def test_runtime_tool_result_ignores_non_calendar_payload(tmp_path):
     store = _store(tmp_path)
     task = store.create(
@@ -1593,8 +1525,6 @@ def test_runtime_tool_result_ignores_non_calendar_payload(tmp_path):
     assert extract_calendar_evidence_from_tool_result(payload) is None
     assert persist_calendar_evidence_from_tool_result(store, task.task_id, payload) is None
     assert "calendar_evidence" not in store.get(task.task_id).metadata
-
-
 
 def test_execution_classifier_miss_uses_universal_safe_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1626,7 +1556,6 @@ def test_execution_classifier_miss_uses_universal_safe_fallback(tmp_path, monkey
     assert "universal_safe_action_fallback" in prepared.route.reason
     assert prepared.route.toolsets == ["clarify", "file", "skills", "terminal", "web"]
 
-
 def test_quick_note_detects_location_address_without_enrichment():
     note = detect_quick_note(
         "Г. О. Мытищи, дер. Пирогово, ул. Береговая, 1, стр. 1\n\n"
@@ -1640,7 +1569,6 @@ def test_quick_note_detects_location_address_without_enrichment():
     )
     assert "Флагман" not in json.dumps(note.payload, ensure_ascii=False)
 
-
 def test_quick_note_rejects_calendar_mail_vps_links_and_unclear():
     blocked = [
         "запиши заметку создать напоминание завтра",
@@ -1650,7 +1578,6 @@ def test_quick_note_rejects_calendar_mail_vps_links_and_unclear():
     ]
     for text in blocked:
         assert detect_quick_note(text) is None
-
 
 def test_prepare_task_turn_quick_note_returns_no_llm(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1689,12 +1616,10 @@ def test_prepare_task_turn_quick_note_returns_no_llm(tmp_path, monkeypatch):
     store = TaskStateStore(tmp_path / ".hermes" / "state.db")
     assert store.active("telegram", "1") == []
 
-
 def test_quick_note_uses_general_for_non_travel_note():
     note = detect_quick_note("\u041a\u0443\u043f\u0438\u0442\u044c \u043c\u043e\u043b\u043e\u043a\u043e\n\n\u0437\u0430\u043f\u0438\u0448\u0438 \u0437\u0430\u043c\u0435\u0442\u043a\u0443 \u043f\u043e\u043a\u0443\u043f\u043a\u0438")
     assert note is not None
     assert note.payload["knowledge_project"] == "general"
-
 
 def test_quick_note_rejects_continuation_and_unsafe_actions():
     sample = "\u0413. \u041e. \u041c\u044b\u0442\u0438\u0449\u0438, \u0443\u043b. \u0411\u0435\u0440\u0435\u0433\u043e\u0432\u0430\u044f, 1\n\n\u0437\u0430\u043f\u0438\u0448\u0438 \u043b\u043e\u043a\u0430\u0446\u0438\u044e \u043f\u043b\u044f\u0436\u0430"
@@ -1707,12 +1632,10 @@ def test_quick_note_rejects_continuation_and_unsafe_actions():
     ):
         assert detect_quick_note(text) is None
 
-
 def test_quick_note_location_without_address_stays_in_travel():
     note = detect_quick_note("пляж в Пирогово\n\nзапиши локацию любимое место")
     assert note is not None
     assert note.payload["knowledge_project"] == "travel"
-
 
 def test_quick_note_duplicate_and_failure_responses():
     from gateway.quick_note_capture import format_quick_save_response
@@ -1736,3 +1659,204 @@ def test_quick_note_duplicate_and_failure_responses():
     assert failure_status == "failed"
     assert failure.startswith("Не удалось подтвердить сохранение:")
     assert "Сохранено" not in failure
+
+def _location_context(lat=55.8241, lon=37.6141, *, message_id="loc-1", sender_id="42", chat_id="1"):
+    return {
+        "latitude": lat,
+        "longitude": lon,
+        "message_id": message_id,
+        "chat_id": chat_id,
+        "sender_id": sender_id,
+        "received_at": "2026-07-02T10:00:00+03:00",
+        "live_location": False,
+    }
+
+def _location_common(tmp_path, monkeypatch, *, chat_id="1", sender_id="42", session_key="s1"):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir(exist_ok=True)
+    return dict(
+        platform_key="telegram",
+        chat_id=chat_id,
+        session_key=session_key,
+        session_id=session_key + "-id",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"],
+        message_context={"chat_id": chat_id, "sender_id": sender_id, "session_key": session_key},
+    )
+
+def test_telegram_location_then_save_home_is_deterministic(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    saved_notes = []
+
+    def fake_save(note):
+        saved_notes.append(note)
+        return {"status": "saved", "saved": True, "readback_count": 1}
+
+    monkeypatch.setattr("gateway.task_runtime.run_quick_save", fake_save)
+    first_context = dict(common["message_context"], location=_location_context())
+    first = prepare_task_turn(message="[Telegram location received]", request_id="loc-1", **{**common, "message_context": first_context})
+    assert first.task is None
+    assert first.early_response["api_calls"] == 0
+    assert first.early_response["diagnostics"]["tool_call_count"] == 0
+    assert first.early_response["diagnostics"]["html_report_created"] is False
+    assert "Геолокацию получил" in first.early_response["final_response"]
+    assert not saved_notes
+
+    second = prepare_task_turn(message="Запомни мой дом", request_id="txt-1", **common)
+    assert second.task is None
+    assert second.early_response["api_calls"] == 0
+    assert second.early_response["diagnostics"]["tool_call_count"] == 1
+    assert second.early_response["diagnostics"]["location_readback_ok"] is True
+    assert second.early_response["diagnostics"]["html_report_created"] is False
+    assert second.early_response["final_response"] == "Дом сохранён в памяти."
+    assert "кноп" not in second.early_response["final_response"].lower()
+    assert saved_notes[0].payload["title"] == "Личное место: Дом"
+    assert saved_notes[0].payload["accepted_facts"][0] == {"kind": "personal_place_label", "value": "Дом"}
+    assert saved_notes[0].idempotency_key.startswith("personal-place:")
+
+def test_telegram_place_text_then_location_saves_without_confirmation(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr("gateway.task_runtime.run_quick_save", lambda note: calls.append(note) or {"status": "saved", "saved": True, "readback_count": 1})
+
+    first = prepare_task_turn(message="Запомни мой дом", request_id="txt-1", **common)
+    assert first.task is None
+    assert first.early_response["api_calls"] == 0
+    assert first.early_response["diagnostics"]["tool_call_count"] == 0
+    assert first.early_response["diagnostics"]["location_intent"] == "waiting_for_location"
+    assert "Пришли геолокацию" in first.early_response["final_response"]
+
+    second_context = dict(common["message_context"], location=_location_context(lat=55.1, lon=37.1, message_id="loc-2"))
+    second = prepare_task_turn(message="[Telegram location received]", request_id="loc-2", **{**common, "message_context": second_context})
+    assert second.task is None
+    assert second.early_response["api_calls"] == 0
+    assert second.early_response["diagnostics"]["location_intent"] == "pending_text_then_location"
+    assert second.early_response["final_response"] == "Дом сохранён в памяти."
+    assert len(calls) == 1
+
+def test_telegram_reply_location_has_priority_over_last_location(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    saved = []
+    monkeypatch.setattr("gateway.task_runtime.run_quick_save", lambda note: saved.append(note) or {"saved": True, "readback_count": 1})
+    last_context = dict(common["message_context"], location=_location_context(lat=55.0, lon=37.0, message_id="last"))
+    prepare_task_turn(message="[Telegram location received]", request_id="last", **{**common, "message_context": last_context})
+
+    reply = _location_context(lat=56.0, lon=38.0, message_id="reply")
+    command_context = dict(common["message_context"], reply_location=reply)
+    result = prepare_task_turn(message="Запомни мой дом", request_id="txt", **{**common, "message_context": command_context})
+    assert result.early_response["diagnostics"]["location_intent"] == "reply_location"
+    facts = saved[0].payload["accepted_facts"]
+    assert {"kind": "latitude", "value": "56.000000"} in facts
+    assert {"kind": "longitude", "value": "38.000000"} in facts
+
+def test_telegram_home_update_uses_same_canonical_note(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    keys = []
+
+    def fake_save(note):
+        keys.append(note.idempotency_key)
+        return {"status": "saved" if len(keys) == 1 else "updated", "saved": True, "updated": len(keys) > 1, "readback_count": 1}
+
+    monkeypatch.setattr("gateway.task_runtime.run_quick_save", fake_save)
+    first_context = dict(common["message_context"], location=_location_context(lat=55.0, lon=37.0, message_id="a"))
+    prepare_task_turn(message="[Telegram location received]", request_id="a", **{**common, "message_context": first_context})
+    first = prepare_task_turn(message="Запомни мой дом", request_id="a-txt", **common)
+    second_context = dict(common["message_context"], location=_location_context(lat=56.0, lon=38.0, message_id="b"))
+    prepare_task_turn(message="[Telegram location received]", request_id="b", **{**common, "message_context": second_context})
+    second = prepare_task_turn(message="Теперь мой дом здесь", request_id="b-txt", **common)
+    assert first.early_response["final_response"] == "Дом сохранён в памяти."
+    assert second.early_response["final_response"] == "Дом обновлён в памяти."
+    assert len(keys) == 2
+    assert keys[0] == keys[1]
+
+def test_telegram_location_context_is_sender_chat_session_ttl_and_used_bound(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch, chat_id="1", sender_id="42", session_key="s1")
+    calls = []
+    monkeypatch.setattr("gateway.task_runtime.run_quick_save", lambda note: calls.append(note) or {"saved": True, "readback_count": 1})
+    context = dict(common["message_context"], location=_location_context(lat=55.0, lon=37.0, sender_id="42", chat_id="1"))
+    prepare_task_turn(message="[Telegram location received]", request_id="loc", **{**common, "message_context": context})
+
+    other_chat = prepare_task_turn(message="Запомни мой дом", request_id="other-chat", **{**common, "chat_id": "2", "message_context": {"chat_id": "2", "sender_id": "42", "session_key": "s1"}})
+    other_sender = prepare_task_turn(message="Запомни мой дом", request_id="other-sender", **{**common, "message_context": {"chat_id": "1", "sender_id": "99", "session_key": "s1"}})
+    other_session = prepare_task_turn(message="Запомни мой дом", request_id="other-session", **{**common, "session_key": "s2", "session_id": "s2-id", "message_context": {"chat_id": "1", "sender_id": "42", "session_key": "s2"}})
+    assert other_chat.early_response["diagnostics"]["location_intent"] == "waiting_for_location"
+    assert other_sender.early_response["diagnostics"]["location_intent"] == "waiting_for_location"
+    assert other_session.early_response["diagnostics"]["location_intent"] == "waiting_for_location"
+    assert not calls
+
+    import sqlite3
+    with sqlite3.connect(tmp_path / ".hermes" / "state.db") as conn:
+        conn.execute("UPDATE telegram_location_contexts SET expires_at=? WHERE kind='location'", (time.time() - 1,))
+    expired = prepare_task_turn(message="Запомни мой дом", request_id="expired", **common)
+    assert expired.early_response["diagnostics"]["location_intent"] == "waiting_for_location"
+
+    fresh_context = dict(common["message_context"], location=_location_context(lat=55.2, lon=37.2, message_id="fresh"))
+    saved = prepare_task_turn(message="[Telegram location received]", request_id="fresh", **{**common, "message_context": fresh_context})
+    reused = prepare_task_turn(message="Запомни мой дом", request_id="reuse", **common)
+    assert saved.early_response["final_response"] == "Дом сохранён в памяти."
+    assert saved.early_response["diagnostics"]["location_intent"] == "pending_text_then_location"
+    assert reused.early_response["diagnostics"]["location_intent"] == "waiting_for_location"
+    assert len(calls) == 1
+
+def test_ambiguous_location_save_does_not_promise_phantom_button(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    location_context = dict(common["message_context"], location=_location_context())
+    prepare_task_turn(message="[Telegram location received]", request_id="loc", **{**common, "message_context": location_context})
+    result = prepare_task_turn(message="Сохрани это", request_id="ambiguous", **common)
+    text = result.early_response["final_response"]
+    assert "Как назвать место" in text
+    assert "кноп" not in text.lower()
+    assert "выберите ниже" not in text.lower()
+    assert "Ответьте сообщением" in text
+
+def test_city_travel_parking_ux_plural_fallback_and_selection_reason(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    from gateway.task_runtime import CityTravelContextStore
+    candidates = [
+        {"id": "u1", "title": "parking", "coordinates": {"lat": 55.1, "lon": 37.1}, "distance_m": 401, "parking_status": "unverified", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/u1"},
+        {"id": "u2", "title": "parking", "coordinates": {"lat": 55.2, "lon": 37.2}, "distance_m": 480, "parking_status": "unverified", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/u2"},
+        {"id": "lf", "title": "parking", "coordinates": {"lat": 55.3, "lon": 37.3}, "distance_m": 571, "parking_status": "likely_free", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/lf", "evidence": {"reason": "fee=no, знаки не проверены"}},
+        {"id": "u3", "title": "parking", "coordinates": {"lat": 55.4, "lon": 37.4}, "distance_m": 650, "parking_status": "unverified", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/u3"},
+    ]
+    CityTravelContextStore(state_dir / "state.db").save(platform="telegram", chat_id="1", session_key="s1", context={"route_url": "https://yandex.ru/route", "parking_candidates": candidates, "shown_parking_ids": []})
+    common = dict(platform_key="telegram", chat_id="1", session_key="s1", session_id="session", user_config={"agent": {}}, platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"])
+    best = prepare_task_turn(message="пришли ссылкой на Яндекс Карты самый лучший вариант парковки", request_id="best", **common)
+    text = best.early_response["final_response"]
+    assert "Вероятно бесплатный кандидат" in text
+    assert "не как самый близкий" in text
+    assert "Самый близкий кандидат" in text
+    assert "Парковка-кандидат №1" in text
+    assert "parking" not in text
+    assert "https://yandex.ru/lf" in text
+
+    more = prepare_task_turn(message="дай еще три варианта бесплатной или самой дешевой парковки", request_id="more", **common)
+    more_text = more.early_response["final_response"]
+    assert "Показываю ещё 3 сохранённых варианта парковки" in more_text
+    assert "сохранённ(ых)" not in more_text
+    assert "кандидат(а/ов)" not in more_text
+    assert "Официальных тарифов" in more_text
+    assert "likely_free не считаю доказанной нулевой ценой" in more_text
+
+def test_city_travel_parking_closest_and_plural_one_candidate(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    from gateway.task_runtime import CityTravelContextStore
+    CityTravelContextStore(state_dir / "state.db").save(platform="telegram", chat_id="1", session_key="s1", context={"route_url": "https://yandex.ru/route", "shown_parking_ids": [], "parking_candidates": [
+        {"id": "near", "title": "parking", "coordinates": {"lat": 55.1, "lon": 37.1}, "distance_m": 100, "parking_status": "unverified", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/near"},
+        {"id": "far", "title": "parking", "coordinates": {"lat": 55.2, "lon": 37.2}, "distance_m": 500, "parking_status": "likely_free", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/far"},
+    ]})
+    common = dict(platform_key="telegram", chat_id="1", session_key="s1", session_id="session", user_config={"agent": {}}, platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"])
+    closest = prepare_task_turn(message="дай самую близкую парковку", request_id="closest", **common)
+    assert "Самый близкий кандидат" in closest.early_response["final_response"]
+    assert "https://yandex.ru/near" in closest.early_response["final_response"]
+
+    more = prepare_task_turn(message="покажи другие парковки рядом", request_id="more-one", **common)
+    assert "Показываю ещё 1 сохранённый вариант парковки" in more.early_response["final_response"]
+    assert "https://yandex.ru/far" in more.early_response["final_response"]

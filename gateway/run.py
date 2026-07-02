@@ -9111,6 +9111,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "reply_caption": getattr(event, "reply_to_caption", None),
                     "reply_message_id": getattr(event, "reply_to_message_id", None),
                     "reply_sender_id": getattr(event, "reply_to_sender_id", None),
+                    "location": (getattr(event, "metadata", None) or {}).get("telegram_location"),
+                    "reply_location": (getattr(event, "metadata", None) or {}).get("telegram_reply_location"),
+                    "session_key": session_key,
                 },
             )
 

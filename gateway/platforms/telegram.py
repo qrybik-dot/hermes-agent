@@ -6616,6 +6616,42 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         return False
 
+
+    @staticmethod
+    def _telegram_location_metadata(message: Message, update_id: Optional[int] = None) -> Dict[str, Any]:
+        venue = getattr(message, "venue", None)
+        location = getattr(venue, "location", None) if venue else getattr(message, "location", None)
+        if location is None:
+            return {}
+        lat = getattr(location, "latitude", None)
+        lon = getattr(location, "longitude", None)
+        if lat is None or lon is None:
+            return {}
+        chat = getattr(message, "chat", None)
+        user = getattr(message, "from_user", None)
+        live_period = getattr(location, "live_period", None)
+        heading = getattr(location, "heading", None)
+        proximity_alert_radius = getattr(location, "proximity_alert_radius", None)
+        horizontal_accuracy = getattr(location, "horizontal_accuracy", None)
+        payload: Dict[str, Any] = {
+            "latitude": float(lat),
+            "longitude": float(lon),
+            "message_id": str(getattr(message, "message_id", "")),
+            "chat_id": str(getattr(chat, "id", "")) if chat is not None else None,
+            "sender_id": str(getattr(user, "id", "")) if user is not None and getattr(user, "id", None) is not None else None,
+            "received_at": (getattr(message, "date", None).isoformat() if getattr(message, "date", None) is not None else None),
+            "update_id": update_id,
+            "live_location": bool(live_period or heading or proximity_alert_radius),
+        }
+        if horizontal_accuracy is not None:
+            payload["horizontal_accuracy"] = float(horizontal_accuracy)
+        if venue:
+            payload["venue"] = {
+                "title": getattr(venue, "title", None),
+                "address": getattr(venue, "address", None),
+            }
+        return {key: value for key, value in payload.items() if value is not None}
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -7416,12 +7452,14 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to_text = None
         reply_to_caption = None
         reply_to_sender_id = None
+        reply_location_metadata = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             reply_to_text = message.reply_to_message.text or None
             reply_to_caption = message.reply_to_message.caption or None
             reply_user = getattr(message.reply_to_message, "from_user", None)
             reply_to_sender_id = str(reply_user.id) if getattr(reply_user, "id", None) is not None else None
+            reply_location_metadata = self._telegram_location_metadata(message.reply_to_message)
             quote = getattr(message, "quote", None)
             quote_text = getattr(quote, "text", None) if quote is not None else None
             reply_to_text = reply_to_text or reply_to_caption or quote_text or None
@@ -7435,12 +7473,18 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
+        location_metadata = self._telegram_location_metadata(message, update_id)
+
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
             source=source,
             raw_message=message,
             message_id=str(message.message_id),
+            metadata={
+                **({"telegram_location": location_metadata} if location_metadata else {}),
+                **({"telegram_reply_location": reply_location_metadata} if reply_location_metadata else {}),
+            },
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,

@@ -903,7 +903,6 @@ class TestEditMessageStreamingSafety:
 # Telegram guest mention gating
 # =========================================================================
 
-
 def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=None):
     config = PlatformConfig(
         enabled=True,
@@ -925,7 +924,6 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
     adapter._is_callback_user_authorized = lambda *_a, **_kw: True
     return adapter
 
-
 def _guest_group_message(text, *, chat_id=-100201, entities=None, reply_to_bot=False):
     reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999)) if reply_to_bot else None
     return SimpleNamespace(
@@ -938,7 +936,6 @@ def _guest_group_message(text, *, chat_id=-100201, entities=None, reply_to_bot=F
         from_user=SimpleNamespace(id=111),
         reply_to_message=reply_to_message,
     )
-
 
 def _guest_mention_entity(text, mention="@hermes_bot"):
     return SimpleNamespace(type="mention", offset=text.index(mention), length=len(mention))
@@ -1009,3 +1006,23 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+def test_telegram_location_metadata_includes_structured_fields():
+    message = SimpleNamespace(
+        message_id=123,
+        chat=SimpleNamespace(id=456),
+        from_user=SimpleNamespace(id=789),
+        date=SimpleNamespace(isoformat=lambda: "2026-07-02T10:00:00+03:00"),
+        location=SimpleNamespace(latitude=55.8241, longitude=37.6141, horizontal_accuracy=12.5, live_period=None, heading=None, proximity_alert_radius=None),
+        venue=None,
+    )
+    payload = TelegramAdapter._telegram_location_metadata(message, update_id=999)
+    assert payload["latitude"] == 55.8241
+    assert payload["longitude"] == 37.6141
+    assert payload["horizontal_accuracy"] == 12.5
+    assert payload["message_id"] == "123"
+    assert payload["chat_id"] == "456"
+    assert payload["sender_id"] == "789"
+    assert payload["received_at"] == "2026-07-02T10:00:00+03:00"
+    assert payload["update_id"] == 999
+    assert payload["live_location"] is False
