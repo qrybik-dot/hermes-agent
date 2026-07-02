@@ -566,7 +566,7 @@ def early_response(text: str, *, status: str = "success", task_id: str | None = 
 
 
 _TRAVEL_TO_FROM_RE = re.compile(
-    r"\b(?:до|в)\s+(?P<destination>.+?)\s+от\s+(?P<start>.+?)(?:\s+и\s+|[?.!]|$)",
+    r"\b(?:до|в)\s+(?P<destination>.+?)\s+от\s+(?P<start>.+?)(?:\s+и\s+|[?!]|$)",
     re.I | re.S,
 )
 
@@ -829,8 +829,6 @@ def _update_city_travel_context(*, platform_key: str, chat_id: str, session_key:
 
 
 def _deterministic_city_travel_followup(*, text: str, route: TaskRoute, platform_key: str, chat_id: str, session_key: str) -> dict | None:
-    if "city-travel-concierge" not in route.skill_names:
-        return None
     intent = _city_travel_followup_intent(text)
     if intent is None:
         return None

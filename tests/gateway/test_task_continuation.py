@@ -296,6 +296,140 @@ def test_city_travel_context_is_session_chat_scoped_and_ttl_bound(tmp_path, monk
     assert store.get(platform="telegram", chat_id="1", session_key="s1") is None
 
 
+def test_city_travel_route_repeat_and_no_eligible_are_deterministic(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    from gateway.task_runtime import CityTravelContextStore
+
+    store = CityTravelContextStore(state_dir / "state.db")
+    store.save(
+        platform="telegram",
+        chat_id="1",
+        session_key="s1",
+        context={"route_url": "https://yandex.ru/route", "parking_candidates": [], "shown_parking_ids": []},
+    )
+    common = dict(
+        platform_key="telegram",
+        chat_id="1",
+        session_key="s1",
+        session_id="session",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"],
+    )
+    route = prepare_task_turn(message="пришли ещё раз маршрут", request_id="req-route", **common)
+    assert route.task is None
+    assert route.early_response["api_calls"] == 0
+    assert route.early_response["diagnostics"]["travel_followup_intent"] == "route_repeat"
+    assert "https://yandex.ru/route" in route.early_response["final_response"]
+
+    parking = prepare_task_turn(message="дай координаты парковки", request_id="req-parking", **common)
+    assert parking.task is None
+    assert parking.early_response["api_calls"] == 0
+    assert "нет подходящих кандидатов" in parking.early_response["final_response"]
+
+
+def test_city_travel_more_parking_one_candidate_and_official_tariff(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    from gateway.task_runtime import CityTravelContextStore
+
+    CityTravelContextStore(state_dir / "state.db").save(
+        platform="telegram",
+        chat_id="1",
+        session_key="s1",
+        context={
+            "route_url": "https://yandex.ru/route",
+            "shown_parking_ids": [],
+            "parking_candidates": [
+                {
+                    "id": "official-a",
+                    "title": "Official Parking",
+                    "coordinates": {"lat": 55.1, "lon": 37.1},
+                    "distance_m": 80,
+                    "parking_status": "official",
+                    "eligible_for_recommendation": True,
+                    "is_free": False,
+                    "raw_yandex_maps_url": "https://yandex.ru/official",
+                    "evidence": {"official": {"tariffs": "100 руб/час"}},
+                }
+            ],
+        },
+    )
+    prepared = prepare_task_turn(
+        message="покажи другие парковки рядом",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="s1",
+        session_id="session",
+        request_id="req-more-one",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"],
+    )
+    assert prepared.task is None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["diagnostics"]["travel_followup_intent"] == "more_parking"
+    assert "Official Parking" in prepared.early_response["final_response"]
+    assert "Официальный тариф: 100 руб/час" in prepared.early_response["final_response"]
+
+
+def test_city_travel_destination_clarification_uses_saved_start(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    helper = state_dir / "skills" / "productivity" / "city-travel-concierge" / "scripts" / "city_travel_trip.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# helper", encoding="utf-8")
+    from gateway.task_runtime import CityTravelContextStore
+
+    CityTravelContextStore(state_dir / "state.db").save(
+        platform="telegram",
+        chat_id="1",
+        session_key="s1",
+        context={"start_text": "Королёв, ул. Лесная", "route_url": "", "parking_candidates": [], "shown_parking_ids": []},
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "answer_ready": True,
+            "checked_at": "2026-07-02T10:00:00Z",
+            "traffic_status": "not_available",
+            "answer_text": "Маршрут уточнён.\nЯндекс Карты: https://yandex.ru/new-route",
+            "resolved_start": {"title": "Королёв", "coordinates": {"lat": 55.92, "lon": 37.82}},
+            "resolved_destination": {"title": "Усадьба Останкино", "coordinates": {"lat": 55.824, "lon": 37.614}},
+            "coordinates": {"destination": {"lat": 55.824, "lon": 37.614}},
+            "route": {"deep_links": {"yandex_maps": "https://yandex.ru/new-route"}},
+            "parking_candidates": [],
+            "parking_statuses": [],
+            "degraded_sections": [],
+            "provider_status": [],
+        }))
+
+    monkeypatch.setattr("gateway.task_runtime.subprocess.run", fake_run)
+    prepared = prepare_task_turn(
+        message="парк усадьба останкино около вднх, точнее сказать не могу",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="s1",
+        session_id="session",
+        request_id="req-clarify",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"],
+    )
+    assert prepared.task is None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["diagnostics"]["tool_call_count"] == 1
+    assert len(calls) == 1
+    assert "Королёв, ул. Лесная" in calls[0]
+    assert "парк усадьба останкино около вднх, точнее сказать не могу" in calls[0]
+
+
 def test_city_travel_followup_does_not_catch_cafe_rating(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / ".hermes"
