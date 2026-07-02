@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from gateway.task_router import adaptive_planning_policy, classify_task, route_turn, select_toolsets
+from gateway.task_router import (
+    adaptive_planning_policy, classify_task, route_turn, select_toolsets,
+    should_generate_html_report,
+)
 
 
 ALL_ALLOWED = [
@@ -183,7 +186,8 @@ def test_gateway_run_sync_scoping_regression():
     assert "agent_cache_status" in source
     assert "agent_prepare_ms" in source
     assert "gateway_overhead_ms" in source
-    assert "_emit_task_status(0, \"accepted\")" in source
+    assert "_emit_task_status(force=True)" in source
+    assert "_emit_task_status(0, \"accepted\")" not in source
     assert "task:{_active_task.task_id}" in source
 
 
@@ -454,3 +458,38 @@ def test_known_calendar_route_does_not_gain_generic_web_tool():
     assert "terminal" in route.toolsets
     assert "file" in route.toolsets
     assert "web" not in route.toolsets
+
+
+
+def test_html_report_policy_skips_quick_information_lookup():
+    text = "Посмотри два поста и скажи суть и что там полезного"
+    assert not should_generate_html_report(text, "research", requires_execution=True)
+
+
+def test_html_report_policy_keeps_high_value_documents():
+    assert should_generate_html_report(
+        "Проведи глубокое исследование не менее 20 источников и подготовь выводы",
+        "research",
+    )
+    assert should_generate_html_report(
+        "Исправь код маршрутизатора и проверь тестами",
+        "coding",
+        requires_execution=True,
+    )
+    assert should_generate_html_report(
+        "Подготовь HTML-отчёт по результатам",
+        "simple",
+    )
+
+
+def test_telegram_format_contract_is_restrained_and_single_delivery():
+    route = route_turn(
+        "Посмотри два поста и скажи суть",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert "один законченный ответ" in route.operational_context
+    assert "не более трёх смысловых эмодзи" in route.operational_context
+    assert "Не повторяй тот же вывод" in route.operational_context

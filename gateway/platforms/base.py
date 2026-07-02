@@ -3314,19 +3314,26 @@ class BasePlatformAdapter(ABC):
                 _prev = existing_cb
                 _new = callback
 
-                async def _chained() -> None:
+                def _chained():
+                    async def _run_chained() -> None:
+                        try:
+                            _prev_result = _prev()
+                            if inspect.isawaitable(_prev_result):
+                                await _prev_result
+                        except Exception:
+                            logger.debug("Post-delivery callback failed", exc_info=True)
+                        try:
+                            _new_result = _new()
+                            if inspect.isawaitable(_new_result):
+                                await _new_result
+                        except Exception:
+                            logger.debug("Post-delivery callback failed", exc_info=True)
+
                     try:
-                        _prev_result = _prev()
-                        if inspect.isawaitable(_prev_result):
-                            await _prev_result
-                    except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
-                    try:
-                        _new_result = _new()
-                        if inspect.isawaitable(_new_result):
-                            await _new_result
-                    except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        return _run_chained()
+                    return loop.create_task(_run_chained())
 
                 callback = _chained
 

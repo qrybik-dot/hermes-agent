@@ -97,6 +97,22 @@ _REPORT_RE = re.compile(
     r"html[- ]?отч[её]т",
     re.I,
 )
+_EXPLICIT_HTML_REPORT_RE = re.compile(
+    r"html[- ]?отч[её]т|отч[её]т\s+(?:в|как)\s+(?:html|файл)|"
+    r"(?:пришли|отправь|подготовь|сохрани)\s+(?:мне\s+)?(?:отдельн\w*\s+)?(?:html|файл|документ)\b",
+    re.I,
+)
+_DEEP_ANALYSIS_RE = re.compile(
+    r"\b(?:глубок\w*|подробн\w*|полн\w*|комплексн\w*|системн\w*)\s+"
+    r"(?:исследован|анализ|аудит|сравнен)|\b(?:исследование|аналитическ\w*\s+отч[её]т)\b|"
+    r"не\s+менее\s+\d+\s+источник\w*",
+    re.I,
+)
+_STRUCTURAL_CHANGE_RE = re.compile(
+    r"\b(?:архитектур|миграц|рефактор|интеграц|структур|глобальн|многоэтапн|"
+    r"нескольк\w*\s+(?:компонент|сервис|модул|файл)|production|prod)\w*",
+    re.I,
+)
 _EMAIL_RE = re.compile(
     r"\b(?:gmail|email|e-mail)\b|почт(?:а|е|у|ой)|письм(?:о|а|е|у|ом|ами)|"
     r"входящ(?:ие|их)|экспорт\s+приш[её]л",
@@ -284,6 +300,29 @@ def adaptive_planning_policy(text: str, role: str) -> AdaptivePlanningPolicy:
     if technical_execution or role == "planning":
         return AdaptivePlanningPolicy("brief", False, False, "medium execution task")
     return AdaptivePlanningPolicy(reason="simple task")
+
+
+def should_generate_html_report(text: str, role: str, *, requires_execution: bool = False) -> bool:
+    """Choose a document only when it adds value beyond the chat answer."""
+    value = str(text or "")
+    if _EXPLICIT_HTML_REPORT_RE.search(value):
+        return True
+    if _DEEP_ANALYSIS_RE.search(value):
+        return True
+    policy = adaptive_planning_policy(value, role)
+    if role == "long_context":
+        return True
+    if role == "research":
+        return policy.mode == "reviewed" or bool(_DEEP_ANALYSIS_RE.search(value))
+    if role == "coding":
+        return requires_execution or policy.mode == "reviewed" or bool(_STRUCTURAL_CHANGE_RE.search(value))
+    if role == "server_debug":
+        if _STATUS_ONLY_RE.search(value) and len(value.strip()) < 320:
+            return False
+        return requires_execution or policy.mode == "reviewed" or bool(_STRUCTURAL_CHANGE_RE.search(value))
+    if role == "planning":
+        return policy.mode == "reviewed" or bool(_STRUCTURAL_CHANGE_RE.search(value))
+    return False
 
 
 @dataclass(frozen=True)
@@ -506,7 +545,9 @@ def compact_operational_context(platform_key: str, role: str) -> str:
         "без длинного тире и без шаблонных AI-фраз. Не соглашайся автоматически: проверяй риски, "
         "слабые места и лучшие альтернативы. Учитывай сохранённую память пользователя, но не выдумывай "
         "факты; для личных, семейных, карьерных и проектных вопросов сначала используй точечный поиск по памяти. "
-        "Live-статусом сложной задачи управляет gateway по фактическим событиям инструментов. Не печатай собственный прогресс-бар и не возвращай progress-only вместо результата. "
+        "Live-статусом сложной задачи управляет gateway по фактическим подзадачам и действиям инструментов. Не печатай собственный прогресс-бар и не возвращай progress-only вместо результата. "
+        "Для обычного информационного запроса отправляй один законченный ответ без READY/PARTIAL, технических метрик и повторного отчёта. Не повторяй тот же вывод вторым блоком. "
+        "Верстка Telegram: главный вывод в первых строках; короткие абзацы; пустая строка между смысловыми блоками; жирные мини-заголовки и списки только когда они помогают чтению. Используй не более трёх смысловых эмодзи на весь ответ и не ставь эмодзи в каждый пункт. "
         "Если задача неоднозначна или не хватает ссылки, файла, места, даты либо другого объекта, не возвращай внутреннюю ошибку маршрутизации. Задай один конкретный вопрос: что именно нужно прислать или выбрать, чтобы продолжить. "
         "Когда есть 2–3 понятных варианта, используй clarify с короткими вариантами: Telegram покажет кнопки и оставит возможность написать свой ответ. "
         "Сначала используй ближайший reply-контекст, единственную ссылку или файл из последних сообщений; не переспрашивай очевидное. "

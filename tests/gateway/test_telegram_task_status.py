@@ -9,6 +9,8 @@ from gateway.telegram_task_status import (
     TelegramTaskStatusState,
     completed_stage_percent,
     should_surface_telegram_interim,
+    status_action_for_tool,
+    status_steps_from_request,
     verdict_from_text,
 )
 
@@ -204,3 +206,34 @@ def test_blocked_progress_uses_warning_and_never_claims_completion():
     assert "⚠️" in rendered
     assert "100%" not in rendered
     assert "Блокер: нет доступа" in rendered
+
+
+
+def test_dynamic_status_never_shows_fake_template_stages():
+    state = TelegramTaskStatusState("посмотреть два поста")
+    state.set_plan(["Прочитать оба поста", "Собрать полезные выводы"])
+    rendered = state.render(action="Прочитать оба поста", phase="discover")
+    assert "Прочитать оба поста" in rendered
+    for forbidden in ("принятие", "аудит", "изменения подготовлены", "изменения применены", "приёмка и доставка"):
+        assert forbidden not in rendered.lower()
+
+
+def test_request_plan_ignores_agreement_only_items():
+    steps = status_steps_from_request("1. Проверь текущую логику\n2. да\n3. согласен")
+    assert steps == ["Проверь текущую логику"]
+
+
+def test_tool_status_names_the_real_target_without_dumping_command():
+    action, phase = status_action_for_tool("read_file", args={"path": "/srv/app/gateway/run.py"})
+    assert action == "Читаю run.py"
+    assert phase == "discover"
+    action, phase = status_action_for_tool("terminal", args={"command": "pytest tests/gateway -q"})
+    assert action == "Запускаю тесты"
+    assert phase == "verify"
+
+
+def test_ready_is_rendered_only_as_final_100_percent_state():
+    state = TelegramTaskStatusState("исправить формат")
+    state.start_step("Готовлю итоговый ответ", "deliver")
+    assert "100%" not in state.render()
+    assert "100%" in state.render(verdict="READY")

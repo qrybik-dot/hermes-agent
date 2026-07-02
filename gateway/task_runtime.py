@@ -22,7 +22,10 @@ from gateway.task_continuation import (
     is_pause_request,
     should_track_task,
 )
-from gateway.task_router import TaskRoute, route_turn, travel_is_route_or_parking, travel_needs_web_or_browser
+from gateway.task_router import (
+    TaskRoute, route_turn, should_generate_html_report,
+    travel_is_route_or_parking, travel_needs_web_or_browser,
+)
 from gateway.quick_note_capture import (
     build_location_place_note,
     canonical_place_label,
@@ -2015,6 +2018,18 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         requires_execution = True
         required = tuple(sorted(set(required) | {"terminal"}))
 
+    html_report_requested = should_generate_html_report(
+        base_text, route.role, requires_execution=requires_execution,
+    )
+    delivery_policy = {
+        "final_delivery_owner": "gateway_runtime",
+        "suppress_external_finalizer": True,
+        "html_report_requested": bool(html_report_requested),
+        "suppress_html_report": not bool(html_report_requested),
+    }
+    if task is not None:
+        store.merge_metadata(task.task_id, delivery_policy)
+
     # A classifier miss must not cause BLOCKED when the platform allowlist
     # explicitly contains the deterministic execution capability.
     missing_but_allowed = set(required) - set(route.toolsets)
@@ -2094,11 +2109,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     ):
         title_source = calendar_request or original
         title = " ".join(title_source.split())[:120] or "Задача Hermes"
-        task_metadata = None
+        task_metadata = dict(delivery_policy)
         source_request_id = request_id
         if calendar_request and calendar_request_draft is not None:
             source_request_id = _calendar_source_request_id(platform_key, str(chat_id), msg_ctx, request_id)
-            task_metadata = {
+            task_metadata.update({
                 "intent": "calendar_write",
                 "sender_id": msg_ctx.sender_id,
                 "current_message_id": msg_ctx.current_message_id,
@@ -2107,7 +2122,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 "reply_sender_id": msg_ctx.reply_sender_id,
                 "calendar_event_draft": calendar_request_draft,
                 "execution_contract": {"type": "calendar_write"},
-            }
+            })
             if calendar_request_source_task_id:
                 task_metadata["calendar_draft_source_task_id"] = calendar_request_source_task_id
         task = store.create(
