@@ -9297,8 +9297,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            _footer_role = str(agent_result.get("task_level") or "")
+            _footer_allowed = _footer_role in {"coding", "server_debug", "planning", "long_context"}
+            if (
+                _footer_line and _footer_allowed and response
+                and not agent_result.get("already_sent") and not _intentional_silence
+            ):
                 response = f"{response}\n\n{_footer_line}"
+            else:
+                _footer_line = ""
 
             try:
                 _metric_record = _build_gateway_request_metrics(
@@ -9621,6 +9628,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if (
                     response
+                    and _delivery_meta.get("html_report_requested") is True
+                    and agent_result.get("html_report_requested") is True
                     and _html_report_path
                     and os.path.exists(_html_report_path)
                     and not _document_already_delivered
@@ -15735,8 +15744,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Real tool events own the live status.
                 _conversation_started = time.monotonic()
                 agent._suppress_background_review_for_turn = (_task_route.role == "simple")
-                agent._suppress_html_report_for_turn = (_task_route.role == "simple")
+                _turn_html_requested = bool(
+                    _active_task is not None
+                    and (_active_task.metadata or {}).get("html_report_requested") is True
+                )
+                agent._suppress_html_report_for_turn = not _turn_html_requested
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                result["html_report_requested"] = _turn_html_requested
                 _conversation_wall_ms = int(
                     (time.monotonic() - _conversation_started) * 1000
                 )
@@ -16388,6 +16402,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
+                if task_status_state.get("enabled"):
+                    return
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available. Default
                 # heartbeat is terse: elapsed + current tool. Verbose

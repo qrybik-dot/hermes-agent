@@ -423,9 +423,21 @@ def classify_task(text: str, *, command: str | None = None) -> tuple[str, str]:
     value = text or ""
     if len(value) > 50000:
         return "long_context", "message length"
-    if _SERVER_DEBUG_RE.search(value):
+
+    # Forwarded posts, emails and long pasted quotes often contain words such
+    # as "логи", "сервис" or "разработчики". They describe the source, not
+    # the user's requested action. For technical routing, prefer a short first
+    # instruction line when the rest is clearly pasted content.
+    nonempty_lines = [line.strip() for line in value.splitlines() if line.strip()]
+    technical_intent = value
+    if len(nonempty_lines) >= 2 and len(nonempty_lines[0]) <= 240:
+        tail = "\n".join(nonempty_lines[1:])
+        if len(tail) >= 280 or re.search(r"https?://|^>\s|#[A-Za-zА-Яа-я]", tail, re.M):
+            technical_intent = nonempty_lines[0]
+
+    if _SERVER_DEBUG_RE.search(technical_intent):
         return "server_debug", "server/debug intent"
-    if _CODING_ACTION_RE.search(value) and _CODING_OBJECT_RE.search(value):
+    if _CODING_ACTION_RE.search(technical_intent) and _CODING_OBJECT_RE.search(technical_intent):
         return "coding", "explicit code change intent"
     if _NOTEBOOKLM_RE.search(value):
         return "research", "NotebookLM intent"
