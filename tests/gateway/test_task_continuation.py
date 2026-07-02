@@ -166,6 +166,18 @@ def test_simple_travel_route_parking_uses_deterministic_trip_helper(tmp_path, mo
                         "Есть кандидат со статусом likely_free, но бесплатность не подтверждена официально: Parking.\n"
                         "Перед парковкой проверьте знаки, разметку, шлагбаум и платную зону на месте."
                     ),
+                    "checked_at": "2026-07-02T10:00:00Z",
+                    "start_query": "Королёва, ул. Лесная",
+                    "destination_query": "парк Останкино",
+                    "resolved_start": {"title": "Королёв, Лесная", "coordinates": {"lat": 55.92, "lon": 37.82}},
+                    "resolved_destination": {"title": "парк Останкино", "coordinates": {"lat": 55.824, "lon": 37.614}},
+                    "coordinates": {"destination": {"lat": 55.824, "lon": 37.614}},
+                    "route": {"deep_links": {"yandex_maps": "https://yandex.ru/maps/?rtext=55.920000,37.820000~55.824000,37.614000"}},
+                    "parking_candidates": [
+                        {"title": "Parking A", "coordinates": {"lat": 55.8241, "lon": 37.6141}, "distance_m": 120, "parking_status": "likely_free", "is_free": None, "eligible_for_recommendation": True, "deep_links": {"yandex_maps": "https://yandex.ru/maps/?pt=37.614100,55.824100&z=18&l=map"}, "parking_evidence": {"source": "osm", "fee": "no", "reason": "В OSM стоит fee=no, но знаки не проверены."}},
+                        {"title": "Parking B", "coordinates": {"lat": 55.825, "lon": 37.615}, "distance_m": 260, "parking_status": "unverified", "eligible_for_recommendation": True, "deep_links": {"yandex_maps": "https://yandex.ru/maps/?pt=37.615000,55.825000&z=18&l=map"}, "parking_evidence": {"source": "osm", "reason": "Источник не подтверждает оплату."}},
+                    ],
+                    "parking_statuses": ["likely_free", "unverified"],
                     "degraded_sections": ["data.mos.ru"],
                     "provider_status": [{"provider": "geoapify", "success": True}],
                 }
@@ -198,6 +210,111 @@ def test_simple_travel_route_parking_uses_deterministic_trip_helper(tmp_path, mo
     assert "не подтверждена официально" in prepared.early_response["final_response"]
     assert calls and "city_travel_trip.py" in calls[0][1]
     assert "/.hermes/.env" not in " ".join(calls[0])
+
+
+def test_city_travel_multiturn_followups_use_saved_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    helper = state_dir / "skills" / "productivity" / "city-travel-concierge" / "scripts" / "city_travel_trip.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# helper", encoding="utf-8")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "answer_ready": True,
+            "checked_at": "2026-07-02T10:00:00Z",
+            "approximate_start": True,
+            "traffic_status": "not_available",
+            "answer_text": (
+                "Маршрут: примерно 35 мин.\n"
+                "Яндекс Карты: https://yandex.ru/route\n"
+                "Есть кандидат со статусом likely_free, но бесплатность не подтверждена официально: Parking A."
+            ),
+            "resolved_start": {"title": "Королёв", "coordinates": {"lat": 55.92, "lon": 37.82}},
+            "resolved_destination": {"title": "Останкино", "coordinates": {"lat": 55.824, "lon": 37.614}},
+            "coordinates": {"destination": {"lat": 55.824, "lon": 37.614}},
+            "route": {"deep_links": {"yandex_maps": "https://yandex.ru/route"}},
+            "parking_candidates": [
+                {"title": "Parking A", "coordinates": {"lat": 55.8241, "lon": 37.6141}, "distance_m": 120, "parking_status": "likely_free", "eligible_for_recommendation": True, "deep_links": {"yandex_maps": "https://yandex.ru/a"}, "parking_evidence": {"source": "osm", "fee": "no", "reason": "fee=no, не гарантия"}},
+                {"title": "Parking B", "coordinates": {"lat": 55.8242, "lon": 37.6142}, "distance_m": 220, "parking_status": "unverified", "eligible_for_recommendation": True, "deep_links": {"yandex_maps": "https://yandex.ru/b"}},
+                {"title": "Parking C", "coordinates": {"lat": 55.8243, "lon": 37.6143}, "distance_m": 320, "parking_status": "unverified", "eligible_for_recommendation": True, "deep_links": {"yandex_maps": "https://yandex.ru/c"}},
+                {"title": "Parking D", "coordinates": {"lat": 55.8244, "lon": 37.6144}, "distance_m": 420, "parking_status": "unverified", "eligible_for_recommendation": True, "deep_links": {"yandex_maps": "https://yandex.ru/d"}},
+            ],
+            "parking_statuses": ["likely_free", "unverified"],
+            "degraded_sections": [],
+            "provider_status": [],
+        }))
+
+    monkeypatch.setattr("gateway.task_runtime.subprocess.run", fake_run)
+    common = dict(platform_key="telegram", chat_id="1", session_key="session-a", session_id="session-a-id", user_config={"agent": {}}, platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"])
+    first = prepare_task_turn(message="сколько ехать до парка Останкино от Королёва, ул. Лесная и где там бесплатные парковки?", request_id="req-1", **common)
+    assert first.early_response["api_calls"] == 0
+    assert first.early_response["diagnostics"]["tool_call_count"] == 1
+    assert first.task is None
+
+    second = prepare_task_turn(message="пришли ссылкой на Яндекс Карты самый лучший вариант парковки для меня", request_id="req-2", **common)
+    assert second.task is None
+    assert second.early_response["api_calls"] == 0
+    assert second.early_response["tools"] == []
+    assert second.early_response["diagnostics"]["tool_call_count"] == 0
+    assert "Ближайший подходящий кандидат" in second.early_response["final_response"]
+    assert "https://yandex.ru/a" in second.early_response["final_response"]
+    assert "лучший" not in second.early_response["final_response"].lower()
+    assert "html_report_path" not in second.early_response
+
+    third = prepare_task_turn(message="дай еще три варианта бесплатной или самой дешевой парковки в шаговой доступности", request_id="req-3", **common)
+    assert third.task is None
+    assert third.early_response["api_calls"] == 0
+    assert third.early_response["diagnostics"]["tool_call_count"] == 0
+    assert "Parking A" not in third.early_response["final_response"]
+    assert "Parking B" in third.early_response["final_response"]
+    assert "Parking C" in third.early_response["final_response"]
+    assert "Parking D" in third.early_response["final_response"]
+    assert "INCOMPLETE" not in third.early_response["final_response"]
+    assert len(calls) == 1
+
+
+def test_city_travel_context_is_session_chat_scoped_and_ttl_bound(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    from gateway.task_runtime import CityTravelContextStore
+    store = CityTravelContextStore(state_dir / "state.db")
+    context = {"route_url": "https://yandex.ru/route", "parking_candidates": [{"id": "a", "title": "Parking A", "coordinates": {"lat": 55.0, "lon": 37.0}, "distance_m": 100, "parking_status": "likely_free", "eligible_for_recommendation": True, "raw_yandex_maps_url": "https://yandex.ru/a"}], "shown_parking_ids": []}
+    store.save(platform="telegram", chat_id="1", session_key="s1", context=context)
+    assert store.get(platform="telegram", chat_id="1", session_key="s1") is not None
+    assert store.get(platform="telegram", chat_id="2", session_key="s1") is None
+    assert store.get(platform="telegram", chat_id="1", session_key="s2") is None
+    import sqlite3
+    with sqlite3.connect(state_dir / "state.db") as conn:
+        conn.execute("UPDATE city_travel_contexts SET expires_at=?", (time.time() - 1,))
+    assert store.get(platform="telegram", chat_id="1", session_key="s1") is None
+
+
+def test_city_travel_followup_does_not_catch_cafe_rating(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    from gateway.task_runtime import CityTravelContextStore
+    CityTravelContextStore(state_dir / "state.db").save(platform="telegram", chat_id="1", session_key="s1", context={"route_url": "https://yandex.ru/route", "parking_candidates": [], "shown_parking_ids": [], "start_text": "Королёв"})
+    prepared = prepare_task_turn(
+        message="найди 3 кафе и ранжируй их по отзывам, покушать после прогулки в парке с детьми",
+        platform_key="telegram", chat_id="1", session_key="s1", session_id="session", request_id="req-cafe",
+        user_config={"agent": {}}, platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"],
+    )
+    assert prepared.route is not None
+    assert "web" in prepared.route.toolsets
+    assert "browser" in prepared.route.toolsets
+    assert not (
+        prepared.early_response
+        and prepared.early_response.get("diagnostics", {}).get("travel_followup_intent")
+    )
 
 
 def test_reply_context_continuation_command(tmp_path):

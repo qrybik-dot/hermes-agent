@@ -361,7 +361,7 @@ def finalize_turn(
     # be misrouted as image generation or vision analysis.  Browser screenshots
     # are downstream output artifacts created from this file, not required
     # inputs for the task.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not getattr(agent, "_suppress_html_report_for_turn", False):
         try:
             _html_report = render_task_report_html(
                 final_response=final_response,

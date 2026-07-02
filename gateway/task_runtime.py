@@ -8,8 +8,11 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
+import time
+from typing import Any
 
 from gateway.task_continuation import (
     TaskRecord,
@@ -585,7 +588,293 @@ def _trip_helper_path() -> Path:
     return hermes_home / "skills" / "productivity" / "city-travel-concierge" / "scripts" / "city_travel_trip.py"
 
 
-def _run_city_travel_trip_fast_path(text: str, route: TaskRoute) -> dict | None:
+_TRAVEL_CONTEXT_TTL_SECONDS = 2 * 3600
+
+
+class CityTravelContextStore:
+    """Short-lived per-chat travel state for deterministic Telegram follow-ups."""
+
+    def __init__(self, db_path: Path | str | None = None):
+        self.db_path = Path(db_path or Path.home() / ".hermes" / "state.db")
+        self.ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
+
+    def ensure_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS city_travel_contexts (
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    context_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    PRIMARY KEY(platform, chat_id, session_key)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_city_travel_contexts_expiry "
+                "ON city_travel_contexts(expires_at)"
+            )
+
+    def save(self, *, platform: str, chat_id: str, session_key: str, context: dict[str, Any]) -> None:
+        now = time.time()
+        expires_at = now + _TRAVEL_CONTEXT_TTL_SECONDS
+        payload = dict(context)
+        payload["ttl_seconds"] = _TRAVEL_CONTEXT_TTL_SECONDS
+        payload["expires_at_epoch"] = expires_at
+        with self._connect() as conn:
+            conn.execute("DELETE FROM city_travel_contexts WHERE expires_at<=?", (now,))
+            conn.execute(
+                """
+                INSERT INTO city_travel_contexts (
+                    platform, chat_id, session_key, context_json, created_at, updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, chat_id, session_key) DO UPDATE SET
+                    context_json=excluded.context_json,
+                    updated_at=excluded.updated_at,
+                    expires_at=excluded.expires_at
+                """,
+                (platform, str(chat_id), session_key or "", json.dumps(payload, ensure_ascii=False, sort_keys=True), now, now, expires_at),
+            )
+
+    def get(self, *, platform: str, chat_id: str, session_key: str) -> dict[str, Any] | None:
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM city_travel_contexts WHERE expires_at<=?", (now,))
+            row = conn.execute(
+                "SELECT context_json FROM city_travel_contexts WHERE platform=? AND chat_id=? AND session_key=? AND expires_at>?",
+                (platform, str(chat_id), session_key or "", now),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["context_json"] or "{}")
+        except Exception:
+            return None
+        return value if isinstance(value, dict) else None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parking_candidate_id(candidate: dict[str, Any]) -> str:
+    coords = candidate.get("coordinates") if isinstance(candidate.get("coordinates"), dict) else {}
+    lat = _as_float(coords.get("lat"))
+    lon = _as_float(coords.get("lon"))
+    if lat is not None and lon is not None:
+        return f"{lat:.6f},{lon:.6f}"
+    return "|".join(str(candidate.get(key) or "") for key in ("title", "address", "distance_m", "parking_status"))[:180]
+
+
+def _candidate_yandex_url(candidate: dict[str, Any]) -> str:
+    deep_links = candidate.get("deep_links") if isinstance(candidate.get("deep_links"), dict) else {}
+    url = str(deep_links.get("yandex_maps") or "").strip()
+    if url:
+        return url
+    coords = candidate.get("coordinates") if isinstance(candidate.get("coordinates"), dict) else {}
+    lat = _as_float(coords.get("lat"))
+    lon = _as_float(coords.get("lon"))
+    if lat is None or lon is None:
+        return ""
+    return f"https://yandex.ru/maps/?pt={lon:.6f},{lat:.6f}&z=18&l=map"
+
+
+def _trim_parking_evidence(candidate: dict[str, Any]) -> dict[str, Any]:
+    evidence = candidate.get("parking_evidence") if isinstance(candidate.get("parking_evidence"), dict) else {}
+    trimmed: dict[str, Any] = {}
+    for key in ("source", "fee", "access", "parking_type", "reason", "checked_at"):
+        if evidence.get(key) is not None:
+            trimmed[key] = evidence.get(key)
+    official = evidence.get("official") if isinstance(evidence.get("official"), dict) else None
+    if official:
+        trimmed["official"] = {key: official.get(key) for key in ("source_name", "source_url", "zone_number", "parking_name", "tariffs", "hours", "checked_at") if official.get(key) is not None}
+    return trimmed
+
+
+def _normalize_parking_candidate(candidate: Any) -> dict[str, Any] | None:
+    if not isinstance(candidate, dict):
+        return None
+    coords = candidate.get("coordinates") if isinstance(candidate.get("coordinates"), dict) else {}
+    lat = _as_float(coords.get("lat"))
+    lon = _as_float(coords.get("lon"))
+    if lat is None or lon is None:
+        return None
+    normalized = {
+        "title": str(candidate.get("title") or "парковка").strip() or "парковка",
+        "address": str(candidate.get("address") or "").strip(),
+        "coordinates": {"lat": lat, "lon": lon},
+        "distance_m": _as_float(candidate.get("distance_m")),
+        "parking_status": str(candidate.get("parking_status") or candidate.get("verification_status") or "unverified"),
+        "eligible_for_recommendation": bool(candidate.get("eligible_for_recommendation")),
+        "is_free": candidate.get("is_free") if isinstance(candidate.get("is_free"), bool) else None,
+        "evidence": _trim_parking_evidence(candidate),
+    }
+    normalized["id"] = _parking_candidate_id(normalized)
+    normalized["raw_yandex_maps_url"] = _candidate_yandex_url(candidate) or _candidate_yandex_url(normalized)
+    return normalized
+
+
+def _parking_rank_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    status_priority = {"official": 0, "user_confirmed": 1, "likely_free": 2, "unverified": 3}
+    return (not bool(candidate.get("eligible_for_recommendation")), status_priority.get(str(candidate.get("parking_status") or "unverified"), 9), candidate.get("distance_m") is None, candidate.get("distance_m") or 0, candidate.get("title") or "")
+
+
+def _travel_context_from_payload(payload: dict[str, Any], *, start: str, destination: str) -> dict[str, Any]:
+    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    route_links = route.get("deep_links") if isinstance(route.get("deep_links"), dict) else {}
+    candidates = []
+    for item in payload.get("parking_candidates") or []:
+        normalized = _normalize_parking_candidate(item)
+        if normalized is not None:
+            candidates.append(normalized)
+    return {
+        "source": "city-travel-concierge",
+        "start_text": start,
+        "resolved_start": payload.get("resolved_start"),
+        "approximate_start": bool(payload.get("approximate_start")),
+        "destination_text": destination,
+        "resolved_destination": payload.get("resolved_destination"),
+        "destination_coordinates": ((payload.get("coordinates") or {}).get("destination") if isinstance(payload.get("coordinates"), dict) else None),
+        "route_url": str(route_links.get("yandex_maps") or ""),
+        "traffic_status": payload.get("traffic_status"),
+        "parking_candidates": sorted(candidates, key=_parking_rank_key),
+        "shown_parking_ids": [],
+        "checked_at": payload.get("checked_at"),
+        "degraded_sections": payload.get("degraded_sections") or [],
+        "statuses": {"traffic_status": payload.get("traffic_status"), "parking_statuses": payload.get("parking_statuses") or []},
+    }
+
+
+_PARKING_LINK_RE = re.compile(r"\b(?:пришл\w*|дай|дайте|открой\w*|скинь\w*|координат\w*)\b.{0,120}\b(?:парковк\w*|яндекс\w*|карт\w*)\b|\b(?:парковк\w*)\b.{0,80}\b(?:ссылк\w*|координат\w*|яндекс\w*)\b", re.I | re.S)
+_MORE_PARKING_RE = re.compile(r"\b(?:ещ[её]|друг\w*|альтернатив\w*)\b.{0,120}\b(?:парковк\w*|бесплатн\w*|дешев\w*|вариант\w*)\b|\b(?:парковк\w*)\b.{0,120}\b(?:ещ[её]|друг\w*|альтернатив\w*)\b", re.I | re.S)
+_ROUTE_REPEAT_RE = re.compile(r"\b(?:пришл\w*|дай|дайте|открой\w*|повтори\w*)\b.{0,100}\b(?:маршрут\w*|ссылк\w*\s+яндекс|яндекс\s+карт\w*)\b", re.I | re.S)
+_DESTINATION_CLARIFICATION_RE = re.compile(r"\b(?:парк\w*|усадьб\w*|музе\w*|вднх|останкин\w*|точнее|около|рядом)\b", re.I)
+_CAFE_OR_REVIEW_RE = re.compile(r"\b(?:кафе|ресторан|отзыв\w*|рейтинг\w*|ранжир\w*|покушать|поесть)\b", re.I)
+
+
+def _city_travel_followup_intent(text: str) -> str | None:
+    value = " ".join((text or "").strip().split())
+    if not value or _CAFE_OR_REVIEW_RE.search(value):
+        return None
+    if _MORE_PARKING_RE.search(value):
+        return "more_parking"
+    if _PARKING_LINK_RE.search(value):
+        return "parking_link"
+    if _ROUTE_REPEAT_RE.search(value):
+        return "route_repeat"
+    if _DESTINATION_CLARIFICATION_RE.search(value) and _parse_route_trip_request(value) is None:
+        return "destination_clarification"
+    return None
+
+
+def _format_distance(distance: Any) -> str:
+    value = _as_float(distance)
+    if value is None:
+        return "расстояние не подтверждено"
+    return f"{round(value)} м от точки назначения"
+
+
+def _parking_status_note(candidate: dict[str, Any]) -> str:
+    status = str(candidate.get("parking_status") or "unverified")
+    if status == "likely_free":
+        return "Статус: likely_free; это не официальная гарантия бесплатности."
+    if status == "official" and candidate.get("is_free") is False:
+        return "Статус: official; источник указывает платную парковку."
+    if status in {"official", "user_confirmed"} and candidate.get("is_free") is True:
+        return f"Статус: {status}; бесплатность подтверждена источником."
+    return f"Статус: {status}; условия нужно проверить на месте."
+
+
+def _format_parking_candidate(candidate: dict[str, Any], *, index: int | None = None) -> str:
+    prefix = f"{index}. " if index is not None else ""
+    coords = candidate.get("coordinates") or {}
+    lines = [f"{prefix}{candidate.get('title') or 'парковка'} - {_format_distance(candidate.get('distance_m'))}.", _parking_status_note(candidate), f"Координаты: {float(coords.get('lat')):.6f}, {float(coords.get('lon')):.6f}", f"Яндекс Карты: {candidate.get('raw_yandex_maps_url') or 'ссылка недоступна'}"]
+    evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {}
+    if evidence.get("reason"):
+        lines.append("Основание: " + str(evidence.get("reason")))
+    official = evidence.get("official") if isinstance(evidence.get("official"), dict) else None
+    if official and official.get("tariffs"):
+        lines.append("Официальный тариф: " + str(official.get("tariffs")))
+    return "\n".join(lines)
+
+
+def _save_city_travel_context(*, platform_key: str, chat_id: str, session_key: str, payload: dict[str, Any], start: str, destination: str) -> None:
+    try:
+        CityTravelContextStore().save(platform=platform_key, chat_id=str(chat_id), session_key=session_key, context=_travel_context_from_payload(payload, start=start, destination=destination))
+    except Exception:
+        pass
+
+
+def _update_city_travel_context(*, platform_key: str, chat_id: str, session_key: str, context: dict[str, Any]) -> None:
+    try:
+        CityTravelContextStore().save(platform=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
+    except Exception:
+        pass
+
+
+def _deterministic_city_travel_followup(*, text: str, route: TaskRoute, platform_key: str, chat_id: str, session_key: str) -> dict | None:
+    if "city-travel-concierge" not in route.skill_names:
+        return None
+    intent = _city_travel_followup_intent(text)
+    if intent is None:
+        return None
+    context = CityTravelContextStore().get(platform=platform_key, chat_id=str(chat_id), session_key=session_key)
+    if context is None:
+        return None
+    if intent == "route_repeat":
+        route_url = str(context.get("route_url") or "").strip()
+        if not route_url:
+            return early_response("Сохранённого URL маршрута нет. Пришлите полный запрос с точкой старта и назначением.", role=route.role, reason="deterministic city travel follow-up missing route url", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+        return early_response("Маршрут в Яндекс Картах:\n" + route_url, role=route.role, reason="deterministic city travel route url repeat", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+    if intent == "parking_link":
+        candidates = sorted([item for item in context.get("parking_candidates") or [] if isinstance(item, dict)], key=_parking_rank_key)
+        eligible = [item for item in candidates if item.get("eligible_for_recommendation")]
+        if not eligible:
+            return early_response("В сохранённом маршруте нет подходящих кандидатов парковки. Бесплатность или доступность не подтверждаю.", role=route.role, reason="deterministic city travel no eligible parking candidates", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+        selected = eligible[0]
+        shown = set(str(x) for x in context.get("shown_parking_ids") or [])
+        shown.add(str(selected.get("id") or _parking_candidate_id(selected)))
+        context["shown_parking_ids"] = sorted(shown)
+        _update_city_travel_context(platform_key=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
+        return early_response("Ближайший подходящий кандидат парковки:\n" + _format_parking_candidate(selected), role=route.role, reason="deterministic city travel parking link follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+    if intent == "more_parking":
+        shown = set(str(x) for x in context.get("shown_parking_ids") or [])
+        candidates = sorted([item for item in context.get("parking_candidates") or [] if isinstance(item, dict)], key=_parking_rank_key)
+        selected = [item for item in candidates if str(item.get("id") or _parking_candidate_id(item)) not in shown][:3]
+        if not selected:
+            return early_response("Других сохранённых кандидатов парковки нет. Не буду выдумывать бесплатные места без источников.", role=route.role, reason="deterministic city travel no more parking candidates", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+        for item in selected:
+            shown.add(str(item.get("id") or _parking_candidate_id(item)))
+        context["shown_parking_ids"] = sorted(shown)
+        _update_city_travel_context(platform_key=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
+        body = [f"Показываю {len(selected)} сохранённ(ых) кандидат(а/ов) парковки. likely_free не считаю официально бесплатной парковкой."]
+        body.extend(_format_parking_candidate(item, index=index) for index, item in enumerate(selected, 1))
+        return early_response("\n\n".join(body), role=route.role, reason="deterministic city travel more parking follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+    if intent == "destination_clarification":
+        start = str(context.get("start_text") or "").strip()
+        if not start:
+            return None
+        return _run_city_travel_trip_fast_path(f"сколько ехать до {text} от {start}", route, platform_key=platform_key, chat_id=str(chat_id), session_key=session_key)
+    return None
+
+
+def _run_city_travel_trip_fast_path(text: str, route: TaskRoute, *, platform_key: str = "", chat_id: str = "", session_key: str = "") -> dict | None:
     if "city-travel-concierge" not in route.skill_names:
         return None
     if not travel_is_route_or_parking(text) or travel_needs_web_or_browser(text):
@@ -645,6 +934,15 @@ def _run_city_travel_trip_fast_path(text: str, route: TaskRoute) -> dict | None:
         "degraded_sections": payload.get("degraded_sections") or [],
         "provider_status": payload.get("provider_status") or [],
     }
+    if platform_key and chat_id:
+        _save_city_travel_context(
+            platform_key=platform_key,
+            chat_id=str(chat_id),
+            session_key=session_key,
+            payload=payload,
+            start=start,
+            destination=destination,
+        )
     return early_response(
         answer,
         role=route.role,
@@ -690,6 +988,18 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 ),
                 False,
             )
+    initial_route = route_turn(current_text, command=None, platform_key=platform_key,
+                               user_config=user_config, platform_toolsets=platform_toolsets)
+    travel_followup_response = _deterministic_city_travel_followup(
+        text=current_text,
+        route=initial_route,
+        platform_key=platform_key,
+        chat_id=str(chat_id),
+        session_key=session_key,
+    )
+    if travel_followup_response is not None:
+        return PreparedTaskTurn(original, initial_route, None, travel_followup_response, False)
+
     decision = store.resolve(original, platform_key, str(chat_id))
     pending_calendar = None
     if decision.kind == "none":
@@ -851,7 +1161,13 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         )
 
     if task is None:
-        travel_fast_response = _run_city_travel_trip_fast_path(base_text, route)
+        travel_fast_response = _run_city_travel_trip_fast_path(
+            base_text,
+            route,
+            platform_key=platform_key,
+            chat_id=str(chat_id),
+            session_key=session_key,
+        )
         if travel_fast_response is not None:
             return PreparedTaskTurn(
                 str(message or ""),
