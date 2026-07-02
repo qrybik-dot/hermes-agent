@@ -105,6 +105,7 @@ _MEDIA_SUMMARY_INTENT_RE = re.compile(
     re.I | re.S,
 )
 _MEDIA_TEXT_INTENT_RE = re.compile(r"транскриб|расшифр|полный\s+текст|текстом", re.I)
+_MEDIA_STATUS_RE = re.compile(r"^\s*(?:статус|прогресс|что\s+там|как\s+там)[.!?]*\s*$", re.I)
 _MEDIA_STATE_TTL = 600.0
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -6161,6 +6162,100 @@ class TelegramAdapter(BasePlatformAdapter):
         minutes, seconds = divmod(elapsed, 60)
         return f"{minutes} мин {seconds:02d} сек" if minutes else f"{seconds} сек"
 
+    @staticmethod
+    def _format_media_bytes(value: Any) -> str:
+        try:
+            size = max(0.0, float(value or 0))
+        except (TypeError, ValueError):
+            return "неизвестно"
+        units = ("Б", "КБ", "МБ", "ГБ")
+        for unit in units:
+            if size < 1024 or unit == units[-1]:
+                return f"{size:.1f} {unit}" if unit != "Б" else f"{int(size)} Б"
+            size /= 1024
+        return f"{size:.1f} ГБ"
+
+    def _media_status_snapshot(self, record: Dict[str, Any]) -> str:
+        stage = str(record.get("stage") or "queued")
+        started = float(record.get("stage_started") or record.get("created") or time.monotonic())
+        elapsed = self._format_media_elapsed(started)
+        if stage == "probing":
+            return f"🔎 YouTube · проверяю размер\nИдёт: {elapsed}"
+        if stage == "downloading":
+            percent = record.get("progress_percent")
+            downloaded = self._format_media_bytes(record.get("downloaded_bytes"))
+            total = self._format_media_bytes(record.get("total_bytes") or record.get("estimated_bytes"))
+            if isinstance(percent, (int, float)):
+                filled = min(10, max(0, int(float(percent) // 10)))
+                bar = "▰" * filled + "▱" * (10 - filled)
+                return f"⬇️ YouTube · {float(percent):.0f}%\n{bar}\n{downloaded} / {total}\nИдёт: {elapsed}"
+            return f"⬇️ YouTube · скачивание\nОжидаемый размер: {total}\nИдёт: {elapsed}"
+        if stage == "sending":
+            size = self._format_media_bytes(record.get("actual_bytes") or record.get("estimated_bytes"))
+            return f"📤 YouTube · отправка в Telegram\nФайл: {size}\nИдёт: {elapsed}"
+        if stage == "summary":
+            return f"📝 YouTube · готовлю саммари\nИдёт: {elapsed}"
+        if stage == "transcript":
+            return f"📝 YouTube · получаю расшифровку\nИдёт: {elapsed}"
+        if stage == "skipped":
+            return str(record.get("last_status") or "Видео пропущено из-за размера")
+        if stage == "failed":
+            return str(record.get("last_status") or "Задача завершилась ошибкой")
+        if stage == "done":
+            return str(record.get("last_status") or "Готово ✓")
+        return f"⏳ YouTube · задача принята\nИдёт: {elapsed}"
+
+    async def _probe_youtube_download_size(self, url: str) -> Optional[int]:
+        cmd = ['/home/hermes/.hermes/hermes-agent/venv/bin/yt-dlp']
+        cookies = '/home/hermes/.hermes/youtube-cookies.txt'
+        if os.path.isfile(cookies):
+            cmd.extend(['--cookies', cookies])
+        cmd.extend([
+            '--js-runtimes', 'node:/home/hermes/.local/bin/node',
+            '--remote-components', 'ejs:github',
+            '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            '--no-playlist', '--skip-download', '--dump-single-json',
+            '--quiet', '--no-warnings', url,
+        ])
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd='/home/hermes/media_downloader',
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            return None
+        if proc.returncode != 0 or not stdout:
+            return None
+        try:
+            payload = json.loads(stdout.decode('utf-8', errors='replace'))
+        except Exception:
+            return None
+        formats = payload.get('requested_formats') or payload.get('requested_downloads') or [payload]
+        sizes = []
+        for item in formats:
+            if not isinstance(item, dict):
+                continue
+            raw = item.get('filesize') or item.get('filesize_approx') or 0
+            try:
+                sizes.append(int(raw))
+            except (TypeError, ValueError):
+                pass
+        total = sum(value for value in sizes if value > 0)
+        if total <= 0:
+            try:
+                duration = float(payload.get('duration') or 0)
+                tbr = float(payload.get('tbr') or 0)
+                total = int(duration * tbr * 1000 / 8) if duration > 0 and tbr > 0 else 0
+            except (TypeError, ValueError):
+                total = 0
+        return total or None
+
     def _media_context_key(self, msg) -> str:
         thread_id = getattr(msg, "message_thread_id", None)
         return f"{getattr(msg.chat, 'id', '')}:{thread_id or ''}"
@@ -6224,25 +6319,51 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         record["video_running"] = True
         started = time.monotonic()
+        record["stage_started"] = started
+        record["stage"] = "probing"
         chat_id = str(record["chat_id"])
         thread_id = record.get("thread_id")
         metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
-        status = await self.send(chat_id, "Скачиваю видео…\n0 сек", metadata=metadata)
+        limit_mb = self._env_float_clamped('HERMES_TELEGRAM_UPLOAD_LIMIT_MB', 45.0, min_value=1.0, max_value=1900.0)
+        upload_limit = int(limit_mb * 1024 * 1024)
+        status = await self.send(chat_id, "Проверяю размер YouTube-видео…", metadata=metadata)
         status_id = getattr(status, "message_id", None)
         stop = asyncio.Event()
 
         async def heartbeat():
             while not stop.is_set():
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
                 if stop.is_set() or not status_id:
                     break
                 try:
-                    await self.edit_message(chat_id, str(status_id), f"Скачиваю видео…\n{self._format_media_elapsed(started)}")
+                    await self.edit_message(chat_id, str(status_id), self._media_status_snapshot(record))
                 except Exception:
                     pass
 
         beat = asyncio.create_task(heartbeat())
         try:
+            estimated = await self._probe_youtube_download_size(str(record['url']))
+            record['estimated_bytes'] = estimated
+            record['total_bytes'] = estimated
+            if estimated is None:
+                suffix = " Перехожу к саммари." if record.get("summary_requested") else ""
+                message = "Не удалось безопасно определить размер видео. Не скачиваю его, чтобы не перегружать VPS." + suffix
+                record.update(stage="skipped", video_done=True, last_status=message)
+                if status_id:
+                    await self.edit_message(chat_id, str(status_id), message)
+                return
+            if estimated > upload_limit:
+                message = (
+                    f"Видео примерно {self._format_media_bytes(estimated)}, а безопасный лимит отправки бота "
+                    f"{self._format_media_bytes(upload_limit)}. Не скачиваю файл, чтобы не перегружать VPS."
+                    + (" Перехожу к саммари." if record.get("summary_requested") else "")
+                )
+                record.update(stage="skipped", video_done=True, last_status=message)
+                if status_id:
+                    await self.edit_message(chat_id, str(status_id), message)
+                return
+
+            record['stage'] = 'downloading'
             proc = await asyncio.create_subprocess_exec(
                 '/home/hermes/.hermes/hermes-agent/venv/bin/python',
                 '/home/hermes/media_downloader/download.py',
@@ -6251,32 +6372,87 @@ class TelegramAdapter(BasePlatformAdapter):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            output, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
-            decoded = output.decode('utf-8', errors='replace')
+            output_lines = []
+            last_edit = 0.0
+
+            async def consume_output():
+                nonlocal last_edit
+                assert proc.stdout is not None
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    decoded_line = line.decode('utf-8', errors='replace').strip()
+                    output_lines.append(decoded_line)
+                    if decoded_line.startswith('PROGRESS:'):
+                        parts = decoded_line.split(':', 1)[1].split('|')
+                        try:
+                            percent_match = re.search(r'([0-9]+(?:\.[0-9]+)?)', parts[0])
+                            if percent_match:
+                                record['progress_percent'] = float(percent_match.group(1))
+                            if len(parts) > 1 and parts[1] not in {'NA', 'N/A', ''}:
+                                record['downloaded_bytes'] = int(float(parts[1]))
+                            if len(parts) > 2 and parts[2] not in {'NA', 'N/A', ''}:
+                                record['total_bytes'] = int(float(parts[2]))
+                        except (TypeError, ValueError):
+                            pass
+                        now = time.monotonic()
+                        if status_id and now - last_edit >= 2:
+                            last_edit = now
+                            try:
+                                await self.edit_message(chat_id, str(status_id), self._media_status_snapshot(record))
+                            except Exception:
+                                pass
+                return await proc.wait()
+
+            returncode = await asyncio.wait_for(consume_output(), timeout=180)
+            decoded = '\n'.join(output_lines)
             match = re.search(r'^RESULT_PATH:(.+)$', decoded, re.M)
             video_path = match.group(1).strip() if match else ''
             if video_path and not os.path.isabs(video_path):
                 video_path = os.path.abspath(os.path.join('/home/hermes/media_downloader', video_path))
-            if proc.returncode != 0 or not video_path or not os.path.isfile(video_path) or os.path.getsize(video_path) <= 0:
+            if returncode != 0 or not video_path or not os.path.isfile(video_path) or os.path.getsize(video_path) <= 0:
                 if "Sign in to confirm" in decoded or "LOGIN_REQUIRED" in decoded:
                     raise RuntimeError("YouTube заблокировал загрузку с VPS: нужны cookies или прокси")
                 raise RuntimeError('загрузчик не вернул готовый файл')
+
+            actual_size = os.path.getsize(video_path)
+            record['actual_bytes'] = actual_size
+            if actual_size > upload_limit:
+                message = (
+                    f"Файл скачался, но оказался {self._format_media_bytes(actual_size)} и превышает безопасный "
+                    f"лимит {self._format_media_bytes(upload_limit)}. Не отправляю его, чтобы не уронить Hermes."
+                )
+                record.update(stage="skipped", video_done=True, last_status=message)
+                if status_id:
+                    await self.edit_message(chat_id, str(status_id), message)
+                return
+
+            record['stage'] = 'sending'
+            record['stage_started'] = time.monotonic()
             if status_id:
-                await self.edit_message(chat_id, str(status_id), f"Отправляю видео…\n{self._format_media_elapsed(started)}")
+                await self.edit_message(chat_id, str(status_id), self._media_status_snapshot(record))
             sent = await self.send_video(chat_id, video_path, caption=None, metadata=metadata)
             if not sent.success:
                 raise RuntimeError(sent.error or 'Telegram не принял видео')
-            record['video_done'] = True
+            record.update(video_done=True, stage='done', last_status=f"Готово 🎬\n{self._format_media_bytes(actual_size)}")
             if status_id:
-                await self.edit_message(chat_id, str(status_id), f"Готово 🎬\n{self._format_media_elapsed(started)}")
+                await self.edit_message(chat_id, str(status_id), record['last_status'])
             await self._send_media_followup_menu(record)
         except asyncio.TimeoutError:
+            if 'proc' in locals() and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            message = "Не удалось обработать видео за 3 минуты." + (" Перехожу к саммари." if record.get("summary_requested") else "")
+            record.update(stage='failed', last_status=message)
             if status_id:
-                await self.edit_message(chat_id, str(status_id), "Не успел скачать видео за 90 секунд. Попробуй ещё раз или пришли файл напрямую")
+                await self.edit_message(chat_id, str(status_id), message)
         except Exception as exc:
             logger.warning("[%s] media fast-path failed: %s", self.name, exc, exc_info=True)
+            message = f"Видео не отправлено: {str(exc)[:160]}." + (" Перехожу к саммари." if record.get("summary_requested") else "")
+            record.update(stage='failed', last_status=message)
             if status_id:
-                await self.edit_message(chat_id, str(status_id), f"Не получилось скачать: {str(exc)[:120]}")
+                await self.edit_message(chat_id, str(status_id), message)
         finally:
             stop.set()
             beat.cancel()
@@ -6295,6 +6471,8 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = record.get("thread_id")
         metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
         label = "Готовлю саммари" if action == "summary" else "Получаю расшифровку"
+        record['stage'] = 'summary' if action == 'summary' else 'transcript'
+        record['stage_started'] = started
         status = await self.send(chat_id, f"{label}…\n0 сек", metadata=metadata)
         status_id = getattr(status, "message_id", None)
         stop = asyncio.Event()
@@ -6355,6 +6533,8 @@ class TelegramAdapter(BasePlatformAdapter):
             if not getattr(sent, 'success', False):
                 raise RuntimeError(getattr(sent, 'error', None) or 'Telegram не принял результат')
             record[done_key] = True
+            record['stage'] = 'done'
+            record['last_status'] = 'Саммари готово ✓' if action == 'summary' else 'Расшифровка готова ✓'
             if status_id:
                 await self.edit_message(
                     chat_id,
@@ -6362,12 +6542,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     f"Готово ✓\n{self._format_media_elapsed(started)}",
                 )
         except asyncio.TimeoutError:
+            record['stage'] = 'failed'
+            record['last_status'] = 'Не удалось обработать видео за 5 минут'
             if status_id:
-                await self.edit_message(chat_id, str(status_id), 'Не удалось обработать видео за 5 минут')
+                await self.edit_message(chat_id, str(status_id), record['last_status'])
         except Exception as exc:
             logger.warning("[%s] YouTube %s pipeline failed: %s", self.name, action, exc, exc_info=True)
+            record['stage'] = 'failed'
+            record['last_status'] = f"Не получилось: {str(exc)[:220]}"
             if status_id:
-                await self.edit_message(chat_id, str(status_id), f"Не получилось: {str(exc)[:220]}")
+                await self.edit_message(chat_id, str(status_id), record['last_status'])
         finally:
             stop.set()
             beat.cancel()
@@ -6375,6 +6559,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _try_handle_media_fast_path(self, msg) -> bool:
         value = (msg.text or '').strip()
+        if _MEDIA_STATUS_RE.fullmatch(value):
+            record = self._latest_media_by_chat.get(self._media_context_key(msg))
+            if record and time.monotonic() - float(record.get('created', 0)) <= _MEDIA_STATE_TTL:
+                await self.send(str(msg.chat.id), self._media_status_snapshot(record), metadata={"thread_id": str(getattr(msg, "message_thread_id", ""))} if getattr(msg, "message_thread_id", None) is not None else None)
+                return True
         embedded = _MEDIA_URL_RE.search(value)
         if embedded and not _MEDIA_URL_RE.fullmatch(value):
             url = embedded.group(0).rstrip('.,);]')
@@ -6388,6 +6577,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         "chat_id": str(msg.chat.id),
                         "thread_id": getattr(msg, "message_thread_id", None),
                         "created": time.monotonic(),
+                        "summary_requested": wants_summary,
+                        "text_requested": wants_text,
                     }
                     self._latest_media_by_chat[self._media_context_key(msg)] = record
                     if wants_video:

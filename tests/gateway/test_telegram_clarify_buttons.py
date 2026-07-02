@@ -588,3 +588,43 @@ async def test_media_followup_message_has_no_buttons(monkeypatch):
 
     assert 'reply_markup' not in sent
     assert sent['text'] == 'Новый ролик — просто пришли следующую ссылку'
+
+
+# ===========================================================================
+# YouTube media guard and direct status
+# ===========================================================================
+
+class TestYoutubeMediaGuard:
+    @pytest.mark.asyncio
+    async def test_oversize_video_is_skipped_before_download_and_status_is_direct(self):
+        import time
+
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True, message_id="10"))
+        adapter.edit_message = AsyncMock(return_value=MagicMock(success=True, message_id="10"))
+        adapter._probe_youtube_download_size = AsyncMock(return_value=1_151_615_856)
+
+        record = {
+            "url": "https://youtu.be/SSM67Pbo65E",
+            "chat_id": "123",
+            "thread_id": None,
+            "created": time.monotonic(),
+            "summary_requested": True,
+        }
+        await adapter._run_media_download(record)
+
+        assert record["stage"] == "skipped"
+        assert record["video_done"] is True
+        assert "Не скачиваю" in record["last_status"]
+        assert "саммари" in record["last_status"]
+
+        msg = MagicMock()
+        msg.text = "Статус"
+        msg.chat.id = 123
+        msg.message_thread_id = None
+        adapter._latest_media_by_chat[adapter._media_context_key(msg)] = record
+
+        handled = await adapter._try_handle_media_fast_path(msg)
+
+        assert handled is True
+        assert adapter.send.await_args.args[1] == record["last_status"]
