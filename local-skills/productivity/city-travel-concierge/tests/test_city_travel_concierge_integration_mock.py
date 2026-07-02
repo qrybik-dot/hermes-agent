@@ -61,6 +61,18 @@ class MockIntegrationTests(unittest.TestCase):
         self.assertEqual(result["parking_candidates"][0]["parking_status"], "likely_free")
         self.assertIn("не подтверждена официально", result["answer_text"])
         self.assertNotIn("BLOCKED", result["answer_text"])
+    def test_trip_accepts_saved_coordinate_start(self):
+        result = trip_helper.trip(
+            start="55.920000,37.820000",
+            destination="парк Останкино",
+            parking_limit=3,
+            urlopen=self.fake_urlopen,
+        )
+        self.assertTrue(result["answer_ready"])
+        self.assertFalse(result["approximate_start"])
+        self.assertEqual(result["coordinates"]["start"], {"lat": 55.92, "lon": 37.82})
+        self.assertTrue(any(item.get("provider") == "saved_coordinates" for item in result["provider_status"]))
+
     def test_trip_normalizes_common_russian_case_forms(self):
         self.assertEqual(trip_helper.normalize_trip_query("парка Останкино", role="destination"), "парк Останкино")
         self.assertEqual(trip_helper.normalize_trip_query("Королёва, ул. Лесная", role="start"), "Королёв, ул. Лесная")

@@ -577,11 +577,15 @@ _TRAVEL_TO_FROM_RE = re.compile(
     r"\b(?:до|в)\s+(?P<destination>.+?)\s+от\s+(?P<start>.+?)(?:\s+и\s+|[?!]|$)",
     re.I | re.S,
 )
+_TRAVEL_FROM_TO_RE = re.compile(
+    r"\bот\s+(?P<start>.+?)\s+до\s+(?P<destination>.+?)(?:\s+и\s+|[?!]|$)",
+    re.I | re.S,
+)
 
 
 def _parse_route_trip_request(text: str) -> tuple[str, str] | None:
     value = " ".join((text or "").strip().split())
-    match = _TRAVEL_TO_FROM_RE.search(value)
+    match = _TRAVEL_TO_FROM_RE.search(value) or _TRAVEL_FROM_TO_RE.search(value)
     if not match:
         return None
     destination = match.group("destination").strip(" ,.;")
@@ -921,6 +925,36 @@ def _yandex_point_url(latitude: float, longitude: float) -> str:
     return f"https://yandex.ru/maps/?pt={float(longitude):.6f},{float(latitude):.6f}&z=18&l=map"
 
 
+def _yandex_route_url(start_latitude: float, start_longitude: float, destination_latitude: float, destination_longitude: float) -> str:
+    return (
+        "https://yandex.ru/maps/?rtext="
+        f"{float(start_latitude):.6f},{float(start_longitude):.6f}~"
+        f"{float(destination_latitude):.6f},{float(destination_longitude):.6f}&rtt=auto"
+    )
+
+
+_PERSONAL_PLACE_ROUTE_RE = re.compile(
+    r"^(?:из\s+)?(?:(?:моего|моей|мой|моя|своего|своей)\s+)?"
+    r"(?P<label>дом(?:а|ой)?|работ(?:а|ы|у)|офис(?:а)?|дач(?:а|и|у))$",
+    re.I,
+)
+
+
+def _personal_place_reference_label(value: str) -> str | None:
+    normalized = " ".join(str(value or "").strip().split())
+    match = _PERSONAL_PLACE_ROUTE_RE.fullmatch(normalized)
+    if match is None:
+        return None
+    raw = match.group("label").casefold()
+    if raw.startswith("дом"):
+        return "Дом"
+    if raw.startswith("работ") or raw.startswith("офис"):
+        return "Работа"
+    if raw.startswith("дач"):
+        return "Дача"
+    return None
+
+
 def _location_coords(location: dict[str, Any] | None) -> tuple[float, float] | None:
     if not isinstance(location, dict):
         return None
@@ -1185,8 +1219,11 @@ def _normalize_parking_candidate(candidate: Any) -> dict[str, Any] | None:
         "is_free": candidate.get("is_free") if isinstance(candidate.get("is_free"), bool) else None,
         "evidence": _trim_parking_evidence(candidate),
     }
-    normalized["id"] = _parking_candidate_id(normalized)
+    normalized["id"] = str(candidate.get("id") or _parking_candidate_id(normalized))
     normalized["raw_yandex_maps_url"] = _candidate_yandex_url(candidate) or _candidate_yandex_url(normalized)
+    route_url = str(candidate.get("route_yandex_maps_url") or "").strip()
+    if route_url and "text=parking" not in route_url.lower():
+        normalized["route_yandex_maps_url"] = route_url
     return normalized
 
 
@@ -1212,33 +1249,70 @@ def _parking_cheapest_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
 def _travel_context_from_payload(payload: dict[str, Any], *, start: str, destination: str) -> dict[str, Any]:
     route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
     route_links = route.get("deep_links") if isinstance(route.get("deep_links"), dict) else {}
-    candidates = []
+    coordinate_payload = payload.get("coordinates") if isinstance(payload.get("coordinates"), dict) else {}
+    start_coordinates = coordinate_payload.get("start") if isinstance(coordinate_payload.get("start"), dict) else None
+    destination_coordinates = coordinate_payload.get("destination") if isinstance(coordinate_payload.get("destination"), dict) else None
+    start_lat = _as_float((start_coordinates or {}).get("lat"))
+    start_lon = _as_float((start_coordinates or {}).get("lon"))
+    candidates: list[dict[str, Any]] = []
     for item in payload.get("parking_candidates") or []:
         normalized = _normalize_parking_candidate(item)
-        if normalized is not None:
-            candidates.append(normalized)
+        if normalized is None:
+            continue
+        coords = normalized.get("coordinates") if isinstance(normalized.get("coordinates"), dict) else {}
+        parking_lat = _as_float(coords.get("lat"))
+        parking_lon = _as_float(coords.get("lon"))
+        if start_lat is not None and start_lon is not None and parking_lat is not None and parking_lon is not None:
+            normalized["route_yandex_maps_url"] = _yandex_route_url(start_lat, start_lon, parking_lat, parking_lon)
+        candidates.append(normalized)
     return {
         "source": "city-travel-concierge",
         "start_text": start,
         "resolved_start": payload.get("resolved_start"),
+        "start_coordinates": start_coordinates,
         "approximate_start": bool(payload.get("approximate_start")),
         "destination_text": destination,
         "resolved_destination": payload.get("resolved_destination"),
-        "destination_coordinates": ((payload.get("coordinates") or {}).get("destination") if isinstance(payload.get("coordinates"), dict) else None),
+        "destination_coordinates": destination_coordinates,
         "route_url": str(route_links.get("yandex_maps") or ""),
         "traffic_status": payload.get("traffic_status"),
         "parking_candidates": sorted(candidates, key=_parking_rank_key),
         "shown_parking_ids": [],
+        "last_parking_selection_ids": [],
         "checked_at": payload.get("checked_at"),
         "degraded_sections": payload.get("degraded_sections") or [],
         "statuses": {"traffic_status": payload.get("traffic_status"), "parking_statuses": payload.get("parking_statuses") or []},
     }
 
 
-_PARKING_LINK_RE = re.compile(r"\b(?:пришл\w*|дай|дайте|открой\w*|скинь\w*|координат\w*)\b.{0,120}\b(?:парковк\w*|припарков\w*|парковочн\w*)\b|\b(?:парковк\w*|припарков\w*|парковочн\w*)\b.{0,120}\b(?:ссылк\w*|координат\w*|яндекс\w*|карт\w*|кандидат\w*)\b", re.I | re.S)
-_MORE_PARKING_RE = re.compile(r"\b(?:ещ[её]|друг\w*|альтернатив\w*)\b.{0,120}\b(?:парковк\w*|бесплатн\w*|дешев\w*|вариант\w*)\b|\b(?:парковк\w*)\b.{0,120}\b(?:ещ[её]|друг\w*|альтернатив\w*)\b", re.I | re.S)
+_PARKING_EXPLICIT_RE = re.compile(r"\b(?:парковк\w*|припарков\w*|парковочн\w*)\b", re.I)
+_PARKING_LINK_RE = re.compile(
+    r"\b(?:пришл\w*|дай|дайте|открой\w*|скинь\w*|координат\w*)\b.{0,140}\b(?:парковк\w*|припарков\w*|парковочн\w*)\b|"
+    r"\b(?:парковк\w*|припарков\w*|парковочн\w*)\b.{0,140}\b(?:ссылк\w*|координат\w*|яндекс\w*|карт\w*|кандидат\w*|локаци\w*|точк\w*)\b",
+    re.I | re.S,
+)
+_PARKING_POINT_RE = re.compile(
+    r"\b(?:конкретн\w*\s+(?:локаци\w*|точк\w*)|куда\s+конкретно\s+ехать|точк\w*\s+на\s+карт\w*)\b.{0,160}\b(?:парковк\w*|припарков\w*|парковочн\w*)\b|"
+    r"\b(?:маршрут\w*|ехать)\b.{0,100}\bдо\b.{0,80}\b(?:парковк\w*|парковочн\w*)\b",
+    re.I | re.S,
+)
+_PARKING_MULTIPLE_RE = re.compile(
+    r"\b(?:2|3|две|два|три)\b.{0,60}\b(?:конкретн\w*\s+)?(?:парковк\w*|вариант\w*|точк\w*)\b|"
+    r"\b(?:парковк\w*|вариант\w*|точк\w*)\b.{0,60}\b(?:2|3|две|два|три)\b",
+    re.I | re.S,
+)
+_PARKING_CHOICE_RE = re.compile(
+    r"\b(?:построй\w*|дай|пришл\w*|открой\w*)\b.{0,100}\b(?:перв\w*|втор\w*|трет\w*|№\s*[123])(?:\s+парковк\w*)?\b",
+    re.I | re.S,
+)
+_MORE_PARKING_RE = re.compile(
+    r"\b(?:ещ[её]|друг\w*|альтернатив\w*)\b.{0,120}\b(?:парковк\w*|бесплатн\w*|дешев\w*|вариант\w*|точк\w*)\b|"
+    r"\b(?:парковк\w*)\b.{0,120}\b(?:ещ[её]|друг\w*|альтернатив\w*)\b",
+    re.I | re.S,
+)
 _PARKING_CLOSEST_RE = re.compile(r"\b(?:сам\w*\s+близк\w*|ближайш\w*|по\s+расстоянию)\b", re.I)
-_PARKING_CHEAP_RE = re.compile(r"\b(?:сам\w*\s+дешев\w*|дешев\w*|цена|тариф|бесплатн\w*)\b", re.I)
+_PARKING_FREE_RE = re.compile(r"\b(?:бесплатн\w*|без\s+оплаты|нулев\w*\s+тариф)\b", re.I)
+_PARKING_CHEAP_RE = re.compile(r"\b(?:сам\w*\s+дешев\w*|дешев\w*|цена|тариф)\b", re.I)
 _ROUTE_REPEAT_RE = re.compile(r"\b(?:пришл\w*|дай|дайте|открой\w*|повтори\w*)\b.{0,100}\b(?:маршрут\w*|ссылк\w*\s+яндекс|яндекс\s+карт\w*)\b", re.I | re.S)
 _DESTINATION_CLARIFICATION_RE = re.compile(r"\b(?:парк\w*|усадьб\w*|музе\w*|вднх|останкин\w*|точнее|около|рядом)\b", re.I)
 _CAFE_OR_REVIEW_RE = re.compile(r"\b(?:кафе|ресторан|отзыв\w*|рейтинг\w*|ранжир\w*|покушать|поесть)\b", re.I)
@@ -1248,8 +1322,14 @@ def _city_travel_followup_intent(text: str) -> str | None:
     value = " ".join((text or "").strip().split())
     if not value or _CAFE_OR_REVIEW_RE.search(value):
         return None
+    if _PARKING_CHOICE_RE.search(value):
+        return "parking_choice"
     if _MORE_PARKING_RE.search(value):
         return "more_parking"
+    if _PARKING_MULTIPLE_RE.search(value) and _PARKING_EXPLICIT_RE.search(value):
+        return "parking_options"
+    if _PARKING_POINT_RE.search(value):
+        return "parking_point"
     if _PARKING_LINK_RE.search(value):
         return "parking_link"
     if _ROUTE_REPEAT_RE.search(value):
@@ -1291,19 +1371,49 @@ def _parking_display_title(candidate: dict[str, Any], *, index: int | None = Non
 def _parking_status_note(candidate: dict[str, Any]) -> str:
     status = str(candidate.get("parking_status") or "unverified")
     if status == "likely_free":
-        return "Статус: likely_free; это не официальная гарантия бесплатности."
+        return "Статус: вероятно бесплатная по OSM, но официально это не подтверждено."
     if status == "official" and candidate.get("is_free") is False:
         return "Статус: official; источник указывает платную парковку."
     if status in {"official", "user_confirmed"} and candidate.get("is_free") is True:
         return f"Статус: {status}; бесплатность подтверждена источником."
-    return f"Статус: {status}; условия нужно проверить на месте."
+    return f"Статус: {status}; условия и тариф нужно проверить на месте."
 
 
-def _format_parking_candidate(candidate: dict[str, Any], *, index: int | None = None) -> str:
+def _parking_route_label(context: dict[str, Any]) -> str:
+    return "от дома" if context.get("start_place_label") == "Дом" else "от точки старта"
+
+
+def _parking_route_url(candidate: dict[str, Any], context: dict[str, Any]) -> str:
+    existing = str(candidate.get("route_yandex_maps_url") or "").strip()
+    if existing and "text=parking" not in existing.lower():
+        return existing
+    start = context.get("start_coordinates") if isinstance(context.get("start_coordinates"), dict) else {}
+    coords = candidate.get("coordinates") if isinstance(candidate.get("coordinates"), dict) else {}
+    start_lat = _as_float(start.get("lat"))
+    start_lon = _as_float(start.get("lon"))
+    parking_lat = _as_float(coords.get("lat"))
+    parking_lon = _as_float(coords.get("lon"))
+    if None in {start_lat, start_lon, parking_lat, parking_lon}:
+        return ""
+    return _yandex_route_url(start_lat, start_lon, parking_lat, parking_lon)
+
+
+def _format_parking_candidate(candidate: dict[str, Any], *, context: dict[str, Any], index: int | None = None) -> str:
     prefix = f"{index}. " if index is not None else ""
-    coords = candidate.get("coordinates") or {}
+    coords = candidate.get("coordinates") if isinstance(candidate.get("coordinates"), dict) else {}
+    lat = _as_float(coords.get("lat"))
+    lon = _as_float(coords.get("lon"))
     title = _parking_display_title(candidate, index=index)
-    lines = [f"{prefix}{title} - {_format_distance(candidate.get('distance_m'))}.", _parking_status_note(candidate), f"Координаты: {float(coords.get('lat')):.6f}, {float(coords.get('lon')):.6f}", f"Яндекс Карты: {candidate.get('raw_yandex_maps_url') or 'ссылка недоступна'}"]
+    point_url = str(candidate.get("raw_yandex_maps_url") or "").strip()
+    if not point_url and lat is not None and lon is not None:
+        point_url = _yandex_point_url(lat, lon)
+    route_url = _parking_route_url(candidate, context)
+    lines = [f"{prefix}{title} - {_format_distance(candidate.get('distance_m'))}.", _parking_status_note(candidate)]
+    if lat is not None and lon is not None:
+        lines.append(f"Координаты: {lat:.6f}, {lon:.6f}")
+    lines.append(f"Открыть точку в Яндекс Картах: {point_url or 'ссылка недоступна'}")
+    if route_url:
+        lines.append(f"Построить маршрут {_parking_route_label(context)}: {route_url}")
     evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {}
     if evidence.get("reason"):
         lines.append("Основание: " + str(evidence.get("reason")))
@@ -1313,9 +1423,12 @@ def _format_parking_candidate(candidate: dict[str, Any], *, index: int | None = 
     return "\n".join(lines)
 
 
-def _save_city_travel_context(*, platform_key: str, chat_id: str, session_key: str, payload: dict[str, Any], start: str, destination: str) -> None:
+def _save_city_travel_context(*, platform_key: str, chat_id: str, session_key: str, payload: dict[str, Any], start: str, destination: str, start_place_label: str | None = None) -> None:
     try:
-        CityTravelContextStore().save(platform=platform_key, chat_id=str(chat_id), session_key=session_key, context=_travel_context_from_payload(payload, start=start, destination=destination))
+        context = _travel_context_from_payload(payload, start=start, destination=destination)
+        if start_place_label:
+            context["start_place_label"] = start_place_label
+        CityTravelContextStore().save(platform=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
     except Exception:
         pass
 
@@ -1327,8 +1440,48 @@ def _update_city_travel_context(*, platform_key: str, chat_id: str, session_key:
         pass
 
 
-def _parking_selection(candidates: list[dict[str, Any]], text: str) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
+def _parking_free_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    status = str(candidate.get("parking_status") or "unverified")
+    if status == "official" and candidate.get("is_free") is True:
+        priority = 0
+    elif status == "user_confirmed" and candidate.get("is_free") is True:
+        priority = 1
+    elif status == "likely_free":
+        priority = 2
+    else:
+        priority = 9
+    return (priority, candidate.get("distance_m") is None, candidate.get("distance_m") or 0)
+
+
+def _free_parking_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            item for item in candidates
+            if item.get("eligible_for_recommendation") and (
+                (str(item.get("parking_status") or "") in {"official", "user_confirmed"} and item.get("is_free") is True)
+                or str(item.get("parking_status") or "") == "likely_free"
+            )
+        ],
+        key=_parking_free_key,
+    )
+
+
+def _parking_selection(candidates: list[dict[str, Any]], text: str) -> tuple[dict[str, Any] | None, str, dict[str, Any] | None]:
     eligible = [item for item in candidates if item.get("eligible_for_recommendation")]
+    if not eligible:
+        return None, "", None
+    if _PARKING_FREE_RE.search(text or ""):
+        free_candidates = _free_parking_candidates(eligible)
+        if not free_candidates:
+            return None, "", None
+        if _PARKING_CLOSEST_RE.search(text or ""):
+            selected = sorted(free_candidates, key=_parking_distance_key)[0]
+        else:
+            selected = free_candidates[0]
+        status = str(selected.get("parking_status") or "")
+        if status == "likely_free":
+            return selected, "Ближайший кандидат с признаком likely_free:", None
+        return selected, "Бесплатность подтверждена источником:", None
     if _PARKING_CLOSEST_RE.search(text or ""):
         sorted_items = sorted(eligible, key=_parking_distance_key)
         return sorted_items[0], "Самый близкий кандидат:", None
@@ -1348,6 +1501,50 @@ def _parking_selection(candidates: list[dict[str, Any]], text: str) -> tuple[dic
     return selected, "Самый близкий допустимый кандидат:", None
 
 
+def _parking_requested_count(text: str, *, default: int = 3) -> int:
+    value = str(text or "").casefold()
+    if re.search(r"\b(?:2|две|два)\b", value):
+        return 2
+    if re.search(r"\b(?:3|три)\b", value):
+        return 3
+    return default
+
+
+def _parking_choice_index(text: str) -> int | None:
+    value = str(text or "").casefold()
+    if re.search(r"\b(?:перв\w*|1)\b", value):
+        return 0
+    if re.search(r"\b(?:втор\w*|2)\b", value):
+        return 1
+    if re.search(r"\b(?:трет\w*|3)\b", value):
+        return 2
+    return None
+
+
+def _store_last_parking_selection(context: dict[str, Any], selected: list[dict[str, Any]]) -> None:
+    context["last_parking_selection_ids"] = [str(item.get("id") or _parking_candidate_id(item)) for item in selected]
+    shown = set(str(x) for x in context.get("shown_parking_ids") or [])
+    shown.update(context["last_parking_selection_ids"])
+    context["shown_parking_ids"] = sorted(shown)
+
+
+def _parking_options(candidates: list[dict[str, Any]], text: str, *, limit: int, exclude_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    eligible = [item for item in candidates if item.get("eligible_for_recommendation")]
+    excluded = exclude_ids or set()
+    eligible = [item for item in eligible if str(item.get("id") or _parking_candidate_id(item)) not in excluded]
+    if _PARKING_FREE_RE.search(text or ""):
+        preferred = _free_parking_candidates(eligible)
+        selected = preferred[:limit]
+        selected_ids = {str(item.get("id") or _parking_candidate_id(item)) for item in selected}
+        alternatives = [item for item in sorted(eligible, key=_parking_distance_key) if str(item.get("id") or _parking_candidate_id(item)) not in selected_ids]
+        return (selected + alternatives)[:limit]
+    if _PARKING_CLOSEST_RE.search(text or ""):
+        return sorted(eligible, key=_parking_distance_key)[:limit]
+    if _PARKING_CHEAP_RE.search(text or "") and any(_has_official_tariff(item) for item in eligible):
+        return sorted(eligible, key=_parking_cheapest_key)[:limit]
+    return sorted(eligible, key=_parking_rank_key)[:limit]
+
+
 def _deterministic_city_travel_followup(*, text: str, route: TaskRoute, platform_key: str, chat_id: str, session_key: str) -> dict | None:
     intent = _city_travel_followup_intent(text)
     if intent is None:
@@ -1355,43 +1552,67 @@ def _deterministic_city_travel_followup(*, text: str, route: TaskRoute, platform
     context = CityTravelContextStore().get(platform=platform_key, chat_id=str(chat_id), session_key=session_key)
     if context is None:
         return None
+    candidates = [item for item in context.get("parking_candidates") or [] if isinstance(item, dict)]
+    candidates = sorted(candidates, key=_parking_rank_key)
     if intent == "route_repeat":
         route_url = str(context.get("route_url") or "").strip()
         if not route_url:
             return early_response("Сохранённого URL маршрута нет. Пришлите полный запрос с точкой старта и назначением.", role=route.role, reason="deterministic city travel follow-up missing route url", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
         return early_response("Маршрут в Яндекс Картах:\n" + route_url, role=route.role, reason="deterministic city travel route url repeat", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
-    if intent == "parking_link":
-        candidates = sorted([item for item in context.get("parking_candidates") or [] if isinstance(item, dict)], key=_parking_rank_key)
+    if intent == "parking_choice":
+        selection_ids = [str(x) for x in context.get("last_parking_selection_ids") or []]
+        index = _parking_choice_index(text)
+        if index is None or index >= len(selection_ids):
+            return early_response("Не вижу выбранного номера парковки. Напиши, например: “построй маршрут до второй парковки”.", role=route.role, reason="deterministic city travel parking choice missing", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+        selected = next((item for item in candidates if str(item.get("id") or _parking_candidate_id(item)) == selection_ids[index]), None)
+        if selected is None:
+            return early_response("Выбранная парковка больше недоступна в текущем контексте.", role=route.role, reason="deterministic city travel parking choice stale", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+        return early_response(
+            f"Выбрана парковка №{index + 1}:\n" + _format_parking_candidate(selected, context=context, index=index + 1),
+            role=route.role,
+            reason="deterministic city travel selected parking route",
+            diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent, "selected_parking_index": index + 1},
+        )
+    if intent in {"parking_link", "parking_point"}:
         eligible = [item for item in candidates if item.get("eligible_for_recommendation")]
         if not eligible:
             return early_response("В сохранённом маршруте нет подходящих кандидатов парковки. Бесплатность или доступность не подтверждаю.", role=route.role, reason="deterministic city travel no eligible parking candidates", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
         selected, header, nearest = _parking_selection(candidates, text)
-        shown = set(str(x) for x in context.get("shown_parking_ids") or [])
-        shown.add(str(selected.get("id") or _parking_candidate_id(selected)))
-        context["shown_parking_ids"] = sorted(shown)
-        _update_city_travel_context(platform_key=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
-        body = [header, _format_parking_candidate(selected, index=1)]
+        if selected is None:
+            return early_response("Подтверждённых или вероятно бесплатных парковок в сохранённых данных нет. Могу показать ближайшие непроверенные кандидаты.", role=route.role, reason="deterministic city travel no free parking candidate", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+        output = [selected]
         if nearest is not None:
-            body.extend(["Самый близкий кандидат:", _format_parking_candidate(nearest, index=2)])
+            output.append(nearest)
+        _store_last_parking_selection(context, output)
+        _update_city_travel_context(platform_key=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
+        body = [header, _format_parking_candidate(selected, context=context, index=1)]
+        if nearest is not None:
+            body.extend(["Самый близкий кандидат:", _format_parking_candidate(nearest, context=context, index=2)])
         if _PARKING_CHEAP_RE.search(text or "") and not any(_has_official_tariff(item) for item in eligible):
             body.append("Официальных тарифов в сохранённых данных нет; likely_free не считаю доказанной нулевой ценой.")
-        return early_response("\n".join(body), role=route.role, reason="deterministic city travel parking link follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
-    if intent == "more_parking":
-        shown = set(str(x) for x in context.get("shown_parking_ids") or [])
-        candidates = sorted([item for item in context.get("parking_candidates") or [] if isinstance(item, dict)], key=_parking_rank_key)
-        selected = [item for item in candidates if str(item.get("id") or _parking_candidate_id(item)) not in shown][:3]
+        body.append("Перед парковкой проверь знаки, разметку, шлагбаум и платную зону.")
+        return early_response("\n\n".join(body), role=route.role, reason="deterministic city travel parking point follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+    if intent in {"parking_options", "more_parking"}:
+        exclude = set(str(x) for x in context.get("shown_parking_ids") or []) if intent == "more_parking" else set()
+        limit = _parking_requested_count(text, default=3)
+        selected = _parking_options(candidates, text, limit=limit, exclude_ids=exclude)
         if not selected:
             return early_response("Других сохранённых кандидатов парковки нет. Не буду выдумывать бесплатные места без источников.", role=route.role, reason="deterministic city travel no more parking candidates", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
-        for item in selected:
-            shown.add(str(item.get("id") or _parking_candidate_id(item)))
-        context["shown_parking_ids"] = sorted(shown)
+        _store_last_parking_selection(context, selected)
         _update_city_travel_context(platform_key=platform_key, chat_id=str(chat_id), session_key=session_key, context=context)
         count = len(selected)
-        body = [f"Показываю ещё {count} {_ru_plural(count, 'сохранённый вариант', 'сохранённых варианта', 'сохранённых вариантов')} парковки. likely_free не считаю официально бесплатной парковкой."]
+        if intent == "more_parking":
+            heading = f"Показываю ещё {count} {_ru_plural(count, 'сохранённый вариант', 'сохранённых варианта', 'сохранённых вариантов')} парковки."
+        else:
+            heading = f"Показываю {count} {_ru_plural(count, 'конкретный вариант', 'конкретных варианта', 'конкретных вариантов')} парковки."
+        body = [heading]
+        if _PARKING_FREE_RE.search(text or ""):
+            body.append("Сначала идут подтверждённо или вероятно бесплатные варианты; остальные не считаю бесплатными без доказательств.")
         if _PARKING_CHEAP_RE.search(text or "") and not any(_has_official_tariff(item) for item in candidates):
             body.append("Официальных тарифов в сохранённых данных нет; likely_free не считаю доказанной нулевой ценой.")
-        body.extend(_format_parking_candidate(item, index=index) for index, item in enumerate(selected, 1))
-        return early_response("\n\n".join(body), role=route.role, reason="deterministic city travel more parking follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent})
+        body.extend(_format_parking_candidate(item, context=context, index=index) for index, item in enumerate(selected, 1))
+        body.append("Перед парковкой проверь знаки, разметку, шлагбаум и платную зону.")
+        return early_response("\n\n".join(body), role=route.role, reason="deterministic city travel parking options follow-up", diagnostics={"tool_call_count": 0, "html_report_created": False, "travel_followup_intent": intent, "parking_options_count": count})
     if intent == "destination_clarification":
         start = str(context.get("start_text") or "").strip()
         if not start:
@@ -1400,7 +1621,7 @@ def _deterministic_city_travel_followup(*, text: str, route: TaskRoute, platform
     return None
 
 
-def _run_city_travel_trip_fast_path(text: str, route: TaskRoute, *, platform_key: str = "", chat_id: str = "", session_key: str = "") -> dict | None:
+def _run_city_travel_trip_fast_path(text: str, route: TaskRoute, *, platform_key: str = "", chat_id: str = "", session_key: str = "", sender_id: str = "") -> dict | None:
     if "city-travel-concierge" not in route.skill_names:
         return None
     if not travel_is_route_or_parking(text) or travel_needs_web_or_browser(text):
@@ -1409,6 +1630,18 @@ def _run_city_travel_trip_fast_path(text: str, route: TaskRoute, *, platform_key
     if parsed is None:
         return None
     start, destination = parsed
+    original_start = start
+    start_place_label = _personal_place_reference_label(start)
+    if start_place_label and platform_key and chat_id:
+        place = PersonalPlaceStore().get(platform=platform_key, chat_id=str(chat_id), sender_id=str(sender_id or ""), label=start_place_label)
+        if place is None:
+            return early_response(
+                f"{start_place_label} пока не сохранён. Пришли геолокацию и напиши “Запомни мой {start_place_label.casefold()}”.",
+                role=route.role,
+                reason="deterministic route missing personal place",
+                diagnostics={"tool_call_count": 0, "html_report_created": False, "personal_place_start": start_place_label},
+            )
+        start = f"{float(place['latitude']):.6f},{float(place['longitude']):.6f}"
     helper = _trip_helper_path()
     if not helper.exists():
         return None
@@ -1466,8 +1699,9 @@ def _run_city_travel_trip_fast_path(text: str, route: TaskRoute, *, platform_key
             chat_id=str(chat_id),
             session_key=session_key,
             payload=payload,
-            start=start,
+            start=original_start,
             destination=destination,
+            start_place_label=start_place_label,
         )
     return early_response(
         answer,
@@ -1714,6 +1948,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             platform_key=platform_key,
             chat_id=str(chat_id),
             session_key=session_key,
+            sender_id=str(msg_ctx.sender_id or ""),
         )
         if travel_fast_response is not None:
             return PreparedTaskTurn(

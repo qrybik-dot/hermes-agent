@@ -48,9 +48,34 @@ def _first_with_coordinates(section: dict[str, Any] | None) -> dict[str, Any] | 
     return None
 
 
+_COORDINATE_QUERY_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*[,;]\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def _direct_coordinate_place(query: str) -> dict[str, Any] | None:
+    match = _COORDINATE_QUERY_RE.fullmatch(query or "")
+    if match is None:
+        return None
+    lat = float(match.group(1))
+    lon = float(match.group(2))
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return {
+        "title": "Сохранённая точка",
+        "formatted": f"{lat:.6f},{lon:.6f}",
+        "coordinates": {"lat": lat, "lon": lon},
+        "source": "saved_coordinates",
+        "confidence": 1.0,
+        "verification_status": "user_confirmed",
+        "approximate_start": False,
+    }
+
+
 def _resolve_start(query: str, *, limit: int, timeout: float, urlopen=None) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[str]]:
     statuses: list[dict[str, Any]] = []
     degraded: list[str] = []
+    direct = _direct_coordinate_place(query)
+    if direct is not None:
+        return direct, [{"provider": "saved_coordinates", "ok": True}], degraded
     dadata = core.dadata_address(query, limit=limit, timeout=timeout, urlopen=urlopen)
     statuses.extend(_status_items(dadata))
     start = _first_with_coordinates(dadata)

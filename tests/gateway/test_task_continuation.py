@@ -1837,7 +1837,7 @@ def test_city_travel_parking_ux_plural_fallback_and_selection_reason(tmp_path, m
 
     more = prepare_task_turn(message="дай еще три варианта бесплатной или самой дешевой парковки", request_id="more", **common)
     more_text = more.early_response["final_response"]
-    assert "Показываю ещё 3 сохранённых варианта парковки" in more_text
+    assert "Показываю ещё 2 сохранённых варианта парковки" in more_text
     assert "сохранённ(ых)" not in more_text
     assert "кандидат(а/ов)" not in more_text
     assert "Официальных тарифов" in more_text
@@ -1956,3 +1956,114 @@ def test_bare_telegram_location_sentinel_has_no_old_prompt_in_adapter():
     assert "[Telegram location received]" in handler
     assert "Ask what they'd like to find nearby" not in handler
     assert "[The user shared a location pin.]" not in handler
+
+
+def test_city_travel_exact_parking_points_and_selected_route_from_saved_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    helper = state_dir / "skills" / "productivity" / "city-travel-concierge" / "scripts" / "city_travel_trip.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# helper", encoding="utf-8")
+
+    from gateway.task_runtime import PersonalPlaceStore
+
+    PersonalPlaceStore(state_dir / "state.db").upsert(
+        platform="telegram",
+        chat_id="1",
+        sender_id="42",
+        label="Дом",
+        latitude=55.92,
+        longitude=37.82,
+        payload={"source": "test"},
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "answer_ready": True,
+            "checked_at": "2026-07-02T10:00:00Z",
+            "approximate_start": False,
+            "traffic_status": "not_available",
+            "answer_text": "Маршрут: примерно 23 мин.\nЯндекс Карты: https://yandex.ru/route",
+            "resolved_start": {"title": "Сохранённая точка", "coordinates": {"lat": 55.92, "lon": 37.82}},
+            "resolved_destination": {"title": "Парк Останкино", "coordinates": {"lat": 55.824, "lon": 37.614}},
+            "coordinates": {"start": {"lat": 55.92, "lon": 37.82}, "destination": {"lat": 55.824, "lon": 37.614}},
+            "route": {"deep_links": {"yandex_maps": "https://yandex.ru/route"}},
+            "parking_candidates": [
+                {"title": "parking", "coordinates": {"lat": 55.8283386, "lon": 37.6013861}, "distance_m": 571, "parking_status": "likely_free", "eligible_for_recommendation": True, "deep_links": {"yandex_maps": "https://yandex.ru/maps/?text=parking"}, "parking_evidence": {"source": "osm", "fee": "no", "reason": "fee=no, не гарантия"}},
+                {"title": "parking", "address": {"street": None, "housenumber": None, "city": None}, "coordinates": {"lat": 55.8258147, "lon": 37.6089213}, "distance_m": 401, "parking_status": "unverified", "eligible_for_recommendation": True},
+                {"title": "parking", "coordinates": {"lat": 55.8323353, "lon": 37.6158610}, "distance_m": 480, "parking_status": "unverified", "eligible_for_recommendation": True},
+                {"title": "parking", "coordinates": {"lat": 55.8295978, "lon": 37.6190863}, "distance_m": 547, "parking_status": "unverified", "eligible_for_recommendation": True},
+            ],
+            "parking_statuses": ["likely_free", "unverified"],
+            "degraded_sections": [],
+            "provider_status": [],
+        }))
+
+    monkeypatch.setattr("gateway.task_runtime.subprocess.run", fake_run)
+    common = dict(
+        platform_key="telegram",
+        chat_id="1",
+        session_key="session-a",
+        session_id="session-a-id",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"],
+        message_context={"chat_id": "1", "sender_id": "42", "session_key": "session-a"},
+    )
+
+    route = prepare_task_turn(
+        message="Сколько ехать от моего дома до парка Останкино?",
+        request_id="parking-route-home",
+        **common,
+    )
+    assert route.task is None
+    assert route.early_response["api_calls"] == 0
+    assert route.early_response["diagnostics"]["tool_call_count"] == 1
+    assert len(calls) == 1
+    assert "55.920000,37.820000" in calls[0]
+
+    point = prepare_task_turn(
+        message="пришли конкретную локацию бесплатной парковки, нужную точку на карте ближайшую к парку",
+        request_id="parking-exact-point",
+        **common,
+    )
+    point_text = point.early_response["final_response"]
+    assert point.task is None
+    assert point.early_response["api_calls"] == 0
+    assert point.early_response["diagnostics"]["tool_call_count"] == 0
+    assert "pt=37.601386,55.828339" in point_text
+    assert "rtext=55.920000,37.820000~55.828339,37.601386" in point_text
+    assert "text=parking" not in point_text
+    assert "{'city'" not in point_text
+    assert len(calls) == 1
+
+    options = prepare_task_turn(
+        message="дай ещё три варианта на выбор",
+        request_id="parking-three-options",
+        **common,
+    )
+    options_text = options.early_response["final_response"]
+    assert options.task is None
+    assert options.early_response["api_calls"] == 0
+    assert options.early_response["diagnostics"]["tool_call_count"] == 0
+    assert options.early_response["diagnostics"]["parking_options_count"] == 3
+    assert options_text.count("Открыть точку в Яндекс Картах:") == 3
+    assert options_text.count("Построить маршрут от дома:") == 3
+    assert "55.828339,37.601386" not in options_text
+    assert len(calls) == 1
+
+    selected = prepare_task_turn(
+        message="построй маршрут до второй парковки",
+        request_id="parking-route-second",
+        **common,
+    )
+    selected_text = selected.early_response["final_response"]
+    assert selected.task is None
+    assert selected.early_response["api_calls"] == 0
+    assert selected.early_response["diagnostics"]["tool_call_count"] == 0
+    assert selected.early_response["diagnostics"]["selected_parking_index"] == 2
+    assert "rtext=55.920000,37.820000~55.832335,37.615861" in selected_text
+    assert len(calls) == 1

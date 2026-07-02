@@ -1,7 +1,7 @@
 ---
 name: city-travel-concierge
 description: "City travel concierge: addresses, routes, weather, events, nearby places, parking candidates, and map links."
-version: 0.4.2
+version: 0.4.3
 author: Hermes local
 license: MIT
 platforms: [linux, macos, windows]
@@ -121,6 +121,10 @@ Parking statuses:
 Do not recommend `access=private`, `customers`, `permit`, `residents`, or other
 restricted candidates. Every answer must include the warning to check signs,
 markings, barriers, and the paid-parking layer before leaving the car.
+For parking follow-ups, reuse the saved trip context instead of geocoding the
+short follow-up again. Return a coordinate pin link and, when start coordinates
+are available, a direct Yandex route to each parking candidate. A request such
+as “route to the second parking option” must use the last displayed option list.
 For Moscow paid parking, use the official city open-data source
 `data.mos.ru/opendata/623` (`Платные парковки на улично-дорожной сети`) or the
 same dataset through an open raw API. Treat it only as official paid-zone
