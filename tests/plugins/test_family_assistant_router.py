@@ -9,7 +9,7 @@ from plugins.platforms.family_assistant_router import (
 )
 
 
-def _event(text: str, *, reply: str = "", media: tuple[str, ...] = ()): 
+def _event(text: str, *, reply: str = "", media: tuple[str, ...] = ()):
     return SimpleNamespace(
         text=text,
         source=SimpleNamespace(platform=SimpleNamespace(value="telegram")),
@@ -58,6 +58,21 @@ def test_screenshot_request_preserves_media_paths_and_family_contract():
     assert "/tmp/medical-2.png" in result["text"]
     assert "family_vision_analyze" in event.channel_prompt
     assert "Google Calendar" in event.channel_prompt
+
+
+def test_calendar_word_in_image_request_is_deferred_until_vision():
+    event = _event(
+        "Посмотри скриншот и поставь все приёмы в календарь",
+        media=("/tmp/medical.png",),
+    )
+
+    result = _rewrite_family_event(event=event)
+
+    assert result["action"] == "rewrite"
+    assert "семейное расписание" in result["text"]
+    assert "календарь" not in result["text"].lower()
+    assert "google-workspace" in event.auto_skill
+    assert "family_vision_analyze" in event.channel_prompt
 
 
 def test_reply_summary_is_merged_into_the_followup_turn():
