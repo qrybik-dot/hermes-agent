@@ -30,6 +30,7 @@ class FailoverReason(enum.Enum):
 
     # Billing / quota
     billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
+    usage_limit_exhausted = "usage_limit_exhausted"  # confirmed subscription/account window exhaustion
     rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
     # Upstream model rate-limited (aggregator 429) — fallback to a different
     # model, NOT credential rotation. The user's key is healthy.
@@ -900,6 +901,16 @@ def _classify_by_status(
         )
 
     if status_code == 429:
+        if (
+            error_code.lower() in {"usage_limit_reached", "usage_limit_exhausted"}
+            or (provider == "openai-codex" and "usage limit has been reached" in error_msg)
+        ):
+            return result_fn(
+                FailoverReason.usage_limit_exhausted,
+                retryable=False,
+                should_rotate_credential=False,
+                should_fallback=True,
+            )
         # Already checked long_context_tier above. Some providers (notably
         # Z.AI / Zhipu) reuse HTTP 429 for server-wide overload — same status
         # code as a true per-credential rate limit, but the credential is

@@ -212,6 +212,43 @@ class TestFallbackChainAdvancement:
             assert agent.api_mode == "anthropic_messages"
 
 
+class TestFallbackReasonFiltering:
+    def test_restricted_entry_keeps_transient_rate_limit_locked(self):
+        from agent.error_classifier import FailoverReason
+        fb = {
+            "provider": "custom",
+            "model": "gemini-3.1-pro-low",
+            "reasons": ["usage_limit_exhausted", "auth", "model_not_found"],
+        }
+        agent = _make_agent(fallback_model=[fb])
+        assert agent._has_pending_fallback(FailoverReason.rate_limit) is False
+        assert agent._try_activate_fallback(FailoverReason.rate_limit) is False
+        assert agent._fallback_index == 0
+
+    def test_restricted_entry_activates_for_usage_exhaustion(self):
+        from agent.error_classifier import FailoverReason
+        fb = {
+            "provider": "custom",
+            "model": "gemini-3.1-pro-low",
+            "reasons": ["usage_limit_exhausted"],
+        }
+        agent = _make_agent(fallback_model=[fb])
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="http://127.0.0.1:8317/v1"), "gemini-3.1-pro-low"),
+        ):
+            assert agent._has_pending_fallback(FailoverReason.usage_limit_exhausted) is True
+            assert agent._try_activate_fallback(FailoverReason.usage_limit_exhausted) is True
+            assert agent.model == "gemini-3.1-pro-low"
+            assert agent.provider == "custom"
+            assert agent._fallback_index == 1
+
+    def test_unrestricted_entries_remain_backwards_compatible(self):
+        fb = {"provider": "openai", "model": "gpt-4o"}
+        agent = _make_agent(fallback_model=[fb])
+        assert agent._has_pending_fallback() is True
+
+
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 
 

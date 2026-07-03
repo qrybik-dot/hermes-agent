@@ -1031,7 +1031,7 @@ def run_conversation(
                             f"⏳ {_nous_msg} Trying fallback..."
                         )
                         agent._buffer_status(f"⏳ {_nous_msg}")
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(reason=classified.reason):
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
                             retry_count = 0
@@ -1369,7 +1369,7 @@ def run_conversation(
                     # rather than retrying with extended backoff.
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -1442,7 +1442,7 @@ def run_conversation(
                         # Try fallback before giving up
                         if agent._has_pending_fallback():
                             agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(reason=classified.reason):
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
                             retry_count = 0
@@ -1591,7 +1591,7 @@ def run_conversation(
                         agent._buffer_status(
                             "⚠️ Model declined to respond (safety refusal) — trying fallback..."
                         )
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -1760,7 +1760,7 @@ def run_conversation(
                             agent._emit_status(
                                 "Content filter terminated stream; switching to fallback..."
                             )
-                            if agent._try_activate_fallback():
+                            if agent._try_activate_fallback(reason=classified.reason):
                                 # Roll the partial content (if any was already
                                 # appended in a prior continuation pass) back to
                                 # the last clean turn so the fallback provider
@@ -3039,6 +3039,7 @@ def run_conversation(
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                     FailoverReason.upstream_rate_limit,
+                    FailoverReason.usage_limit_exhausted,
                 }
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
@@ -3048,7 +3049,7 @@ def run_conversation(
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)
                 )
-                if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
+                if _should_fallback and agent._has_pending_fallback(reason=classified.reason):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
@@ -3079,6 +3080,10 @@ def run_conversation(
                         elif classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        elif classified.reason == FailoverReason.usage_limit_exhausted:
+                            agent._buffer_status(
+                                "⚠️ Codex usage window exhausted — switching to approved fallback..."
                             )
                         elif _is_transport_failure:
                             agent._buffer_status(
@@ -3604,7 +3609,7 @@ def run_conversation(
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -3760,7 +3765,7 @@ def run_conversation(
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -4840,7 +4845,7 @@ def run_conversation(
                             "⚠️ Model returning empty responses — "
                             "switching to fallback provider..."
                         )
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(reason=classified.reason):
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
                             agent._empty_content_retries = 0
