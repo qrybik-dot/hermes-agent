@@ -1,0 +1,25 @@
+model_roles:
+  expert_analysis:
+    provider: custom
+    model: gemini-3.1-pro-low
+agent:
+  role_max_turns:
+    expert_analysis: 24
+delegation:
+  max_iterations: 8
+  child_timeout_seconds: 600
+  max_concurrent_children: 1
+  max_spawn_depth: 1
+  orchestrator_enabled: false
+routing_policy:
+  deterministic_classifier: true
+  separate_llm_classifier_call: false
+  max_model_fallbacks: 1
+fallback_policy:
+  rule: one qualified fallback per task role
+  coding_and_server_debug: read-only fallback before any tool call
+  free_public_models: disabled
+  empty_response_retries: 1
+runtime_limits:
+  agent_cache_max_size: 12
+  agent_cache_idle_ttl_seconds: 1200

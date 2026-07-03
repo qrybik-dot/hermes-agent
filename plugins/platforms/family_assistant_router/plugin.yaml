@@ -1,0 +1,13 @@
+name: family-assistant-router
+label: Family assistant router
+kind: platform
+version: 1.0.0
+description: >
+  Telegram family-assistant routing helper. Preserves reply and image context,
+  routes memory and medical requests to quality workflows, and exposes a
+  deterministic vision extraction tool without adding another daemon.
+author: Homelander project
+provides_tools:
+  - family_vision_analyze
+provides_hooks:
+  - pre_gateway_dispatch

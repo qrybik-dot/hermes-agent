@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "milestone_id": "YYYY-MM-DD--slug",
+  "created_at": "YYYY-MM-DDTHH:MM:SSZ",
+  "requested_by_user": true,
+  "source": {
+    "repository": null,
+    "branch": null,
+    "commit": null,
+    "remote_divergence": null
+  },
+  "evidence": {
+    "tests": [],
+    "runtime": [],
+    "delivery": [],
+    "live_acceptance": []
+  },
+  "target": "Personal Anton/Projects/Project Milestone YYYY-MM-DD — Topic.md",
+  "backlinks": [],
+  "validation": {
+    "frontmatter": false,
+    "allowlisted_target": false,
+    "regular_markdown": false,
+    "no_conflict_markers": false,
+    "no_raw_logs": false,
+    "no_duplicate": false,
+    "size_ok": false,
+    "claims_verified": false
+  },
+  "promotion": {
+    "status": "draft",
+    "backup_dir": null,
+    "vault_sha256": null,
+    "sync_state": "not_checked"
+  }
+}
