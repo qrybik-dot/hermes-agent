@@ -14,6 +14,10 @@ _CONTINUATION_RE = re.compile(
     r"ещ[её]\b|а\s+теперь\b|после\s+этого\b|продолж|уточнен|дополнен)",
     re.I,
 )
+_CALENDAR_WORD_RE = re.compile(
+    r"google\s+calendar|календар(?:ь|я|е|ю|ём|ем)",
+    re.I,
+)
 
 _FAMILY_VISION_SCHEMA = {
     "name": "family_vision_analyze",
@@ -119,10 +123,14 @@ def _rewrite_family_event(*, event: Any, **_: Any) -> dict[str, str]:
         part for part in (existing_prompt, _channel_contract(intent)) if part
     )
 
+    routed_original = original
+    if intent.image and _CALENDAR_WORD_RE.search(routed_original):
+        routed_original = _CALENDAR_WORD_RE.sub("семейное расписание", routed_original)
+
     parts: list[str] = []
     if reply and (_CONTINUATION_RE.search(original) or getattr(event, "reply_to_message_id", None)):
         parts.append("Продолжай текущую задачу с учётом нового сообщения.")
-    parts.append(original)
+    parts.append(routed_original)
     if reply:
         parts.append("Контекст сообщения, на которое ответил пользователь:\n" + reply)
     if media_urls:
