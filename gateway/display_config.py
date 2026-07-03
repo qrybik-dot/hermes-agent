@@ -105,16 +105,15 @@ _TIER_MINIMAL = {
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
-    # Telegram is usually a mobile inbox: keep tool_progress quiet and skip
-    # the verbose busy-ack iteration counter, but DO surface real mid-turn
-    # assistant commentary (interim_assistant_messages) and DO send periodic
-    # heartbeats (long_running_notifications) so the user has signal between
-    # turn start and final answer. Otherwise it looks like "typing..." for
-    # 30 minutes with nothing happening. Opt in to verbose iteration detail
-    # via display.platforms.telegram.busy_ack_detail / tool_progress.
+    # Telegram is usually a mobile inbox: keep tool_progress quiet and keep
+    # natural assistant commentary out of chat by default. Long-running
+    # notifications remain on so users get one editable status bubble instead
+    # of detailed reasoning/progress messages. Opt in to verbose commentary or
+    # iteration detail via display.platforms.telegram.*.
     "telegram":    {
         **_TIER_HIGH,
         "tool_progress": "off",
+        "interim_assistant_messages": False,
         "busy_ack_detail": False,
     },
     # Discord has a native "subtext" primitive (-# small grey text) that reads
