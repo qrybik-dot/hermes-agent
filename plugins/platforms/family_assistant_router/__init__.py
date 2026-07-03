@@ -127,7 +127,7 @@ def _rewrite_family_event(*, event: Any, **_: Any) -> dict[str, str]:
     if intent.image and _CALENDAR_WORD_RE.search(routed_original):
         routed_original = _CALENDAR_WORD_RE.sub("семейное расписание", routed_original)
 
-    parts: list[str] = []
+    parts: list[str] = ["task_role: planning"]
     if reply and (_CONTINUATION_RE.search(original) or getattr(event, "reply_to_message_id", None)):
         parts.append("Продолжай текущую задачу с учётом нового сообщения.")
     parts.append(routed_original)
@@ -139,8 +139,8 @@ def _rewrite_family_event(*, event: Any, **_: Any) -> dict[str, str]:
             + "\n".join(f"- {path}" for path in media_urls)
         )
     parts.append(
-        "Внутренний маршрут: это большая задача семейного ассистента; разложи её "
-        "на этапы внутри и выполни, не требуя от пользователя шаблонного промпта."
+        "Выполни задачу целиком, не требуя от пользователя шаблонного промпта. "
+        "Внутренние этапы не показывай, если они не нужны для короткого статуса."
     )
     if intent.memory_write or intent.memory_readback:
         parts.append("Нужна постоянная память и проверка записи из того же хранилища.")
