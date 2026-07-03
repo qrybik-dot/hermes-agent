@@ -146,7 +146,7 @@ def test_non_forum_group_reply_thread_id_does_not_fork_session_key():
         caption=None,
         chat=SimpleNamespace(
             id=-100123,
-            type=telegram_mod.ChatType.SUPERGROUP,
+            type="supergroup",
             is_forum=False,
             title="Regular group",
         ),
@@ -180,7 +180,7 @@ def test_forum_group_topic_message_preserves_thread_session_key():
         caption=None,
         chat=SimpleNamespace(
             id=-100123,
-            type=telegram_mod.ChatType.SUPERGROUP,
+            type="supergroup",
             is_forum=True,
             title="Forum group",
         ),
@@ -210,7 +210,7 @@ def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
         caption=None,
         chat=SimpleNamespace(
             id=-100123,
-            type=telegram_mod.ChatType.SUPERGROUP,
+            type="supergroup",
             is_forum=True,
             title="Forum group",
         ),

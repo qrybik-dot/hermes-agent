@@ -486,6 +486,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Deterministic media fast-path state, scoped by chat and thread.
+        self._latest_media_by_chat: Dict[str, Dict[str, Any]] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -7023,6 +7025,49 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _try_handle_mosreg_totp_reply(self, msg: Message) -> bool:
+        """Consume six-digit Mosreg replies before they reach the model."""
+        text = str(getattr(msg, "text", "") or "").strip()
+        if not re.fullmatch(r"\d{6}", text):
+            return False
+        reply = getattr(msg, "reply_to_message", None)
+        if reply is None:
+            return False
+        reply_user = getattr(reply, "from_user", None)
+        if reply_user is not None and not bool(getattr(reply_user, "is_bot", False)):
+            return False
+        chat = getattr(msg, "chat", None)
+        user = getattr(msg, "from_user", None)
+        if chat is None or user is None:
+            return False
+        try:
+            from gateway.mosreg_totp_bridge import TotpBridgeStore
+            result = TotpBridgeStore().put_reply_value({
+                "telegram_user_id": str(getattr(user, "id", "")),
+                "chat_id": str(getattr(chat, "id", "")),
+                "reply_to_message_id": str(getattr(reply, "message_id", "")),
+                "value_kind": "totp",
+                "value": text,
+            })
+        except Exception:
+            logger.warning("[%s] Mosreg TOTP bridge rejected reply", self.name)
+            result = {"ok": False}
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        response = "Код принят. Продолжаю вход." if result.get("ok") else "Код не принят или истёк. Запросите вход заново."
+        try:
+            await self._send_message_with_thread_fallback(
+                chat_id=chat.id,
+                text=response,
+                reply_to_message_id=getattr(reply, "message_id", None),
+                **self._notification_kwargs(None),
+            )
+        except Exception:
+            pass
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -7044,11 +7089,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        if await self._try_handle_mosreg_totp_reply(msg):
+            return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
-        await self._ensure_forum_commands(update.message)
+        from gateway.telegram_media_fastpath import handle_media_fast_path
+        if await handle_media_fast_path(self, msg):
+            return
+        await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
