@@ -1951,7 +1951,7 @@ def test_parking_followup_requires_explicit_parking_word_and_uses_point_url(tmp_
 
 
 def test_bare_telegram_location_sentinel_has_no_old_prompt_in_adapter():
-    source = Path("gateway/platforms/telegram.py").read_text(encoding="utf-8")
+    source = Path("plugins/platforms/telegram/adapter.py").read_text(encoding="utf-8")
     handler = source[source.index("async def _handle_location_message"):source.index("# ------------------------------------------------------------------", source.index("async def _handle_location_message"))]
     assert "[Telegram location received]" in handler
     assert "Ask what they'd like to find nearby" not in handler

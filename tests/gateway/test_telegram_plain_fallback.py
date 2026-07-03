@@ -5,7 +5,7 @@ import telegram.error as telegram_error
 from telegram.error import NetworkError
 
 from gateway.config import PlatformConfig
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class _ParseBadRequest(NetworkError):

@@ -39,6 +39,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
@@ -57,17 +58,81 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.telegram_task_status import (
+    FinalDeliveryDeduper,
+    TelegramTaskStatusState,
+    should_surface_telegram_interim,
+    status_action_for_tool,
+    status_plan_from_tool_args,
+    status_steps_from_request,
+    verdict_from_text,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
 # memory providers, etc.).  LRU order + idle TTL eviction are enforced
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
-_AGENT_CACHE_MAX_SIZE = 128
-_AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+_AGENT_CACHE_MAX_SIZE = 12
+_AGENT_CACHE_IDLE_TTL_SECS = 1200.0  # evict agents idle for >20m on the 1 GB VPS
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_FINAL_DELIVERY_DEDUPER = FinalDeliveryDeduper()
+
+
+def _final_delivery_task_id(agent_result: dict[str, Any]) -> str:
+    return str(agent_result.get("task_id") or "")
+
+
+def _format_background_review_notification(message: str) -> Optional[str]:
+    """Render a short Russian notice for successful background learning actions."""
+    text = str(message or "").strip()
+    text = re.sub(
+        r"^\s*💾\s*(?:Self-improvement review:\s*)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not text:
+        return None
+
+    rendered: list[str] = []
+    for raw_action in re.split(r"\s+·\s+", text):
+        action = raw_action.strip().rstrip(".")
+        lower = action.lower()
+        if lower == "memory updated":
+            rendered.append("🧠 Память обновлена")
+            continue
+        if lower == "user profile updated":
+            rendered.append("👤 Профиль обновлён")
+            continue
+
+        skill_match = re.fullmatch(
+            r"Skill ['\"](.+?)['\"] (created|updated|patched)",
+            action,
+            flags=re.IGNORECASE,
+        )
+        if skill_match:
+            skill_name = skill_match.group(1).strip()[:80]
+            verb = skill_match.group(2).lower()
+            if verb == "created":
+                rendered.append(f"🛠 Создан навык: {skill_name}")
+            else:
+                rendered.append(f"🛠 Обновлён навык: {skill_name}")
+            continue
+
+        if "memory" in lower:
+            rendered.append("🧠 Память обновлена")
+        elif "profile" in lower:
+            rendered.append("👤 Профиль обновлён")
+        elif "skill" in lower:
+            rendered.append("🛠 Навык обновлён")
+        else:
+            rendered.append("🧠 Самообучение обновлено")
+
+    return " · ".join(dict.fromkeys(rendered)) if rendered else None
+
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
@@ -898,6 +963,57 @@ def _select_cached_agent_history(
     if isinstance(live_history, list) and len(live_history) > len(persisted_history):
         return list(live_history)
     return persisted_history
+
+def _build_simple_no_tools_history(
+    agent_history: List[Dict[str, Any]],
+    *,
+    max_messages: int = 16,
+) -> List[Dict[str, Any]]:
+    """Keep a clean text tail for simple routes without execution tools.
+
+    Historical tool protocol is a semantic boundary: text before the last
+    tool/tool-call belongs to an older technical task and must not steer a new
+    greeting or other short ordinary message. The stored transcript is not
+    modified; this projection is API-only.
+    """
+    technical_boundary = -1
+    for index, msg in enumerate(agent_history or []):
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if (
+            msg.get("role") in {"tool", "function"}
+            or bool(msg.get("tool_calls"))
+            or bool(msg.get("tool_call_id"))
+            or (
+                msg.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith(
+                    "You've reached the maximum number of tool-calling iterations allowed."
+                )
+            )
+        ):
+            technical_boundary = index
+
+    source = (agent_history or [])[technical_boundary + 1:]
+    plain_history: List[Dict[str, Any]] = []
+    for msg in source:
+        if not isinstance(msg, dict) or msg.get("role") not in {"user", "assistant"}:
+            continue
+        if msg.get("tool_calls") or msg.get("tool_call_id"):
+            continue
+        content = msg.get("content")
+        if content in (None, "", []):
+            continue
+        clean = {"role": msg["role"], "content": content}
+        if plain_history and plain_history[-1]["role"] == clean["role"]:
+            plain_history[-1] = clean
+        else:
+            plain_history.append(clean)
+
+    while plain_history and plain_history[-1]["role"] == "user":
+        plain_history.pop()
+    return plain_history[-max(1, int(max_messages)) :]
 
 
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
@@ -1746,6 +1862,97 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
             continue
         return f"{platform.value}: open policy without allow-all opt-in"
     return None
+
+def _safe_int_metric(value: Any, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return default
+
+
+def _gateway_final_status(agent_result: Dict[str, Any]) -> str:
+    if agent_result.get("interrupted"):
+        return "interrupted"
+    if agent_result.get("failed"):
+        return "failed"
+    if agent_result.get("partial"):
+        return "partial"
+    return "success"
+
+
+def _build_gateway_request_metrics(
+    *,
+    request_id: str,
+    received_at: str,
+    completed_at: str,
+    total_ms: int,
+    agent_result: Dict[str, Any],
+    telegram_send_ms: Optional[int] = None,
+) -> Dict[str, Any]:
+    diagnostics = agent_result.get("diagnostics") or {}
+    fallback_reason = agent_result.get("fallback_reason")
+    if not fallback_reason and _gateway_final_status(agent_result) != "success":
+        fallback_reason = agent_result.get("error") or agent_result.get("interrupt_message")
+    return {
+        "request_id": request_id,
+        "received_at": received_at,
+        "completed_at": completed_at,
+        "total_ms": _safe_int_metric(total_ms),
+        "gateway_overhead_ms": max(
+            0,
+            _safe_int_metric(total_ms)
+            - _safe_int_metric(agent_result.get("llm_total_ms", 0))
+            - _safe_int_metric(diagnostics.get("tool_total_ms", 0)),
+        ),
+        "task_level": agent_result.get("task_level"),
+        "task_id": agent_result.get("task_id"),
+        "routing_reason": agent_result.get("routing_reason"),
+        "selected_toolsets": list(agent_result.get("selected_toolsets") or []),
+        "selected_model": agent_result.get("selected_model"),
+        "selected_provider": agent_result.get("selected_provider"),
+        "fallback_used": bool(agent_result.get("fallback_used")),
+        "resolved_model": agent_result.get("model"),
+        "provider": agent_result.get("provider"),
+        "llm_call_count": _safe_int_metric(agent_result.get("api_calls", 0)),
+        "llm_total_ms": _safe_int_metric(agent_result.get("llm_total_ms", 0)),
+        "llm_timing_source": diagnostics.get("llm_timing_source"),
+        "tool_call_count": _safe_int_metric(diagnostics.get("tool_call_count", 0)),
+        "tool_total_ms": _safe_int_metric(diagnostics.get("tool_total_ms", 0)),
+        "agent_cache_status": diagnostics.get("agent_cache_status"),
+        "agent_prepare_ms": _safe_int_metric(diagnostics.get("agent_prepare_ms", 0)),
+        "agent_init_ms": _safe_int_metric(diagnostics.get("agent_init_ms", 0)),
+        "agent_post_ms": _safe_int_metric(diagnostics.get("agent_post_ms", 0)),
+        "browser_call_count": _safe_int_metric(diagnostics.get("browser_call_count", 0)),
+        "browser_total_ms": _safe_int_metric(diagnostics.get("browser_total_ms", 0)),
+        "self_improvement_call_count": _safe_int_metric(diagnostics.get("self_improvement_call_count", 0)),
+        "self_improvement_total_ms": _safe_int_metric(diagnostics.get("self_improvement_total_ms", 0)),
+        "telegram_send_ms": telegram_send_ms,
+        "fallback_reason": fallback_reason,
+        "final_status": _gateway_final_status(agent_result),
+    }
+
+
+def _compact_gateway_metrics(full: Dict[str, Any], agent_result: Dict[str, Any]) -> Dict[str, Any]:
+    compact = {
+        "request_id": full.get("request_id"),
+        "status": full.get("final_status"),
+        "role": full.get("task_level"),
+        "model": full.get("resolved_model"),
+        "provider": full.get("provider"),
+        "cache": full.get("agent_cache_status"),
+        "llm_calls": full.get("llm_call_count"),
+        "tool_calls": full.get("tool_call_count"),
+        "total_ms": full.get("total_ms"),
+        "llm_ms": full.get("llm_total_ms"),
+        "tool_ms": full.get("tool_total_ms"),
+        "overhead_ms": full.get("gateway_overhead_ms"),
+    }
+    if full.get("fallback_used"):
+        compact["fallback"] = full.get("fallback_reason") or True
+    task_id = agent_result.get("task_id")
+    if task_id:
+        compact["task_id"] = task_id
+    return {key: value for key, value in compact.items() if value is not None}
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -3645,14 +3852,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
-        """Build the effective model/runtime config for a single turn.
-
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
-        """
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        role: str | None = None,
+        routing_reason: str | None = None,
+        user_config: dict | None = None,
+    ) -> dict:
+        """Build the effective model/runtime config for a single turn."""
         from hermes_cli.models import resolve_fast_mode_overrides
 
         runtime = {
@@ -3665,9 +3875,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+        fallback_used = False
+        selected_role = role or "simple"
+        if selected_role and selected_role != "no_llm" and isinstance(user_config, dict):
+            role_cfg = (user_config.get("model_roles") or {}).get(selected_role)
+            if isinstance(role_cfg, dict):
+                role_provider = str(role_cfg.get("provider") or "").strip()
+                role_model = str(role_cfg.get("model") or "").strip()
+                if role_model:
+                    try:
+                        role_runtime = dict(runtime)
+                        if role_provider and role_provider not in {"", "none"}:
+                            from hermes_cli.runtime_provider import resolve_runtime_provider
+                            role_runtime = resolve_runtime_provider(requested=role_provider)
+                        for key in ("api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "max_tokens"):
+                            if role_runtime.get(key) is not None:
+                                runtime[key] = role_runtime.get(key)
+                        model = role_model
+                    except Exception as exc:
+                        fallback_used = True
+                        logger.warning(
+                            "task routing fallback: role=%s provider=%s model=%s error=%s",
+                            selected_role, role_provider, role_model, exc,
+                        )
         route = {
             "model": model,
             "runtime": runtime,
+            "task_role": selected_role,
+            "routing_reason": routing_reason or "",
+            "fallback_used": fallback_used,
             "signature": (
                 model,
                 runtime["provider"],
@@ -3675,6 +3911,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                selected_role,
             ),
         }
 
@@ -9135,6 +9372,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
 
+        # HERMES_LOCAL_NO_LLM_PREEMPT: let explicitly configured local quick
+        # commands override built-ins. This keeps family task reads/writes off
+        # the agent loop and avoids LLM calls for deterministic Telegram commands.
+        if command:
+            if isinstance(self.config, dict):
+                _nl_cfg = self.config
+            else:
+                _nl_cfg = getattr(self.config, "__dict__", {}) or {}
+            _nl_commands = set(_nl_cfg.get("no_llm_commands", []) or [])
+            _nl_qcmds = _nl_cfg.get("quick_commands", {}) or {}
+            if command in _nl_commands and isinstance(_nl_qcmds, dict) and command in _nl_qcmds:
+                _nl_qcmd = _nl_qcmds[command]
+                if _nl_qcmd.get("type") == "exec":
+                    _nl_exec_cmd = _nl_qcmd.get("command", "")
+                    if _nl_exec_cmd:
+                        try:
+                            from tools.environments.local import _sanitize_subprocess_env
+                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+                            sanitized_env["HERMES_QUICK_ARGS"] = event.get_command_args().strip()
+                            import shlex
+                            _nl_argv = shlex.split(_nl_exec_cmd)
+                            if not _nl_argv or not _nl_argv[0].startswith("/home/hermes/.hermes/bin/"):
+                                return "Quick command denied: command is outside the approved Hermes bin directory."
+                            proc = await asyncio.create_subprocess_exec(
+                                *_nl_argv,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                env=sanitized_env,
+                            )
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            output = (stdout or stderr).decode().strip()
+                            if output:
+                                from agent.redact import redact_sensitive_text
+                                output = redact_sensitive_text(output)
+                            return output if output else "Command returned no output."
+                        except asyncio.TimeoutError:
+                            return "Quick command timed out (30s)."
+                        except Exception as e:
+                            return f"Quick command error: {e}"
+
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
         # vs group). When unset → backward-compat: every allowed user can
@@ -9253,6 +9530,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
+
+        if canonical == "memory_search":
+            return await self._handle_memory_search_command(event)
 
         if canonical == "memory":
             return await self._handle_memory_command(event)
@@ -10128,13 +10408,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
-        _msg_start_time = time.time()
+        _msg_start_time = time.monotonic()
+        _request_id = uuid.uuid4().hex[:12]
+        _received_at = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         _reply_id = getattr(event, "reply_to_message_id", None)
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+            "inbound message: request_id=%s platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+            _request_id,
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
@@ -10905,6 +11188,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+message_context={
+                    "current_text": getattr(event, "text", None) or message_text,
+                    "current_message_id": getattr(event, "message_id", None),
+                    "chat_id": getattr(source, "chat_id", None),
+                    "sender_id": getattr(source, "user_id", None),
+                    "update_id": getattr(event, "platform_update_id", None),
+                    "reply_text": getattr(event, "reply_to_text", None),
+                    "reply_caption": getattr(event, "reply_to_caption", None),
+                    "reply_message_id": getattr(event, "reply_to_message_id", None),
+                    "reply_sender_id": getattr(event, "reply_to_sender_id", None),
+                    "location": (getattr(event, "metadata", None) or {}).get("telegram_location"),
+                    "reply_location": (getattr(event, "metadata", None) or {}).get("telegram_reply_location"),
+                    "session_key": session_key,
+                },
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -10952,12 +11249,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
-            _response_time = time.time() - _msg_start_time
+            _response_time = time.monotonic() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
+            _diagnostics = agent_result.get("diagnostics") or {}
+            _tool_call_count = _safe_int_metric(_diagnostics.get("tool_call_count", 0))
             _resp_len = len(response)
             logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-                _platform_name, source.chat_id or "unknown",
+                "response ready: request_id=%s platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                _request_id, _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len,
             )
 
@@ -10993,6 +11292,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
+
+            # The final status edit is registered only after the response has
+            # been normalized, then fires after the main answer is delivered.
+            _final_status_key = str(agent_result.get("task_status_final_key") or "")
+            _final_status_content = str(agent_result.get("task_status_final_content") or "")
+            _final_status_adapter = self.adapters.get(source.platform)
+            if (
+                response and not _intentional_silence and _final_status_key and _final_status_content
+                and _final_status_adapter is not None and session_key
+            ):
+                _final_status_meta = self._thread_metadata_for_source(
+                    source, self._reply_anchor_for_event(event),
+                )
+
+                async def _finalize_task_status_after_answer() -> None:
+                    await _send_or_update_status_coro(
+                        _final_status_adapter, source.chat_id, _final_status_key,
+                        _final_status_content, _final_status_meta,
+                    )
+
+                if getattr(type(_final_status_adapter), "register_post_delivery_callback", None) is not None:
+                    _final_status_adapter.register_post_delivery_callback(
+                        session_key,
+                        _finalize_task_status_after_answer,
+                        generation=run_generation,
+                    )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -11074,12 +11399,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    elapsed_seconds=_response_time,
+                    llm_call_count=_api_calls,
+                    tool_call_count=_tool_call_count,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            _footer_role = str(agent_result.get("task_level") or "")
+            _footer_allowed = _footer_role in {"coding", "server_debug", "planning", "long_context"}
+            if (
+                _footer_line and _footer_allowed and response
+                and not agent_result.get("already_sent") and not _intentional_silence
+            ):
                 response = f"{response}\n\n{_footer_line}"
+            else:
+                _footer_line = ""
+
+            try:
+                _metric_record = _build_gateway_request_metrics(
+                    request_id=_request_id,
+                    received_at=_received_at,
+                    completed_at=datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+                    total_ms=int(_response_time * 1000),
+                    agent_result=agent_result,
+                    telegram_send_ms=None,
+                )
+                logger.info(
+                    "gateway_request_metrics %s",
+                    json.dumps(
+                        _compact_gateway_metrics(_metric_record, agent_result),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                )
+                logger.debug(
+                    "gateway_request_metrics_debug %s",
+                    json.dumps(_metric_record, ensure_ascii=False, sort_keys=True),
+                )
+            except Exception as _metrics_err:
+                logger.debug("gateway request metrics build failed: %s", _metrics_err)
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -11380,6 +11739,124 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self._refresh_agent_cache_message_count(
                 session_key, session_entry.session_id
             )
+
+            _final_task_id = _final_delivery_task_id(agent_result)
+            _task_delivery_store = None
+            _task_delivery_record = None
+            if _final_task_id:
+                try:
+                    from gateway.task_continuation import TaskStateStore as _TaskStateStore
+                    _task_delivery_store = _TaskStateStore()
+                    _task_delivery_record = _task_delivery_store.get(_final_task_id)
+                except Exception as _delivery_state_exc:
+                    logger.debug("task delivery state unavailable: %s", _delivery_state_exc)
+
+            # Runtime is the single owner of user-visible final text delivery.
+            # The task finalizer may generate an HTML artifact, but it must not
+            # send a second text final for the same task/verdict/generation.
+            if response and _final_task_id and not _intentional_silence:
+                _final_verdict = verdict_from_text(
+                    response,
+                    failed=bool(agent_result.get("failed")),
+                    partial=bool(agent_result.get("partial")),
+                )
+                _delivery_generation = str(
+                    agent_result.get("finalization_generation")
+                    or agent_result.get("html_report_status")
+                    or "gateway-runtime-v1"
+                )
+                _delivery_meta = (_task_delivery_record.metadata if _task_delivery_record is not None else {}) or {}
+                _text_delivery = _delivery_meta.get("final_text_delivery") if isinstance(_delivery_meta, dict) else None
+                _text_already_delivered = bool(
+                    isinstance(_text_delivery, dict)
+                    and _text_delivery.get("verdict") == _final_verdict
+                    and _text_delivery.get("generation") == _delivery_generation
+                )
+                if _text_already_delivered or not _FINAL_DELIVERY_DEDUPER.mark_once(
+                    task_id=_final_task_id,
+                    verdict=_final_verdict,
+                    delivery_type="text",
+                    generation=_delivery_generation,
+                ):
+                    logger.warning(
+                        "Suppressing duplicate final text delivery: task_id=%s verdict=%s generation=%s",
+                        _final_task_id,
+                        _final_verdict,
+                        _delivery_generation,
+                    )
+                    response = ""
+                elif _task_delivery_store is not None and _task_delivery_record is not None:
+                    _task_delivery_store.merge_metadata(
+                        _final_task_id,
+                        final_text_delivery={
+                            "verdict": _final_verdict,
+                            "generation": _delivery_generation,
+                            "queued_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                        },
+                    )
+
+                _html_report_path = str(agent_result.get("html_report_path") or "")
+                _document_generation = str(agent_result.get("document_delivery_generation") or "task-report-html-v1")
+                _document_delivery = _delivery_meta.get("html_document_delivery") if isinstance(_delivery_meta, dict) else None
+                _document_already_delivered = bool(
+                    isinstance(_document_delivery, dict)
+                    and _document_delivery.get("generation") == _document_generation
+                    and _document_delivery.get("path") == _html_report_path
+                    and _document_delivery.get("message_id")
+                )
+                if (
+                    response
+                    and _delivery_meta.get("html_report_requested") is True
+                    and agent_result.get("html_report_requested") is True
+                    and _html_report_path
+                    and os.path.exists(_html_report_path)
+                    and not _document_already_delivered
+                    and _FINAL_DELIVERY_DEDUPER.mark_once(
+                        task_id=_final_task_id,
+                        verdict=_final_verdict,
+                        delivery_type="document",
+                        generation=_document_generation,
+                    )
+                ):
+                    _html_adapter = self.adapters.get(source.platform)
+                    if _html_adapter and hasattr(_html_adapter, "send_document") and session_key:
+                        async def _deliver_task_html_report() -> None:
+                            _thread_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                            _doc_result = await _html_adapter.send_document(
+                                chat_id=source.chat_id,
+                                file_path=_html_report_path,
+                                caption="HTML-отчёт по задаче",
+                                file_name=os.path.basename(_html_report_path),
+                                reply_to=self._reply_anchor_for_event(event),
+                                metadata=_thread_meta,
+                            )
+                            _active_event = getattr(_html_adapter, "_active_sessions", {}).get(session_key)
+                            _text_message_id = getattr(_active_event, "_hermes_last_delivery_message_id", None)
+                            if _task_delivery_store is not None and _task_delivery_record is not None:
+                                _task_delivery_store.merge_metadata(
+                                    _final_task_id,
+                                    final_text_delivery={
+                                        "verdict": _final_verdict,
+                                        "generation": _delivery_generation,
+                                        "message_id": str(_text_message_id or ""),
+                                        "delivered_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                                    },
+                                    html_document_delivery={
+                                        "verdict": _final_verdict,
+                                        "generation": _document_generation,
+                                        "path": _html_report_path,
+                                        "message_id": str(getattr(_doc_result, "message_id", "") or ""),
+                                        "delivered_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                                        "success": bool(getattr(_doc_result, "success", False)),
+                                        "error": str(getattr(_doc_result, "error", "") or "")[:300],
+                                    },
+                                )
+                        if getattr(type(_html_adapter), "register_post_delivery_callback", None) is not None:
+                            _html_adapter.register_post_delivery_callback(
+                                session_key,
+                                _deliver_task_html_report,
+                                generation=run_generation,
+                            )
 
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
@@ -12599,7 +13076,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            from gateway.task_router import route_turn
+            _task_route = route_turn(prompt, command=None, platform_key=platform_key, user_config=user_config)
+            enabled_toolsets = _task_route.toolsets
+            max_iterations = _task_route.max_iterations
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                role=_task_route.role,
+                routing_reason=_task_route.reason,
+                user_config=user_config,
+            )
+            logger.info(
+                "task routing: task_role=%s selected_provider=%s selected_model=%s routing_reason=%s fallback_used=%s toolsets=%s",
+                turn_route.get("task_role"), turn_route["runtime"].get("provider"), turn_route.get("model"),
+                turn_route.get("routing_reason"), turn_route.get("fallback_used"), enabled_toolsets,
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -12627,6 +13120,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
+                    skip_context_files=_task_route.skip_context_files,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -15828,6 +16322,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        message_context: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -15846,6 +16341,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                message_context=message_context,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -15857,6 +16353,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                message_context=message_context,
             )
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -15889,6 +16386,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        message_context: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16086,9 +16584,93 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+        request_metrics = {
+            "tool_call_count": 0,
+            "tool_total_ms": 0,
+            "browser_call_count": 0,
+            "browser_total_ms": 0,
+            "self_improvement_call_count": 0,
+            "self_improvement_total_ms": 0,
+            "agent_cache_status": "unknown",
+            "agent_prepare_ms": 0,
+            "agent_init_ms": 0,
+            "agent_post_ms": 0,
+            "llm_timing_source": "unavailable",
+        }
+        task_status_state = {
+            "enabled": False,
+            "key": "",
+            "title": "",
+            "formatter": None,
+        }
+        runtime_calendar_evidence = [None]
+
+        def _emit_task_status(
+            action: str | None = None,
+            phase: str = "work",
+            *,
+            completed: bool = False,
+            force: bool = False,
+            done: bool = False,
+            verdict: str | None = None,
+            blocker: str | None = None,
+        ) -> None:
+            if not task_status_state["enabled"]:
+                return
+            force = force or done
+            if isinstance(action, (int, float)):
+                action = None
+                phase = "deliver" if "ответ" in str(phase).lower() else "work"
+            formatter = task_status_state.get("formatter")
+            if not isinstance(formatter, TelegramTaskStatusState):
+                formatter = TelegramTaskStatusState(task_status_state.get("title") or "задача Hermes")
+                task_status_state["formatter"] = formatter
+            if completed:
+                formatter.complete_current()
+            if action:
+                formatter.start_step(action, phase)
+            content = formatter.render(verdict=verdict, blocker=blocker)
+            if formatter.should_emit(content, force=force):
+                _status_callback_sync(task_status_state["key"], content)
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            if event_type == "tool.completed":
+                try:
+                    duration_ms = int(float(kwargs.get("duration") or 0) * 1000)
+                except Exception:
+                    duration_ms = 0
+                request_metrics["tool_call_count"] += 1
+                request_metrics["tool_total_ms"] += max(0, duration_ms)
+                if str(tool_name or "").startswith("browser"):
+                    request_metrics["browser_call_count"] += 1
+                    request_metrics["browser_total_ms"] += max(0, duration_ms)
+                try:
+                    from gateway.task_continuation import TaskStateStore as _RuntimeTaskStateStore
+                    from gateway.task_runtime import persist_calendar_evidence_from_tool_result
+                    evidence = persist_calendar_evidence_from_tool_result(
+                        _RuntimeTaskStateStore(),
+                        _active_task.task_id,
+                        kwargs.get("result"),
+                    ) if _active_task is not None else None
+                    if evidence is not None:
+                        runtime_calendar_evidence[0] = evidence
+                except NameError:
+                    pass
+                except Exception as _calendar_evidence_err:
+                    logger.debug("calendar tool evidence capture failed: %s", _calendar_evidence_err)
+            if task_status_state["enabled"]:
+                formatter = task_status_state.get("formatter")
+                if event_type == "tool.started":
+                    if isinstance(formatter, TelegramTaskStatusState):
+                        formatter.set_plan(status_plan_from_tool_args(str(tool_name or ""), args))
+                    action, phase = status_action_for_tool(tool_name, preview, args)
+                    _emit_task_status(action, phase)
+                elif event_type == "tool.completed":
+                    _emit_task_status(completed=True)
+                if event_type in {"tool.started", "tool.completed"}:
+                    return
+
             if not progress_queue or not _run_still_current():
                 return
 
@@ -16712,6 +17294,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
+            if task_status_state["enabled"] and not str(event_type).startswith("task:"):
+                logger.debug(
+                    "status_callback suppressed by deterministic task status: %s",
+                    event_type,
+                )
+                return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
                 event_type,
@@ -16744,6 +17332,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cleanup_msg_ids.append(str(mid))
                 _fut.add_done_callback(_track_status_id)
 
+        platform_allowed_toolsets = list(enabled_toolsets or [])
+
         def run_sync():
             # The conditional re-assignment of `message` further below
             # (prepending model-switch notes) makes Python treat it as a
@@ -16752,6 +17342,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
+            routed_toolsets = list(platform_allowed_toolsets)
+            _run_sync_started = time.monotonic()
+            _agent_returned_at = None
 
             # session_key is propagated via contextvars in _set_session_env()
             # (_SESSION_KEY) and via set_current_session_key() (_approval_session_key)
@@ -16902,6 +17495,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
+                if not should_surface_telegram_interim(
+                    text,
+                    task_status_enabled=bool(task_status_state.get("enabled")),
+                ):
+                    logger.debug("Telegram interim commentary suppressed for task status UX")
+                    return
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
@@ -16921,7 +17520,156 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            from gateway.task_runtime import prepare_task_turn
+
+            _prepared_task = prepare_task_turn(
+                message=str(message or ""),
+                platform_key=platform_key,
+                chat_id=str(source.chat_id),
+                session_key=session_key or "",
+                session_id=session_id or "",
+                request_id=(session_id or session_key or "task") + ":" + str(run_generation),
+                user_config=user_config,
+                platform_toolsets=platform_allowed_toolsets,
+                message_context=message_context,
+            )
+            if _prepared_task.early_response is not None:
+                return _prepared_task.early_response
+            message = _prepared_task.message
+            _task_route = _prepared_task.route
+            _active_task = _prepared_task.task
+            if _prepared_task.continued and _active_task is not None:
+                logger.info("task continuation resumed: task_id=%s", _active_task.task_id)
+            routed_toolsets = _task_route.toolsets
+            max_iterations = _task_route.max_iterations
+            if _task_route.operational_context:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + _task_route.operational_context).strip()
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                role=_task_route.role,
+                routing_reason=_task_route.reason,
+                user_config=user_config,
+            )
+            logger.info(
+                "task routing: task_role=%s selected_provider=%s selected_model=%s routing_reason=%s fallback_used=%s toolsets=%s max_iterations=%s",
+                turn_route.get("task_role"), turn_route["runtime"].get("provider"), turn_route.get("model"),
+                turn_route.get("routing_reason"), turn_route.get("fallback_used"), routed_toolsets, max_iterations,
+            )
+
+            _live_status_roles = {"research", "expert_analysis", "planning", "coding", "long_context", "server_debug"}
+            _selected_provider = turn_route["runtime"].get("provider")
+            _selected_model = turn_route.get("model")
+            _quality_locked_roles = {"expert_analysis", "planning", "coding", "long_context", "server_debug"}
+            _simple_no_tools = (
+                _task_route.role == "simple" and set(routed_toolsets) <= {"no_mcp"}
+            )
+            _allowed_fallback_fields = {
+                "provider", "model", "base_url", "key_env", "api_key_env",
+                "api_mode", "reasons", "only_reasons", "only_before_tools",
+                "isolate_context", "allowed_tools",
+            }
+
+            def _normalize_fallback_chain(value):
+                if isinstance(value, dict):
+                    value = [value]
+                if not isinstance(value, list):
+                    return None
+                chain = []
+                for entry in value:
+                    if not isinstance(entry, dict):
+                        continue
+                    normalized = {
+                        key: item for key, item in entry.items()
+                        if key in _allowed_fallback_fields
+                    }
+                    if normalized.get("provider") and normalized.get("model"):
+                        chain.append(normalized)
+                return chain[:1] or None
+
+            from gateway.task_router import external_provider_fallback_safe
+            _external_fallback_safe = external_provider_fallback_safe(
+                message,
+                _task_route.role,
+                continued=bool(_prepared_task.continued),
+                requires_execution=bool(
+                    _active_task is not None and _active_task.requires_execution
+                ),
+            )
+            _fallback_bucket = "public" if _external_fallback_safe else "sensitive"
+            _role_fallback_cfg = (
+                user_config.get("role_fallbacks", {})
+                if isinstance(user_config, dict) else {}
+            )
+            _role_fallback_chain = None
+            if isinstance(_role_fallback_cfg, dict):
+                _role_entry = _role_fallback_cfg.get(_task_route.role, {})
+                if isinstance(_role_entry, dict):
+                    _role_fallback_chain = _normalize_fallback_chain(
+                        _role_entry.get(_fallback_bucket) or _role_entry.get("default")
+                    )
+
+            _codex_fallback_cfg = (
+                user_config.get("codex_quality_fallback", {})
+                if isinstance(user_config, dict) else {}
+            )
+            _codex_failure_fallback = None
+            if (
+                isinstance(_codex_fallback_cfg, dict)
+                and _codex_fallback_cfg.get("enabled", True)
+                and _codex_fallback_cfg.get("provider")
+                and _codex_fallback_cfg.get("model")
+            ):
+                _codex_failure_fallback = _normalize_fallback_chain(_codex_fallback_cfg)
+
+            if _role_fallback_chain:
+                _turn_fallback_model = _role_fallback_chain
+            elif _task_route.role in _quality_locked_roles and _selected_provider == "openai-codex":
+                _turn_fallback_model = _codex_failure_fallback
+            elif _simple_no_tools or _prepared_task.continued:
+                _turn_fallback_model = None
+            else:
+                _turn_fallback_model = self._fallback_model
+            logger.info(
+                "fallback routing: role=%s bucket=%s external_safe=%s chain=%s",
+                _task_route.role,
+                _fallback_bucket,
+                _external_fallback_safe,
+                [f"{entry.get('provider')}/{entry.get('model')}" for entry in (_turn_fallback_model or [])]
+                if isinstance(_turn_fallback_model, list) else bool(_turn_fallback_model),
+            )
+            _empty_retry_limit = 1
+            _needs_task_status = bool(
+                _task_route.role in _live_status_roles
+                or (_active_task is not None and _active_task.requires_execution)
+            )
+            if platform_key == "telegram" and _needs_task_status:
+                _title = (_active_task.title if _active_task is not None else None)
+                if not _title:
+                    _title = re.sub(r"\s+", " ", str(message or "")).strip()
+                if len(_title) > 72:
+                    _title = _title[:69].rstrip() + "..."
+                _status_key = (
+                    f"task:{_active_task.task_id}"
+                    if _active_task is not None
+                    else f"task:{session_key}:{run_generation}"
+                )
+                _formatter = TelegramTaskStatusState(_title or "задача Hermes")
+                _formatter.set_plan(status_steps_from_request(str(message or "")))
+                task_status_state.update({
+                    "enabled": True,
+                    "key": _status_key,
+                    "title": _title or "задача Hermes",
+                    "formatter": _formatter,
+                })
+                # For long Telegram tasks the gateway-owned live status is the
+                # only mid-turn user surface. Token streaming and assistant
+                # commentary stay in logs/transcript to prevent reviewer/tool
+                # diagnostics from becoming separate Telegram messages.
+                _stream_delta_cb = None
+                _want_interim_messages = False
+                _emit_task_status(force=True)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -16929,7 +17677,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
-                enabled_toolsets,
+                routed_toolsets,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
                 user_id=getattr(source, "user_id", None),
@@ -16960,6 +17708,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
+                    if (
+                        cached
+                        and cached[0] is not _AGENT_PENDING_SENTINEL
+                        and getattr(cached[0], "_fallback_activated", False)
+                    ):
+                        evicted = self._agent_cache.pop(session_key, None)
+                        _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+                        if _ev_agent is not None:
+                            self._cleanup_agent_resources(_ev_agent)
+                        cached = None
+                        request_metrics["agent_cache_status"] = "invalidated_after_fallback"
+                    if cached and cached[1] != _sig:
+                        request_metrics["agent_cache_status"] = "signature_miss"
                     if cached and cached[1] == _sig:
                         # cached[2] is the message_count at cache time;
                         # stale when a second process appended rows.
@@ -16993,6 +17754,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "possible cross-process write",
                                 session_key, _cached_mc, _current_msg_count,
                             )
+                            request_metrics["agent_cache_status"] = "invalidated_message_count"
                             evicted = self._agent_cache.pop(session_key, None)
                             _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
                             if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
@@ -17012,6 +17774,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _xproc_evicted_agent = _ev_agent
                         else:
                             agent = cached[0]
+                            request_metrics["agent_cache_status"] = "hit"
                             # Refresh LRU order so the cap enforcement evicts
                             # truly-oldest entries, not the one we just used.
                             if hasattr(_cache, "move_to_end"):
@@ -17048,14 +17811,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                if request_metrics["agent_cache_status"] == "unknown":
+                    request_metrics["agent_cache_status"] = "miss"
+                _agent_init_started = time.monotonic()
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
+                    enabled_toolsets=routed_toolsets,
                     disabled_toolsets=disabled_toolsets,
+                    skip_context_files=_task_route.skip_context_files,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
                     reasoning_config=reasoning_config,
@@ -17078,7 +17845,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    fallback_model=self._fallback_model,
+                    fallback_model=_turn_fallback_model,
+                )
+                request_metrics["agent_init_ms"] = int(
+                    (time.monotonic() - _agent_init_started) * 1000
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -17113,6 +17883,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.max_empty_retries = _empty_retry_limit
+            agent._fallback_current_user_text = str(message or "")
+            agent._executed_tool_call_count = 0
+            agent._fallback_context_isolated = False
+            agent._fallback_isolate_context_pending = False
+            agent._fallback_isolated_allowed_tools = set()
+
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
             # standalone push: render to a single plaintext line and deliver via
@@ -17175,16 +17952,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for queued in pending:
                     _deliver_bg_review_message(queued)
 
-            # Background review delivery — send "💾 Memory updated" etc. to user
+            # Deliver only compact, localized notices after a successful
+            # memory/profile/skill update. Nothing-to-save and failed reviews
+            # never call this callback, so they stay silent.
             def _bg_review_send(message: str) -> None:
+                request_metrics["self_improvement_call_count"] += 1
+                notification = _format_background_review_notification(message)
+                if not notification:
+                    return
+                logger.info("Background review summary queued for user delivery: %s", notification)
                 if not _status_adapter or not _run_still_current():
                     return
                 if not _bg_review_release.is_set():
                     with _bg_review_pending_lock:
                         if not _bg_review_release.is_set():
-                            _bg_review_pending.append(message)
+                            _bg_review_pending.append(notification)
                             return
-                _deliver_bg_review_message(message)
+                _deliver_bg_review_message(notification)
 
             agent.background_review_callback = _bg_review_send
             # Register the release hook on the adapter so base.py's finally
@@ -17332,6 +18116,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key, len(agent_history), len(_selected),
                     )
                     agent_history = _selected
+
+            if _simple_no_tools:
+                _history_before_simple_filter = len(agent_history)
+                agent_history = _build_simple_no_tools_history(agent_history)
+                if len(agent_history) != _history_before_simple_filter:
+                    logger.info(
+                        "simple/no_mcp history filtered: %s -> %s messages",
+                        _history_before_simple_filter, len(agent_history),
+                    )
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
@@ -17607,6 +18400,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            from tools.session_search_tool import (
+                reset_turn_search_budget,
+                set_turn_search_budget,
+            )
+            _search_budget_token = set_turn_search_budget(2)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -17655,8 +18453,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+
+                request_metrics["agent_prepare_ms"] = int(
+                    (time.monotonic() - _run_sync_started) * 1000
+                )
+                _llm_before_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0)
+                # Real tool events own the live status.
+                _conversation_started = time.monotonic()
+                agent._suppress_background_review_for_turn = False
+                _turn_html_requested = bool(
+                    _active_task is not None
+                    and (_active_task.metadata or {}).get("html_report_requested") is True
+                )
+                agent._suppress_html_report_for_turn = not _turn_html_requested
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                result["html_report_requested"] = _turn_html_requested
+                _conversation_wall_ms = int(
+                    (time.monotonic() - _conversation_started) * 1000
+                )
+                _llm_after_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0)
+                _llm_delta_ms = max(0, _llm_after_ms - _llm_before_ms)
+                if _llm_delta_ms > 0:
+                    request_metrics["llm_turn_ms"] = _llm_delta_ms
+                    request_metrics["llm_timing_source"] = "agent_session_delta"
+                elif int(result.get("api_calls", 0) or 0) > 0:
+                    request_metrics["llm_turn_ms"] = max(
+                        0,
+                        _conversation_wall_ms - request_metrics["tool_total_ms"],
+                    )
+                    request_metrics["llm_timing_source"] = "conversation_wall_estimate"
+                _agent_returned_at = time.monotonic()
+                _emit_task_status("Готовлю итоговый ответ", "deliver")
             finally:
+                reset_turn_search_budget(_search_budget_token)
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
@@ -17676,6 +18505,150 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
+            if _active_task is not None:
+                from gateway.task_continuation import TaskStateStore, is_progress_only
+                _task_store = TaskStateStore()
+                _task_tool_calls = int(request_metrics.get("tool_call_count", 0) or 0)
+                _turn_exit_reason = str(result.get("turn_exit_reason") or "")
+                _budget_exhausted = _turn_exit_reason.startswith("max_iterations_reached")
+                _no_execution_tools = _active_task.requires_execution and _task_tool_calls == 0
+                _provider_failed_before_tools = bool(
+                    _no_execution_tools and (result.get("failed") or result.get("error"))
+                )
+                _progress_without_tools = bool(
+                    final_response and is_progress_only(final_response) and _task_tool_calls == 0
+                )
+                if _budget_exhausted or _no_execution_tools or _progress_without_tools:
+                    _reject_status = "incomplete"
+                    _budget_exhaustions = int((_active_task.metadata or {}).get("budget_exhaustions", 0) or 0)
+                    if _budget_exhausted:
+                        _budget_exhaustions += 1
+                    if _provider_failed_before_tools:
+                        _reject_reason = "provider_error_before_tools"
+                        _reject_status = "blocked"
+                        final_response = (
+                            "BLOCKED\nМодель не смогла начать выполнение из-за ошибки провайдера. "
+                            "Диагностика сохранена; задача может быть продолжена через fallback"
+                        )
+                    elif _budget_exhausted:
+                        _reject_reason = "iteration_budget_exhausted"
+                        final_response = (
+                            "INCOMPLETE\nЛимит шагов исчерпан до подтверждения фактического результата. "
+                            "Задача сохранена и может быть продолжена"
+                        )
+                    else:
+                        _reject_reason = "no_tool_calls"
+                        final_response = (
+                            "INCOMPLETE\nФактическая работа не была выполнена: обязательные "
+                            "инструменты не запускались. Задача сохранена и может быть продолжена"
+                        )
+                    result["partial"] = True
+                    result["completed"] = False
+                    _task_store.merge_metadata(
+                        _active_task.task_id,
+                        final_response=str(final_response or ""),
+                        checkpoint=str(final_response or ""),
+                        checkpoint_reason=_reject_reason,
+                        budget_exhaustions=_budget_exhaustions,
+                        tool_call_count=_task_tool_calls,
+                        api_calls=int(result.get("api_calls", 0) or 0),
+                        turn_exit_reason=_turn_exit_reason,
+                        selected_model=str(_selected_model or ""),
+                        selected_provider=str(_selected_provider or ""),
+                        resolved_model=str(getattr(agent, "model", "") or ""),
+                        resolved_provider=str(getattr(agent, "provider", "") or ""),
+                        provider_error=str(result.get("error") or "")[:500],
+                    )
+                    _task_store.update(
+                        _active_task.task_id,
+                        status=_reject_status,
+                        last_error=_reject_reason,
+                    )
+                    logger.warning(
+                        "task completion rejected: task_id=%s reason=%s",
+                        _active_task.task_id,
+                        _reject_reason,
+                    )
+                elif not final_response:
+                    _task_store.update(
+                        _active_task.task_id,
+                        status="blocked",
+                        last_error=str(result.get("error") or "empty final response")[:300],
+                    )
+                else:
+                    from gateway.task_runtime import (
+                        calendar_completion_evidence_missing,
+                        calendar_evidence_complete,
+                        extract_calendar_evidence_from_result,
+                        task_reported_non_success,
+                    )
+                    _task_metadata = dict(_active_task.metadata or {})
+                    _calendar_evidence = runtime_calendar_evidence[0] or extract_calendar_evidence_from_result(result)
+                    if _calendar_evidence is not None:
+                        _task_metadata["calendar_evidence"] = _calendar_evidence
+                        _task_store.merge_metadata(_active_task.task_id, calendar_evidence=_calendar_evidence)
+                    _evidence_complete = calendar_evidence_complete(_calendar_evidence)
+                    _reported_non_success = None if _evidence_complete else task_reported_non_success(
+                        str(final_response),
+                        result_partial=bool(result.get("partial")),
+                        result_failed=bool(result.get("failed")),
+                    )
+                    if _reported_non_success is not None:
+                        _reported_status, _reported_reason = _reported_non_success
+                        result["partial"] = True
+                        result["completed"] = False
+                        _task_store.merge_metadata(
+                            _active_task.task_id,
+                            final_response=str(final_response),
+                            tool_call_count=_task_tool_calls,
+                            turn_exit_reason=_turn_exit_reason,
+                            selected_model=str(result.get("selected_model") or result.get("model") or ""),
+                            selected_provider=str(result.get("selected_provider") or result.get("provider") or ""),
+                        )
+                        _task_store.update(
+                            _active_task.task_id,
+                            status=_reported_status,
+                            last_error=_reported_reason,
+                        )
+                    else:
+                        _evidence_missing = calendar_completion_evidence_missing(
+                            _active_task.original_request,
+                            str(final_response),
+                            route_toolsets=routed_toolsets,
+                            route_skills=getattr(_task_route, "skill_names", ()),
+                            metadata=_task_metadata,
+                            tool_calls=result.get("tool_calls") or result.get("tools"),
+                        )
+                        if _evidence_missing:
+                            final_response = (
+                                "INCOMPLETE\nНе сохранено подтверждение результата календаря: "
+                                + ", ".join(_evidence_missing)
+                                + ". Задача сохранена и может быть продолжена"
+                            )
+                            result["partial"] = True
+                            result["completed"] = False
+                            _task_store.update(
+                                _active_task.task_id,
+                                status="incomplete",
+                                last_error="missing calendar evidence: " + ",".join(_evidence_missing),
+                            )
+                        else:
+                            if _evidence_complete and not str(final_response or "").lstrip().startswith(("READY", "SUCCESS")):
+                                final_response = (
+                                    "READY\nCalendar event confirmed by read-back.\n"
+                                    + json.dumps(_calendar_evidence, ensure_ascii=False, sort_keys=True)
+                                )
+                                result["final_response"] = final_response
+                            _task_store.merge_metadata(
+                                _active_task.task_id,
+                                final_response=str(final_response),
+                                tool_call_count=_task_tool_calls,
+                                turn_exit_reason=_turn_exit_reason,
+                                selected_model=str(result.get("selected_model") or result.get("model") or ""),
+                                selected_provider=str(result.get("selected_provider") or result.get("provider") or ""),
+                            )
+                            _task_store.update(_active_task.task_id, status="awaiting_delivery")
+
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
             _input_toks = 0
@@ -17688,6 +18661,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _resolved_provider = getattr(_agent, "provider", None) if _agent else None
+            _runtime_fallback_used = bool(
+                (_resolved_model and _selected_model and _resolved_model != _selected_model)
+                or (_resolved_provider and _selected_provider and _resolved_provider != _selected_provider)
+            )
+            _runtime_fallback_reason = None
+            if _runtime_fallback_used:
+                _runtime_fallback_reason = (
+                    f"{_selected_provider}/{_selected_model} -> "
+                    f"{_resolved_provider}/{_resolved_model}"
+                )
 
             # Sync session_id immediately after run_conversation(). Compression
             # can rotate before a follow-up model call fails; the failure return
@@ -17767,6 +18751,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 final_response = _sanitize_gateway_final_response(source.platform, final_response)
                 if not final_response:
                     final_response = f"⚠️ {result['error']}" if result.get("error") else ""
+                if _agent_returned_at is not None:
+                    request_metrics["agent_post_ms"] = int(
+                        (time.monotonic() - _agent_returned_at) * 1000
+                    )
+                _emit_task_status("Готовлю сообщение об ошибке", "deliver", force=True)
+                _error_status_key = None
+                _error_status_content = None
+                _error_status_formatter = task_status_state.get("formatter")
+                if task_status_state.get("enabled") and isinstance(_error_status_formatter, TelegramTaskStatusState):
+                    _error_status_key = str(task_status_state.get("key") or "")
+                    _error_status_content = _error_status_formatter.render(verdict="INCOMPLETE")
                 return {
                     "final_response": final_response,
                     "messages": result.get("messages", []),
@@ -17786,7 +18781,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "provider": _resolved_provider,
+                    "selected_model": _selected_model,
+                    "selected_provider": _selected_provider,
+                    "fallback_used": _runtime_fallback_used,
+                    "fallback_reason": _runtime_fallback_reason,
+                    "task_level": turn_route.get("task_role"),
+                    "routing_reason": turn_route.get("routing_reason"),
+                    "selected_toolsets": list(routed_toolsets or []),
+                    "llm_total_ms": request_metrics.get("llm_turn_ms", 0),
+                    "diagnostics": dict(request_metrics),
                     "context_length": _context_length,
+                    "task_id": _active_task.task_id if _active_task is not None else None,
+                    "task_status_final_key": _error_status_key,
+                    "task_status_final_content": _error_status_content,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -17869,6 +18877,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+            _html_report_requested = False
+            if final_response and _active_task is not None:
+                try:
+                    from gateway.task_router import should_generate_html_report as _should_generate_html_report
+                    _stored_html_policy = _active_task.metadata.get("html_report_requested")
+                    _html_report_requested = (
+                        bool(_stored_html_policy)
+                        if _stored_html_policy is not None
+                        else _should_generate_html_report(
+                            _active_task.original_request,
+                            _task_route.role,
+                            requires_execution=bool(_active_task.requires_execution),
+                        )
+                    )
+                except Exception as _report_policy_exc:
+                    logger.debug("HTML report policy fallback failed: %s", _report_policy_exc)
+                    _html_report_requested = False
+            if final_response and _active_task is not None and _html_report_requested:
+                try:
+                    from agent.report_finalizer_renderer import render_task_report_html as _render_task_report_html
+                    _html_report = _render_task_report_html(
+                        final_response=str(final_response),
+                        completed=bool(result_holder[0].get("completed")) if result_holder[0] else None,
+                        failed=bool(result_holder[0].get("failed")) if result_holder[0] else None,
+                        session_id=effective_session_id,
+                        turn_exit_reason=str(result.get("turn_exit_reason") or ""),
+                        model=str(_resolved_model or ""),
+                    )
+                    result["html_report_path"] = str(_html_report.path)
+                    result["html_report_status"] = _html_report.status
+                    result["final_delivery_owner"] = "gateway_runtime"
+                    result["finalization_generation"] = "gateway-runtime-v1"
+                    result["document_delivery_generation"] = "task-report-html-v1"
+                except Exception as _html_exc:
+                    logger.warning("task report HTML rendering failed after gateway validation: %s", _html_exc)
+                    result["html_report_error"] = str(_html_exc)
+
+            if _agent_returned_at is not None:
+                request_metrics["agent_post_ms"] = int(
+                    (time.monotonic() - _agent_returned_at) * 1000
+                )
+            _final_verdict = verdict_from_text(
+                final_response,
+                failed=bool(result_holder[0].get("failed", False)) if result_holder[0] else False,
+                partial=bool(result_holder[0].get("partial", False)) if result_holder[0] else False,
+            )
+            _emit_task_status("Готовлю итоговый ответ", "deliver", force=True)
+            _task_status_final_key = None
+            _task_status_final_content = None
+            _task_status_formatter = task_status_state.get("formatter")
+            if task_status_state.get("enabled") and isinstance(_task_status_formatter, TelegramTaskStatusState):
+                _task_status_final_key = str(task_status_state.get("key") or "")
+                _task_status_final_content = _task_status_formatter.render(verdict=_final_verdict)
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
@@ -17886,7 +18947,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": _resolved_provider,
+                "selected_model": _selected_model,
+                "selected_provider": _selected_provider,
+                "fallback_used": _runtime_fallback_used,
+                "fallback_reason": _runtime_fallback_reason,
+                "task_level": turn_route.get("task_role"),
+                "routing_reason": turn_route.get("routing_reason"),
+                "selected_toolsets": list(routed_toolsets or []),
+                "llm_total_ms": request_metrics.get("llm_turn_ms", 0),
+                "diagnostics": dict(request_metrics),
                 "context_length": _context_length,
+                "task_id": _active_task.task_id if _active_task is not None else None,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
@@ -17895,6 +18967,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # self-persisted (it didn't — see codex_runtime.py).  Default
                 # True preserves the skip-db behaviour for the standard runtime.
                 "agent_persisted": (result_holder[0].get("agent_persisted", True) if result_holder[0] else True),
+
+"html_report_path": result.get("html_report_path"),
+                "html_report_status": result.get("html_report_status"),
+                "final_delivery_owner": result.get("final_delivery_owner"),
+                "finalization_generation": result.get("finalization_generation"),
+                "document_delivery_generation": result.get("document_delivery_generation"),
+                "task_status_final_key": _task_status_final_key,
+                "task_status_final_content": _task_status_final_content,
             }
         
         # Start progress message sender if enabled. Gate on needs_progress_queue
@@ -18060,8 +19140,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _notify_start = time.time()
 
         async def _notify_long_running():
-            if _NOTIFY_INTERVAL is None:
-                return  # Notifications disabled (gateway_notify_interval: 0)
+            if _NOTIFY_INTERVAL is None or task_status_state.get("enabled"):
+                return  # Notifications disabled or replaced by task live-status
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
@@ -18073,7 +19153,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
-                # Stop heartbeating once this run no longer owns the session
+                if task_status_state.get("enabled"):
+                    return
+# Stop heartbeating once this run no longer owns the session
                 # slot or the executor has finished — otherwise a stale
                 # "running: delegate_task" bubble can outlive the run that
                 # spawned it (#12029). _executor_task is a closure var bound
@@ -18108,7 +19190,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _parts = []
                         if _want_iteration_detail:
                             _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
+                                f"шаг {_a['api_call_count']}/{_a['max_iterations']}"
                             )
                         _action = _a.get("current_tool") or _a.get("last_activity_desc")
                         if _action:
@@ -18117,7 +19199,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                # Generic heartbeat cannot know honest completion percent. Animate a
+                # runner across the route instead of presenting elapsed time as progress.
+                _runner_pos = min(8, max(1, (_elapsed_mins % 9)))
+                _route = "━" * _runner_pos + "🏃" + "━" * (9 - _runner_pos) + "🏁"
+                _heartbeat_text = f"{_route}\nВыполняю задачу · {_elapsed_mins} мин{_status_detail}"
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
