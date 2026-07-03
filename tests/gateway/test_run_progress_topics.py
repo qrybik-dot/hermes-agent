@@ -843,7 +843,7 @@ async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp_path):
+async def test_run_agent_suppresses_interim_commentary_by_default(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
@@ -851,7 +851,7 @@ async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp
         session_id="sess-commentary-default-on",
     )
 
-    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
 
 
 @pytest.mark.asyncio
