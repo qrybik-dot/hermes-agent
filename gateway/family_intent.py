@@ -66,7 +66,14 @@ class FamilyIntent:
 
     @property
     def active(self) -> bool:
-        return any(self.__dict__.values())
+        # An image or forwarded message is context, not a family action by itself.
+        return bool(
+            self.memory_write
+            or self.memory_readback
+            or self.calendar_write
+            or self.reminder
+            or (self.medical and (self.memory_write or self.calendar_write))
+        )
 
 
 def detect_family_intent(text: str) -> FamilyIntent:

@@ -127,7 +127,7 @@ def _rewrite_family_event(*, event: Any, **_: Any) -> dict[str, str]:
     if intent.image and _CALENDAR_WORD_RE.search(routed_original):
         routed_original = _CALENDAR_WORD_RE.sub("семейное расписание", routed_original)
 
-    parts: list[str] = ["task_role: planning"]
+    parts: list[str] = []
     if reply and (_CONTINUATION_RE.search(original) or getattr(event, "reply_to_message_id", None)):
         parts.append("Продолжай текущую задачу с учётом нового сообщения.")
     parts.append(routed_original)

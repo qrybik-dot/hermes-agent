@@ -16,6 +16,7 @@ ROLE_ORDER = (
     "simple",
     "parser",
     "research",
+    "expert_analysis",
     "planning",
     "coding",
     "long_context",
@@ -74,6 +75,19 @@ _RESEARCH_RE = re.compile(
     re.I,
 )
 _NOTEBOOKLM_RE = re.compile(r"\bnotebook\s*lm\b|ноутбук\s*лм|ноутбуклм", re.I)
+_EXPERT_ANALYSIS_RE = re.compile(
+    r"\b(?:экспертн\w*|критическ\w*|глубок\w*)\s+(?:анализ|оценк|прожарк|разбор)|"
+    r"\b(?:прожарк|что\s+я\s+упускаю|сильн\w*\s+и\s+слаб\w*\s+сторон|"
+    r"риски?\s+и\s+альтернатив|выбери\s+лучш\w*\s+(?:вариант|подход|архитектур))\b",
+    re.I,
+)
+_LEARNING_SIGNAL_RE = re.compile(
+    r"\b(?:запомни|сохрани\s+(?:правило|настройк)|в\s+дальнейшем|"
+    r"не\s+пиши\s+так|не\s+делай\s+так|делай\s+(?:короче|иначе|всегда)|"
+    r"раньше\s+было\s+лучше|этот\s+(?:способ|подход)\s+сработал|"
+    r"учти\s+на\s+будущее|моя\s+настройк|мо[её]\s+предпочтени)\w*\b",
+    re.I,
+)
 _PLANNING_RE = re.compile(
     r"архитектурн\w*\s+план|спроектируй|стратеги\w*|roadmap|blueprint|"
     r"декомпозируй\s+(?:проект|задачу)|план\s+внедрения|"
@@ -199,7 +213,7 @@ _EXTERNAL_PROVIDER_CONTINUATION_ONLY_RE = re.compile(
     re.I,
 )
 _EXTERNAL_PROVIDER_SAFE_ROLES = {
-    "simple", "parser", "research", "planning", "coding", "server_debug"
+    "simple", "parser", "research", "expert_analysis", "planning", "coding", "server_debug"
 }
 
 
@@ -337,11 +351,13 @@ class TaskRoute:
 
 
 def explicit_role_override(text: str) -> str | None:
+    """Allow only an explicit slash command at the start of the current turn.
+
+    Role-like strings inside pasted, replied or forwarded text are untrusted
+    content and must never change execution permissions or model selection.
+    """
     hay = text or ""
-    match = re.search(r"(?:task_role|role|роль)\s*[:=]\s*([a-z_]+)", hay, re.I)
-    if match and match.group(1) in ROLE_ORDER:
-        return match.group(1)
-    match = re.search(r"/(?:role|task_role)\s+([a-z_]+)", hay, re.I)
+    match = re.match(r"^\s*/(?:role|task_role)\s+([a-z_]+)(?:\s|$)", hay, re.I)
     if match and match.group(1) in ROLE_ORDER:
         return match.group(1)
     return None
@@ -443,6 +459,8 @@ def classify_task(text: str, *, command: str | None = None) -> tuple[str, str]:
         return "research", "NotebookLM intent"
     if _RESEARCH_RE.search(value):
         return "research", "external research intent"
+    if _EXPERT_ANALYSIS_RE.search(value):
+        return "expert_analysis", "expert analysis intent"
     if _PLANNING_RE.search(value):
         return "planning", "architecture/planning intent"
     if _PARSER_RE.search(value):
@@ -480,6 +498,8 @@ def select_toolsets(
         requested = {"file", "code_execution", "clarify", "no_mcp"}
     elif role == "research":
         requested = {"web", "file", "memory", "skills", "clarify", "no_mcp"}
+    elif role == "expert_analysis":
+        requested = {"file", "memory", "skills", "todo", "clarify", "no_mcp"}
     elif role == "coding":
         requested = {"terminal", "file", "code_execution", "skills", "todo", "memory", "clarify", "no_mcp"}
     elif role == "server_debug":
@@ -493,6 +513,9 @@ def select_toolsets(
 
     if flags["memory"]:
         requested.update({"memory", "session_search"})
+    if _LEARNING_SIGNAL_RE.search(text or ""):
+        requested.discard("no_mcp")
+        requested.update({"memory", "skills"})
     if flags["report"]:
         requested.update({"file", "memory", "session_search"})
     if flags["email"] or flags["calendar"] or flags["drive"]:
@@ -544,7 +567,7 @@ def max_turns_for_role(role: str, cfg: Mapping[str, Any] | None = None) -> int:
             return max(1, int(role_cfg[role]))
         except (TypeError, ValueError):
             pass
-    return 24 if role in {"coding", "planning", "server_debug", "long_context"} else 12
+    return 24 if role in {"expert_analysis", "coding", "planning", "server_debug", "long_context"} else 12
 
 
 def compact_operational_context(platform_key: str, role: str) -> str:
@@ -667,6 +690,9 @@ def route_turn(
     role, reason = classify_task(text, command=command)
     flags = _intent_flags(text)
     planning_policy = adaptive_planning_policy(text, role)
+    if planning_policy.reviewer_required and role in {"simple", "parser"}:
+        role = "expert_analysis"
+        reason = f"{reason}; promoted_for={planning_policy.reason}"
     intent_names = [name for name, enabled in flags.items() if enabled]
     if intent_names:
         reason = f"{reason}; intents={','.join(intent_names)}"
@@ -695,9 +721,13 @@ def route_turn(
     adaptive_context = adaptive_planning_operational_context(planning_policy)
     if adaptive_context:
         operational_context = (operational_context + "\n\n" + adaptive_context).strip()
+    if _LEARNING_SIGNAL_RE.search(text or ""):
+        operational_context = (operational_context + "\n\n" +
+            "Сигнал обучения: это может быть устойчивое предпочтение, коррекция поведения или успешный способ работы. "
+            "Сохраняй только действительно повторно полезное правило; не создавай дубль и после записи сделай read-back.").strip()
     max_iterations = max_turns_for_role(role, agent_cfg)
     if planning_policy.reviewer_required:
-        max_iterations = max(max_iterations, 36)
+        max_iterations = max(max_iterations, 24)
     if flags["skills_query"]:
         operational_context = (operational_context + "\n\n" + skills_facts_operational_context()).strip()
     if flags["travel"]:

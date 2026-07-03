@@ -28,7 +28,7 @@ def test_memory_write_routes_to_quality_context_and_memory_skill():
     result = _rewrite_family_event(event=event)
 
     assert result["action"] == "rewrite"
-    assert result["text"].startswith("task_role: planning")
+    assert "task_role:" not in result["text"]
     assert "большая задача" not in result["text"]
     assert "memory-profile" in event.auto_skill
     assert "read-back" in event.channel_prompt
@@ -41,7 +41,7 @@ def test_memory_readback_is_not_confirmed_by_calendar():
     result = _rewrite_family_event(event=event)
 
     assert result["action"] == "rewrite"
-    assert result["text"].startswith("task_role: planning")
+    assert "task_role:" not in result["text"]
     assert "memory-profile" in event.auto_skill
     assert "новым поиском" in event.channel_prompt
     assert "не подтверждает память" in event.channel_prompt
@@ -56,7 +56,7 @@ def test_screenshot_request_preserves_media_paths_and_family_contract():
     result = _rewrite_family_event(event=event)
 
     assert result["action"] == "rewrite"
-    assert result["text"].startswith("task_role: planning")
+    assert "task_role:" not in result["text"]
     assert "/tmp/medical-1.png" in result["text"]
     assert "/tmp/medical-2.png" in result["text"]
     assert "family_vision_analyze" in event.channel_prompt
@@ -87,7 +87,7 @@ def test_reply_summary_is_merged_into_the_followup_turn():
     result = _rewrite_family_event(event=event)
 
     assert result["action"] == "rewrite"
-    assert result["text"].startswith("task_role: planning")
+    assert "task_role:" not in result["text"]
     assert "Продолжай текущую задачу" in result["text"]
     assert "9 июля 2026 в 09:30" in result["text"]
     assert "google-workspace" in event.auto_skill
@@ -107,6 +107,7 @@ def test_family_intent_distinguishes_memory_calendar_and_image():
     assert memory.memory_write
     assert calendar.calendar_write
     assert image.image and image.family_sensitive
+    assert image.active is False
 
 
 @pytest.mark.asyncio
@@ -128,3 +129,13 @@ async def test_family_vision_tool_uses_existing_vision_router(monkeypatch):
     assert '"success": true' in result
     assert calls["image_url"] == "/tmp/medical.png"
     assert "дату и время каждого приёма" in calls["user_prompt"]
+
+
+def test_plain_image_does_not_activate_family_router():
+    event = _event("Что здесь?", media=("/tmp/plain.png",))
+    assert _rewrite_family_event(event=event) == {"action": "allow"}
+
+
+def test_plain_forward_does_not_activate_family_router():
+    event = _event("Посмотри и скажи суть", reply="[Forwarded message] обычный пост")
+    assert _rewrite_family_event(event=event) == {"action": "allow"}

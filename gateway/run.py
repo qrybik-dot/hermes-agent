@@ -72,8 +72,8 @@ from gateway.telegram_task_status import (
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
 # memory providers, etc.).  LRU order + idle TTL eviction are enforced
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
-_AGENT_CACHE_MAX_SIZE = 128
-_AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+_AGENT_CACHE_MAX_SIZE = 12
+_AGENT_CACHE_IDLE_TTL_SECS = 1200.0  # evict agents idle for >20m on the 1 GB VPS
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
@@ -14991,10 +14991,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 turn_route.get("routing_reason"), turn_route.get("fallback_used"), routed_toolsets, max_iterations,
             )
 
-            _live_status_roles = {"research", "planning", "coding", "long_context", "server_debug"}
+            _live_status_roles = {"research", "expert_analysis", "planning", "coding", "long_context", "server_debug"}
             _selected_provider = turn_route["runtime"].get("provider")
             _selected_model = turn_route.get("model")
-            _quality_locked_roles = {"planning", "coding", "long_context", "server_debug"}
+            _quality_locked_roles = {"expert_analysis", "planning", "coding", "long_context", "server_debug"}
             _simple_no_tools = (
                 _task_route.role == "simple" and set(routed_toolsets) <= {"no_mcp"}
             )
@@ -15019,7 +15019,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                     if normalized.get("provider") and normalized.get("model"):
                         chain.append(normalized)
-                return chain or None
+                return chain[:1] or None
 
             from gateway.task_router import external_provider_fallback_safe
             _external_fallback_safe = external_provider_fallback_safe(
@@ -15042,31 +15042,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _role_fallback_chain = _normalize_fallback_chain(
                         _role_entry.get(_fallback_bucket) or _role_entry.get("default")
                     )
-
-            # Public, non-executing code review and log analysis may use GLM
-            # as a final independent-provider reserve. Executing coding/VPS
-            # tasks are classified into the sensitive bucket above and never
-            # receive this entry. The request is current-turn-only and has no
-            # tools, matching the same data-minimisation policy used elsewhere.
-            if (
-                _external_fallback_safe
-                and _task_route.role in {"coding", "server_debug"}
-                and isinstance(_role_fallback_chain, list)
-                and not any(entry.get("provider") == "zai" for entry in _role_fallback_chain)
-            ):
-                _role_fallback_chain.append({
-                    "provider": "zai",
-                    "model": "glm-4.7-flash",
-                    "only_before_tools": True,
-                    "isolate_context": True,
-                    "allowed_tools": [],
-                    "reasons": [
-                        "rate_limit", "usage_limit_exhausted", "auth",
-                        "auth_permanent", "billing", "model_not_found",
-                        "overloaded", "server_error", "timeout",
-                        "format_error", "provider_policy_blocked", "unknown",
-                    ],
-                })
 
             _codex_fallback_cfg = (
                 user_config.get("codex_quality_fallback", {})
@@ -15097,7 +15072,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 [f"{entry.get('provider')}/{entry.get('model')}" for entry in (_turn_fallback_model or [])]
                 if isinstance(_turn_fallback_model, list) else bool(_turn_fallback_model),
             )
-            _empty_retry_limit = 1 if _simple_no_tools else 2
+            _empty_retry_limit = 1
             _needs_task_status = bool(
                 _task_route.role in _live_status_roles
                 or (_active_task is not None and _active_task.requires_execution)
@@ -15743,7 +15718,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _llm_before_ms = int(getattr(agent, "session_llm_total_ms", 0) or 0)
                 # Real tool events own the live status.
                 _conversation_started = time.monotonic()
-                agent._suppress_background_review_for_turn = (_task_route.role == "simple")
+                agent._suppress_background_review_for_turn = False
                 _turn_html_requested = bool(
                     _active_task is not None
                     and (_active_task.metadata or {}).get("html_report_requested") is True
