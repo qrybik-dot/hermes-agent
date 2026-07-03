@@ -1746,10 +1746,12 @@ class MessageEvent:
     
     # Reply context
     reply_to_message_id: Optional[str] = None
-    reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    reply_to_text: Optional[str] = None
+    reply_to_caption: Optional[str] = None
+    reply_to_sender_id: Optional[str] = None
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
-    reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    reply_to_is_own_message: bool = False
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
@@ -4818,6 +4820,12 @@ class BasePlatformAdapter(ABC):
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
+                message_id = getattr(result, "message_id", None)
+                if message_id:
+                    try:
+                        setattr(interrupt_event, "_hermes_last_delivery_message_id", str(message_id))
+                    except Exception:
+                        pass
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).

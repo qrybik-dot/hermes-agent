@@ -833,10 +833,11 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
 
     try:
         from tools import write_approval as wa
-    except Exception:
-        # If the gate module can't load, fail open (current behaviour) rather
-        # than blocking all memory writes.
-        return None
+    except Exception as exc:
+        return tool_error(
+            f"Memory write approval guard is unavailable; the change was not saved: {exc}",
+            success=False,
+        )
 
     # Build a small inline summary/detail for the foreground approval prompt.
     label = "user profile" if target == "user" else "memory"
@@ -870,9 +871,17 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         summary=f"{summary}: {detail[:120]}",
         origin=wa.current_origin(),
     )
+    if action == "add" and content:
+        user_message = (
+            f"Подготовил запись в память:\n«{content}».\n\n"
+            "Сохранение требует подтверждения."
+        )
+    else:
+        user_message = decision.message
     return json.dumps(
-        {"success": True, "staged": True, "pending_id": record["id"],
-         "message": decision.message},
+        {"success": False, "approval_required": True, "staged": True,
+         "pending_id": record["id"], "message": user_message,
+         "approval_message": user_message},
         ensure_ascii=False,
     )
 
@@ -1075,6 +1084,8 @@ MEMORY_SCHEMA = {
         "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
+        "APPROVAL: when write approval is enabled, changes are staged and must not be "
+        "described as saved until the user approves them.\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."

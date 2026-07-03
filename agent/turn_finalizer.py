@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.report_finalizer_renderer import render_task_report_html
 
 
 def finalize_turn(
@@ -268,7 +269,7 @@ def finalize_turn(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not getattr(agent, "_suppress_html_report_for_turn", False):
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
@@ -433,6 +434,31 @@ def finalize_turn(
     # (the response is still returned either way — #8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
+
+# Deterministic production HTML report.  This is deliberately outside the
+    # model loop so HTML reporting does not consume tool/API budget and cannot
+    # be misrouted as image generation or vision analysis.  Browser screenshots
+    # are downstream output artifacts created from this file, not required
+    # inputs for the task.
+    if final_response and not interrupted and not getattr(agent, "_suppress_html_report_for_turn", False):
+        try:
+            _html_report = render_task_report_html(
+                final_response=final_response,
+                completed=completed,
+                failed=failed,
+                session_id=agent.session_id,
+                turn_exit_reason=_turn_exit_reason,
+                model=agent.model,
+            )
+            result["html_report_path"] = str(_html_report.path)
+            result["html_report_status"] = _html_report.status
+            result["final_delivery_owner"] = "gateway_runtime"
+            result["finalization_generation"] = "gateway-runtime-v1"
+            result["document_delivery_generation"] = "task-report-html-v1"
+        except Exception as exc:
+            logger.warning("task report HTML rendering failed: %s", exc)
+            result["html_report_error"] = str(exc)
+
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.
@@ -469,7 +495,12 @@ def finalize_turn(
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        final_response
+        and not interrupted
+        and not getattr(agent, "_suppress_background_review_for_turn", False)
+        and (_should_review_memory or _should_review_skills)
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

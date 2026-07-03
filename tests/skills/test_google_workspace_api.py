@@ -484,3 +484,120 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+
+def test_api_calendar_create_reads_back_evidence(api_module, capsys):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append((parts, params, body))
+        if parts == ["calendar", "events", "insert"]:
+            return {"id": "evt-1", "summary": body["summary"], "htmlLink": "https://calendar.google.com/event?evt-1"}
+        if parts == ["calendar", "events", "get"]:
+            assert params == {"calendarId": "primary", "eventId": "evt-1"}
+            return {
+                "id": "evt-1",
+                "summary": "Consult",
+                "start": {"dateTime": "2026-07-01T20:00:00+03:00"},
+                "end": {"dateTime": "2026-07-01T21:00:00+03:00"},
+                "htmlLink": "https://calendar.google.com/event?evt-1",
+            }
+        raise AssertionError(parts)
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        summary="Consult",
+        start="2026-07-01T20:00:00+03:00",
+        end="2026-07-01T21:00:00+03:00",
+        location="",
+        description="",
+        attendees="",
+        calendar="primary",
+    )
+
+    api_module.calendar_create(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert [call[0] for call in calls] == [["calendar", "events", "insert"], ["calendar", "events", "get"]]
+    assert out == {
+        "calendar_id": "primary",
+        "event_id": "evt-1",
+        "summary": "Consult",
+        "start": "2026-07-01T20:00:00+03:00",
+        "end": "2026-07-01T21:00:00+03:00",
+        "event_link": "https://calendar.google.com/event?evt-1",
+        "read_back": True,
+        "status": "created",
+    }
+
+
+def test_api_calendar_create_readback_error_does_not_repeat_create(api_module, capsys):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append(parts)
+        if parts == ["calendar", "events", "insert"]:
+            return {"id": "evt-2", "summary": body["summary"], "htmlLink": "https://calendar.google.com/event?evt-2"}
+        if parts == ["calendar", "events", "get"]:
+            raise RuntimeError("not found yet")
+        raise AssertionError(parts)
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        summary="Consult", start="2026-07-01T20:00:00+03:00", end="2026-07-01T21:00:00+03:00",
+        location="", description="", attendees="", calendar="primary",
+    )
+
+    api_module.calendar_create(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert calls == [["calendar", "events", "insert"], ["calendar", "events", "get"]]
+    assert out["status"] == "incomplete"
+    assert out["event_id"] == "evt-2"
+    assert out["calendar_id"] == "primary"
+    assert out["read_back"] is False
+    assert "not found yet" in out["read_back_error"]
+
+
+def test_api_calendar_get_uses_existing_event_id_without_create(api_module, capsys):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append((parts, params, body))
+        assert parts == ["calendar", "events", "get"]
+        return {
+            "id": "evt-3",
+            "summary": "Consult",
+            "start": {"dateTime": "2026-07-01T20:00:00+03:00"},
+            "end": {"dateTime": "2026-07-01T21:00:00+03:00"},
+            "htmlLink": "https://calendar.google.com/event?evt-3",
+        }
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(event_id="evt-3", calendar="primary")
+
+    api_module.calendar_get(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert len(calls) == 1
+    assert out["event_id"] == "evt-3"
+    assert out["read_back"] is True
+
+
+def test_api_calendar_create_error_skips_readback(api_module):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append(parts)
+        raise RuntimeError("quota")
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        summary="Consult", start="2026-07-01T20:00:00+03:00", end="2026-07-01T21:00:00+03:00",
+        location="", description="", attendees="", calendar="primary",
+    )
+
+    with pytest.raises(RuntimeError):
+        api_module.calendar_create(args)
+    assert calls == [["calendar", "events", "insert"]]
