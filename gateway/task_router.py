@@ -15,10 +15,12 @@ ROLE_ORDER = (
     "no_llm",
     "simple",
     "parser",
+    "agentic",
     "research",
     "expert_analysis",
     "planning",
     "coding",
+    "long_context_extract",
     "long_context",
     "server_debug",
 )
@@ -103,6 +105,30 @@ _PARSER_RE = re.compile(
 _LONG_CONTEXT_RE = re.compile(
     r"проанализируй\s+(?:весь|большой|длинный)\s+(?:документ|файл|транскрипт)|"
     r"большой\s+документ|полный\s+транскрипт|длинный\s+отч[её]т",
+    re.I,
+)
+_LONG_CONTEXT_EXTRACT_RE = re.compile(
+    r"\b(?:извлеки|найди|собери|вытащи|структурируй|суммаризируй|перескажи)\w*\b"
+    r".{0,120}\b(?:факт|дат|верси|решени|событи|пол|таблиц|спис|кратк|ключев)\w*\b|"
+    r"\b(?:кратк\w*\s+саммари|точн\w*\s+извлечени|найди\s+противореч)\w*\b",
+    re.I | re.S,
+)
+_AGENTIC_ACTION_RE = re.compile(
+    r"\b(?:найди|прочитай|проверь|собери|извлеки|сравни|преобразуй|"
+    r"структурируй|подготовь|сохрани|пришли|отправь|создай)\w*\b",
+    re.I,
+)
+_AGENTIC_SEQUENCE_RE = re.compile(
+    r"\b(?:затем|после\s+этого|после\s+чего|далее|и\s+потом)\b|"
+    r"\b(?:найди|прочитай|проверь|собери|извлеки)\w*.{0,160}"
+    r"\b(?:и|затем)\b.{0,160}\b(?:сохрани|пришли|подготовь|верни|создай)\w*\b",
+    re.I | re.S,
+)
+_AGENTIC_FORBIDDEN_RE = re.compile(
+    r"\b(?:vps|systemd|journalctl|firewall|ufw|sudo|production|prod|"
+    r"удали|удалить|оплат|покуп|купить|письм\w*\s+отправ|"
+    r"измен\w*\s+прав\w*|секрет|токен|парол|oauth|restart|перезапуст)\w*\b|"
+    r"\brm\s+-|\bgit\s+(?:reset|clean)\b|\.env\b",
     re.I,
 )
 _REPORT_RE = re.compile(
@@ -230,7 +256,8 @@ _EXTERNAL_PROVIDER_CONTINUATION_ONLY_RE = re.compile(
     re.I,
 )
 _EXTERNAL_PROVIDER_SAFE_ROLES = {
-    "simple", "parser", "research", "expert_analysis", "planning", "coding", "server_debug"
+    "simple", "parser", "agentic", "research", "expert_analysis", "planning",
+    "coding", "long_context_extract", "server_debug"
 }
 
 
@@ -343,6 +370,8 @@ def should_generate_html_report(text: str, role: str, *, requires_execution: boo
     policy = adaptive_planning_policy(value, role)
     if role == "long_context":
         return True
+    if role == "long_context_extract":
+        return False
     if role == "research":
         return policy.mode == "reviewed" or bool(_DEEP_ANALYSIS_RE.search(value))
     if role == "coding":
@@ -405,6 +434,45 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "skills_query": bool(_SKILLS_QUERY_RE.search(value)),
         "notebooklm": bool(_NOTEBOOKLM_RE.search(value)),
     }
+
+
+def _routing_experiment_flags(user_config: Mapping[str, Any] | None) -> dict[str, bool]:
+    raw = (user_config or {}).get("routing_experiments", {}) if isinstance(user_config, Mapping) else {}
+    if not isinstance(raw, Mapping):
+        raw = {}
+    return {
+        "agentic_enabled": bool(raw.get("agentic_enabled", False)),
+        "long_context_split": bool(raw.get("long_context_split", False)),
+    }
+
+
+def _agentic_candidate(text: str, flags: Mapping[str, bool]) -> bool:
+    value = text or ""
+    if any(flags.get(name, False) for name in (
+        "email", "calendar", "drive", "granola", "travel", "tutu", "context7", "notebooklm"
+    )):
+        return False
+    if _AGENTIC_FORBIDDEN_RE.search(value):
+        return False
+    if any(pattern.search(value) for pattern in (
+        _SERVER_DEBUG_RE, _CODING_ACTION_RE, _RESEARCH_RE, _EXPERT_ANALYSIS_RE,
+        _PLANNING_RE, _PARSER_RE, _HIGH_RISK_TASK_RE,
+    )):
+        return False
+    actions = _AGENTIC_ACTION_RE.findall(value)
+    return len(actions) >= 2 and bool(_AGENTIC_SEQUENCE_RE.search(value) or _MULTI_STEP_RE.search(value))
+
+
+def _long_context_extract_candidate(text: str) -> bool:
+    value = text or ""
+    if not _LONG_CONTEXT_EXTRACT_RE.search(value):
+        return False
+    if any(pattern.search(value) for pattern in (
+        _DEEP_ANALYSIS_RE, _RESEARCH_RE, _EXPERT_ANALYSIS_RE, _PLANNING_RE,
+        _CODING_ACTION_RE, _SERVER_DEBUG_RE,
+    )):
+        return False
+    return True
 
 
 def travel_is_source_capture(text: str) -> bool:
@@ -522,6 +590,8 @@ def select_toolsets(
         requested = {"no_mcp"}
     elif role == "parser":
         requested = {"file", "code_execution", "clarify", "no_mcp"}
+    elif role == "agentic":
+        requested = {"file", "web", "memory", "skills", "session_search", "todo", "clarify", "no_mcp"}
     elif role == "research":
         requested = {"web", "file", "memory", "skills", "clarify", "no_mcp"}
     elif role == "expert_analysis":
@@ -532,6 +602,8 @@ def select_toolsets(
         requested = {"terminal", "file", "skills", "memory", "clarify", "no_mcp"}
     elif role == "planning":
         requested = {"file", "memory", "skills", "todo", "clarify", "no_mcp"}
+    elif role == "long_context_extract":
+        requested = {"file", "memory", "session_search", "clarify", "no_mcp"}
     elif role == "long_context":
         requested = {"file", "memory", "skills", "session_search", "clarify", "no_mcp"}
     else:
@@ -595,6 +667,10 @@ def max_turns_for_role(role: str, cfg: Mapping[str, Any] | None = None) -> int:
             return max(1, int(role_cfg[role]))
         except (TypeError, ValueError):
             pass
+    if role == "agentic":
+        return 16
+    if role == "long_context_extract":
+        return 12
     return 24 if role in {"expert_analysis", "coding", "planning", "server_debug", "long_context"} else 12
 
 
@@ -625,6 +701,18 @@ def compact_operational_context(platform_key: str, role: str) -> str:
             " Для изменений кода и VPS действуй backup-first. Не трогай чужой dirty diff, не используй git reset, "
             "git clean, git add . или rm -rf. Добавляй в git только точные файлы. Сначала тесты и проверка конфигурации, "
             "затем максимум один контролируемый restart. Всегда сохраняй понятный rollback."
+        )
+    if role == "agentic":
+        common += (
+            " Режим agentic-пилота: выполняй только чтение, поиск, преобразование и явно обратимые действия. "
+            "Не меняй VPS, systemd, firewall, production-конфигурацию, права, секреты; не удаляй данные, не отправляй "
+            "письма и не совершай покупки. Перед первым внешним или необратимым действием остановись и запроси подтверждение. "
+            "Не повторяй уже выполненный tool-call; веди короткий журнал фактически завершённых шагов."
+        )
+    if role == "long_context_extract":
+        common += (
+            " Режим быстрого извлечения: находи точные факты, даты, версии, решения и противоречия. "
+            "Не превращай задачу в глубокую стратегическую оценку и не додумывай отсутствующие сведения."
         )
     return common
 
@@ -737,6 +825,14 @@ def route_turn(
 ) -> TaskRoute:
     role, reason = classify_task(text, command=command)
     flags = _intent_flags(text)
+    experiments = _routing_experiment_flags(user_config)
+    if reason != "explicit override":
+        if role == "long_context" and experiments["long_context_split"] and _long_context_extract_candidate(text):
+            role = "long_context_extract"
+            reason = "long-context extraction pilot"
+        elif role == "simple" and experiments["agentic_enabled"] and _agentic_candidate(text, flags):
+            role = "agentic"
+            reason = "safe multi-step agentic pilot"
     planning_policy = adaptive_planning_policy(text, role)
     if planning_policy.reviewer_required and role in {"simple", "parser"}:
         role = "expert_analysis"

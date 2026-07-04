@@ -1,0 +1,58 @@
+# Safe model-routing pilot overlay. Apply only after regression tests pass.
+model_roles:
+  agentic:
+    provider: custom
+    model: gemini-3-flash-agent
+  long_context_extract:
+    provider: custom
+    model: gemini-3-flash-agent
+
+routing_experiments:
+  agentic_enabled: false
+  long_context_split: false
+  pilot_mode: manual_only
+
+role_fallbacks:
+  agentic:
+    public: &agentic_fallback
+      - provider: openai-codex
+        model: gpt-5.5
+        reasons:
+          - rate_limit
+          - upstream_rate_limit
+          - usage_limit_exhausted
+          - auth
+          - auth_permanent
+          - billing
+          - model_not_found
+          - provider_policy_blocked
+          - overloaded
+          - server_error
+          - timeout
+        only_before_tools: true
+        isolate_context: true
+        allowed_tools: []
+    sensitive: *agentic_fallback
+  long_context_extract:
+    public: &extract_fallback
+      - provider: openai-codex
+        model: gpt-5.5
+        reasons:
+          - rate_limit
+          - upstream_rate_limit
+          - usage_limit_exhausted
+          - auth
+          - auth_permanent
+          - billing
+          - model_not_found
+          - provider_policy_blocked
+          - overloaded
+          - server_error
+          - timeout
+        only_before_tools: true
+        isolate_context: true
+        allowed_tools: []
+    sensitive: *extract_fallback
+
+routing_policy:
+  max_model_fallbacks: 1

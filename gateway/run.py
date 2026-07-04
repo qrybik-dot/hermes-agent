@@ -17565,7 +17565,7 @@ message_context={
                 turn_route.get("routing_reason"), turn_route.get("fallback_used"), routed_toolsets, max_iterations,
             )
 
-            _live_status_roles = {"research", "expert_analysis", "planning", "coding", "long_context", "server_debug"}
+            _live_status_roles = {"agentic", "research", "expert_analysis", "planning", "coding", "long_context_extract", "long_context", "server_debug"}
             _selected_provider = turn_route["runtime"].get("provider")
             _selected_model = turn_route.get("model")
             _quality_locked_roles = {"expert_analysis", "planning", "coding", "long_context", "server_debug"}
