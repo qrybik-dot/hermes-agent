@@ -39,6 +39,20 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_gateway_hermes_home(tmp_path, monkeypatch):
+    """Keep every gateway test away from the live Hermes profile.
+
+    Restart and stuck-loop helpers write marker files by design. Without a
+    per-test home, a focused pytest run under the production ``hermes`` user can
+    leave ``.restart_notify.json`` and related markers in ``~/.hermes``.
+    Explicit per-test monkeypatches remain free to override this fixture.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import gateway.run as gateway_run
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+
 def make_async_session_db(sync_mock=None):
     """Wrap a sync mock SessionDB in AsyncSessionDB so gateway code that awaits
     the facade works in tests. Returns (facade, sync_mock); configure return
