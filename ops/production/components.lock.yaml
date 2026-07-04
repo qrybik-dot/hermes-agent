@@ -1,37 +1,41 @@
-captured_at: '2026-07-03T15:40:37Z'
+captured_at: '2026-07-04T07:48:28Z'
 components:
   hermes:
-    installed: v0.16.0-custom
+    installed: v0.18.0-custom
     target: v2026.7.1
     source: NousResearch/hermes-agent
-    status: integration_required
-    rollback: rollback/pre-routing-modernization-20260703T153808Z
+    status: production
+    branch: integration/hermes-v018-routing-lite
+    rollback: prod/routing-hotfix-20260703T1605Z and saved v0.16 systemd unit
   cliproxy:
-    installed: 7.2.42
+    installed: 7.2.49
     target: 7.2.49
     source: router-for-me/CLIProxyAPI
-    status: pending
+    status: current
     rollback: cli-proxy-api-7.2.42
   cloudflared:
-    installed: 2026.6.0
+    installed: 2026.6.1
     target: 2026.6.1
     source: cloudflare/cloudflared
-    status: pending
+    status: current
   uv:
-    installed: 0.11.21
+    installed: 0.11.26
     target: 0.11.26
     source: astral-sh/uv
-    status: pending
+    status: current
   notebooklm_mcp_cli:
     installed: 0.8.1
     target: 0.8.1
     source: PyPI
-    status: current
+    status: package_current_auth_expired
+    action: manual Google login required; auth watchdog paused
   graphifyy:
-    installed: 0.8.50
+    installed: 0.9.5
     target: 0.9.5
     source: PyPI
-    status: pilot_later
+    status: current
+    runtime: /home/hermes/.hermes/tools/graphify-0.9.5/venv
+    rollback: global graphify 0.8.50 plus saved skill and scripts
   syncthing:
     installed: 2.1.1
     target: 2.1.1
@@ -43,12 +47,12 @@ components:
     source: restic/restic
     status: current
   tailscale:
-    installed: 1.98.4
+    installed: 1.98.8
     target: 1.98.8
     source: apt stable
-    status: pending
+    status: current
   chrome:
-    installed: 149.0.7827.200
+    installed: 150.0.7871.46
     target: 150.0.7871.46
     source: Google apt
-    status: pending
+    status: current
