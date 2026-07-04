@@ -1,18 +1,20 @@
-captured_at: '2026-07-04T07:48:28Z'
+captured_at: '2026-07-04T09:30:27Z'
 components:
   hermes:
     installed: v0.18.0-custom
-    target: v2026.7.1
+    upstream_release: v2026.7.1
     source: NousResearch/hermes-agent
     status: production
     branch: integration/hermes-v018-routing-lite
-    rollback: prod/routing-hotfix-20260703T1605Z and saved v0.16 systemd unit
+    release_tag: prod/hermes-v018-20260704T0929Z
+    rollback: prod/routing-hotfix-20260703T1605Z plus saved v0.16 systemd unit
   cliproxy:
-    installed: 7.2.49
-    target: 7.2.49
+    installed: 7.2.50
+    target: 7.2.50
     source: router-for-me/CLIProxyAPI
     status: current
-    rollback: cli-proxy-api-7.2.42
+    qualification: Gemini, Sonnet and Opus exact-response smoke passed
+    rollback: cli-proxy-api-7.2.49; older baseline 7.2.42 also retained
   cloudflared:
     installed: 2026.6.1
     target: 2026.6.1
@@ -24,18 +26,22 @@ components:
     source: astral-sh/uv
     status: current
   notebooklm_mcp_cli:
-    installed: 0.8.1
-    target: 0.8.1
-    source: PyPI
-    status: package_current_auth_expired
-    action: manual Google login required; auth watchdog paused
+    installed: 0.8.2
+    target: 0.8.2
+    source: PyPI / jacob-bd/notebooklm-mcp-cli
+    status: current_auth_valid
+    verification: login check, 6-notebook list and read-only query passed
+    watchdog: enabled; telegram:256818214
+    rollback: /home/hermes/.hermes/backups/notebooklm-20260704T085233Z
   graphifyy:
     installed: 0.9.5
     target: 0.9.5
     source: PyPI
     status: current
     runtime: /home/hermes/.hermes/tools/graphify-0.9.5/venv
-    rollback: global graphify 0.8.50 plus saved skill and scripts
+    global_tool: 0.9.5
+    rollback: /home/hermes/.hermes/tools/graphify-0.8.50/venv plus saved skill/scripts
+    verification: 23 nodes, 40 links, 4 communities; timer active
   syncthing:
     installed: 2.1.1
     target: 2.1.1
@@ -56,3 +62,14 @@ components:
     target: 150.0.7871.46
     source: Google apt
     status: current
+  update_radar:
+    installed: v3
+    status: active
+    schedule: daily 07:15 UTC with up to 15 minutes randomized delay
+    contract: silent when unchanged; no automatic updates
+    verification: live baseline silent; systemd run success; one fixture report delivered;
+      repeat produced zero output
+  xray:
+    installed: 26.6.1
+    source: active Docker container teddysun/xray
+    status: running
