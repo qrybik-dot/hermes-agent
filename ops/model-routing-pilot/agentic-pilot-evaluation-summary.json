@@ -1,0 +1,104 @@
+{
+  "date": "2026-07-04",
+  "status": "pilot_completed_not_promoted",
+  "models": [
+    "gemini-3-flash-agent",
+    "gemini-3.5-flash-low"
+  ],
+  "method": {
+    "total_scenarios": 24,
+    "runs": 48,
+    "valid_scenarios": 22,
+    "excluded_scenarios": [
+      {
+        "id": "transcript_facts",
+        "reason": "source omitted the year while the expected answer required 2026"
+      },
+      {
+        "id": "benchmark_compare",
+        "reason": "speedup_percent formula was ambiguous; both models used the same alternative definition"
+      }
+    ],
+    "tools": ["list_files", "read_file", "write_file"],
+    "sandboxed": true,
+    "production_data_used": false,
+    "source_mutation_allowed": false
+  },
+  "adjudicated_results": {
+    "gemini-3-flash-agent": {
+      "strict_exact": "21/22",
+      "strict_rate_percent": 95.5,
+      "semantic_correct": "22/22",
+      "semantic_rate_percent": 100.0,
+      "average_seconds": 8.72,
+      "median_seconds": 8.0,
+      "average_api_calls": 4.73,
+      "average_tool_calls": 3.86,
+      "tool_errors": 0,
+      "source_mutations": 0,
+      "nudges": 0,
+      "strict_mismatch": "action_items: preserved all facts but changed verb forms"
+    },
+    "gemini-3.5-flash-low": {
+      "strict_exact": "22/22",
+      "strict_rate_percent": 100.0,
+      "semantic_correct": "22/22",
+      "semantic_rate_percent": 100.0,
+      "average_seconds": 8.09,
+      "median_seconds": 7.64,
+      "average_api_calls": 4.36,
+      "average_tool_calls": 3.68,
+      "tool_errors": 0,
+      "source_mutations": 0,
+      "nudges": 0
+    }
+  },
+  "speed_comparison": {
+    "flash_agent_faster_cases": 10,
+    "flash_low_faster_cases": 12,
+    "average_flash_agent_slowdown_seconds": 0.63,
+    "average_flash_agent_slowdown_percent": 7.7,
+    "flash_agent_extra_api_calls_percent": 8.3,
+    "flash_agent_extra_tool_calls_percent": 4.9
+  },
+  "decision": {
+    "promote_flash_agent": false,
+    "automatic_agentic_flag": false,
+    "keep_manual_role": true,
+    "keep_flash_low_for_bounded_file_workflows": true,
+    "long_context_split": false,
+    "reason": "Flash Agent matched semantic quality but was slower, used more calls, and had lower strict exactness. It did not meet the agreed promotion criterion of better speed or fewer repeats without quality loss."
+  },
+  "examples": [
+    "compare two configuration snapshots and list changed fields",
+    "merge contact files and deduplicate by latest update",
+    "extract overdue tasks from CSV",
+    "count error types in logs",
+    "compare service versions with required versions",
+    "find records with missing required fields",
+    "summarize a family budget",
+    "rank candidates by score and risk",
+    "extract assigned actions from meeting notes",
+    "find duplicate places across two sources",
+    "reconcile inventory",
+    "detect schedule conflicts",
+    "compare policy versions",
+    "classify source freshness",
+    "calculate open workload by owner",
+    "combine facts from transcript chunks",
+    "build dependency execution order",
+    "discover a marker in nested files",
+    "compare benchmark results",
+    "filter alert-worthy events",
+    "normalize duplicate addresses",
+    "build release notes from commits",
+    "validate feature flags",
+    "build a technical handoff checkpoint"
+  ],
+  "rollback": {
+    "applied": true,
+    "config_flag": "routing_experiments.agentic_enabled=false",
+    "restart_required": false,
+    "manual_role_available": "/role agentic"
+  }
+}

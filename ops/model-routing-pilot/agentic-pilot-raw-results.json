@@ -1,0 +1,1871 @@
+{
+  "created_at": 1783204762.1275082,
+  "models": [
+    "gemini-3-flash-agent",
+    "gemini-3.5-flash-low"
+  ],
+  "cases": [
+    "compare_configs",
+    "merge_contacts",
+    "overdue_tasks",
+    "log_error_counts",
+    "version_mismatch",
+    "missing_fields",
+    "budget_summary",
+    "candidate_shortlist",
+    "action_items",
+    "duplicate_places",
+    "inventory_reconcile",
+    "schedule_conflicts",
+    "policy_diff",
+    "source_freshness",
+    "owner_load",
+    "transcript_facts",
+    "dependency_order",
+    "discover_marker",
+    "benchmark_compare",
+    "alert_filter",
+    "normalize_addresses",
+    "release_notes",
+    "feature_flags",
+    "handoff_checkpoint",
+    "stale_documents"
+  ],
+  "runs": [
+    {
+      "case": "compare_configs",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.92,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "changed": {
+          "model": {
+            "old": "gemini-3.5-flash-low",
+            "new": "gemini-3-flash-agent"
+          },
+          "timeout": {
+            "old": 60,
+            "new": 45
+          }
+        }
+      }
+    },
+    {
+      "case": "compare_configs",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.59,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "changed": {
+          "model": {
+            "old": "gemini-3.5-flash-low",
+            "new": "gemini-3-flash-agent"
+          },
+          "timeout": {
+            "old": 60,
+            "new": 45
+          }
+        }
+      }
+    },
+    {
+      "case": "merge_contacts",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.72,
+      "final_text": "nna in B is `2026-07-01`.\nLatest updated date is `2026-07-01` (from B). So we keep Anna from B: `{\"email\":\"anna@example.com\",\"name\":\"Анна\",\"phone\":\"999\",\"updated\":\"2026-07-01\"}`.\n\nOthers:\nBoris: `{\"email\":\"boris@example.com\",\"name\":\"Борис\",\"phone\":\"222\",\"updated\":\"2026-06-03\"}`\nClara: `{\"email\":\"clara@example.com\",\"name\":\"Клара\",\"phone\":\"333\",\"updated\":\"2026-06-20\"}`\n\nSorted by email:\n1. anna@example.com\n2. boris@example.com\n3. clara@example.com\n\nThis perfectly matches my output.json.\n\nDone!DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "contacts": [
+          {
+            "email": "anna@example.com",
+            "name": "Анна",
+            "phone": "999",
+            "updated": "2026-07-01"
+          },
+          {
+            "email": "boris@example.com",
+            "name": "Борис",
+            "phone": "222",
+            "updated": "2026-06-03"
+          },
+          {
+            "email": "clara@example.com",
+            "name": "Клара",
+            "phone": "333",
+            "updated": "2026-06-20"
+          }
+        ]
+      }
+    },
+    {
+      "case": "merge_contacts",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 5.9,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "contacts": [
+          {
+            "email": "anna@example.com",
+            "name": "Анна",
+            "phone": "999",
+            "updated": "2026-07-01"
+          },
+          {
+            "email": "boris@example.com",
+            "name": "Борис",
+            "phone": "222",
+            "updated": "2026-06-03"
+          },
+          {
+            "email": "clara@example.com",
+            "name": "Клара",
+            "phone": "333",
+            "updated": "2026-06-20"
+          }
+        ]
+      }
+    },
+    {
+      "case": "overdue_tasks",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 4.97,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "overdue": [
+          {
+            "id": 1,
+            "title": "Подготовить отчет",
+            "owner": "Антон",
+            "days_overdue": 2
+          },
+          {
+            "id": 4,
+            "title": "Позвонить врачу",
+            "owner": "Вера",
+            "days_overdue": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "overdue_tasks",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 5.44,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "overdue": [
+          {
+            "id": 1,
+            "title": "Подготовить отчет",
+            "owner": "Антон",
+            "days_overdue": 2
+          },
+          {
+            "id": 4,
+            "title": "Позвонить врачу",
+            "owner": "Вера",
+            "days_overdue": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "log_error_counts",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 4.43,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "total_errors": 3,
+        "by_type": {
+          "auth": 1,
+          "timeout": 2
+        },
+        "last_error": "timeout"
+      }
+    },
+    {
+      "case": "log_error_counts",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 9.71,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "total_errors": 3,
+        "by_type": {
+          "auth": 1,
+          "timeout": 2
+        },
+        "last_error": "timeout"
+      }
+    },
+    {
+      "case": "version_mismatch",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 6,
+      "tool_calls": 5,
+      "reads": 3,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 11.19,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "compliant": [
+          "gateway"
+        ],
+        "non_compliant": {
+          "worker": {
+            "openai_sdk": {
+              "actual": "2.23.1",
+              "required": "2.24.0"
+            },
+            "schema": {
+              "actual": 28,
+              "required": 29
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "version_mismatch",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 5,
+      "reads": 3,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 15.9,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "compliant": [
+          "gateway"
+        ],
+        "non_compliant": {
+          "worker": {
+            "openai_sdk": {
+              "actual": "2.23.1",
+              "required": "2.24.0"
+            },
+            "schema": {
+              "actual": 28,
+              "required": 29
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "missing_fields",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 8.71,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "invalid": [
+          {
+            "id": 2,
+            "missing": [
+              "hours",
+              "location"
+            ]
+          },
+          {
+            "id": 3,
+            "missing": [
+              "location"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "missing_fields",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 6,
+      "tool_calls": 5,
+      "reads": 2,
+      "writes": 2,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 8.0,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file",
+        "write_file"
+      ],
+      "parsed": {
+        "invalid": [
+          {
+            "id": 2,
+            "missing": [
+              "hours",
+              "location"
+            ]
+          },
+          {
+            "id": 3,
+            "missing": [
+              "location"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "budget_summary",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 5.1,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "total": 4000,
+        "by_category": {
+          "Дети": 1500,
+          "Продукты": 2000,
+          "Транспорт": 500
+        },
+        "largest_category": "Продукты"
+      }
+    },
+    {
+      "case": "budget_summary",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 5.49,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "total": 4000,
+        "by_category": {
+          "Дети": 1500,
+          "Продукты": 2000,
+          "Транспорт": 500
+        },
+        "largest_category": "Продукты"
+      }
+    },
+    {
+      "case": "candidate_shortlist",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 4.71,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "shortlist": [
+          {
+            "rank": 1,
+            "name": "Виктор",
+            "score": 88
+          },
+          {
+            "rank": 2,
+            "name": "Алина",
+            "score": 84
+          },
+          {
+            "rank": 3,
+            "name": "Галина",
+            "score": 84
+          }
+        ]
+      }
+    },
+    {
+      "case": "candidate_shortlist",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 4.86,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "shortlist": [
+          {
+            "rank": 1,
+            "name": "Виктор",
+            "score": 88
+          },
+          {
+            "rank": 2,
+            "name": "Алина",
+            "score": 84
+          },
+          {
+            "rank": 3,
+            "name": "Галина",
+            "score": 84
+          }
+        ]
+      }
+    },
+    {
+      "case": "action_items",
+      "model": "gemini-3-flash-agent",
+      "passed": false,
+      "exact": false,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 6,
+      "tool_calls": 5,
+      "reads": 2,
+      "writes": 2,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 15.62,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file",
+        "write_file"
+      ],
+      "parsed": {
+        "actions": [
+          {
+            "owner": "Антон",
+            "action": "проверить роутинг",
+            "due": "2026-07-06"
+          },
+          {
+            "owner": "Вера",
+            "action": "подготовить список вопросов",
+            "due": "2026-07-07"
+          },
+          {
+            "owner": "Антон",
+            "action": "прислать результаты тестов",
+            "due": "2026-07-08"
+          }
+        ]
+      }
+    },
+    {
+      "case": "action_items",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 12.82,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "actions": [
+          {
+            "owner": "Антон",
+            "action": "проверит роутинг",
+            "due": "2026-07-06"
+          },
+          {
+            "owner": "Вера",
+            "action": "подготовит список вопросов",
+            "due": "2026-07-07"
+          },
+          {
+            "owner": "Антон",
+            "action": "пришлет результаты тестов",
+            "due": "2026-07-08"
+          }
+        ]
+      }
+    },
+    {
+      "case": "duplicate_places",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 10.22,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "duplicates": [
+          {
+            "name": "Лес Приключений",
+            "sources": [
+              "places_a.json",
+              "places_b.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "duplicate_places",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 10.06,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "duplicates": [
+          {
+            "name": "Лес Приключений",
+            "sources": [
+              "places_a.json",
+              "places_b.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "inventory_reconcile",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 12.62,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "differences": [
+          {
+            "sku": "B2",
+            "expected": 3,
+            "actual": 1,
+            "delta": -2
+          },
+          {
+            "sku": "C3",
+            "expected": 8,
+            "actual": 10,
+            "delta": 2
+          },
+          {
+            "sku": "D4",
+            "expected": 0,
+            "actual": 2,
+            "delta": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "inventory_reconcile",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 10.47,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "differences": [
+          {
+            "sku": "B2",
+            "expected": 3,
+            "actual": 1,
+            "delta": -2
+          },
+          {
+            "sku": "C3",
+            "expected": 8,
+            "actual": 10,
+            "delta": 2
+          },
+          {
+            "sku": "D4",
+            "expected": 0,
+            "actual": 2,
+            "delta": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "schedule_conflicts",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 7.64,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "conflicts": [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "C",
+            "D"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "schedule_conflicts",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.87,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "conflicts": [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "C",
+            "D"
+          ]
+        ]
+      }
+    },
+    {
+      "case": "policy_diff",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 7.83,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "changes": [
+          {
+            "field": "fallbacks",
+            "old": 2,
+            "new": 1,
+            "direction": "decrease"
+          },
+          {
+            "field": "max_iterations",
+            "old": 24,
+            "new": 10,
+            "direction": "decrease"
+          }
+        ]
+      }
+    },
+    {
+      "case": "policy_diff",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 9.11,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "changes": [
+          {
+            "field": "fallbacks",
+            "old": 2,
+            "new": 1,
+            "direction": "decrease"
+          },
+          {
+            "field": "max_iterations",
+            "old": 24,
+            "new": 10,
+            "direction": "decrease"
+          }
+        ]
+      }
+    },
+    {
+      "case": "source_freshness",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 8.0,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "fresh": [
+          "A",
+          "C"
+        ],
+        "stale": [
+          "B"
+        ],
+        "unverified": [
+          "D"
+        ]
+      }
+    },
+    {
+      "case": "source_freshness",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 7.95,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "fresh": [
+          "A",
+          "C"
+        ],
+        "stale": [
+          "B"
+        ],
+        "unverified": [
+          "D"
+        ]
+      }
+    },
+    {
+      "case": "owner_load",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 1,
+      "writes": 2,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 10.12,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file",
+        "write_file"
+      ],
+      "parsed": {
+        "by_owner": {
+          "Антон": 3,
+          "Вера": 7,
+          "Игорь": 1
+        },
+        "most_loaded": "Вера"
+      }
+    },
+    {
+      "case": "owner_load",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 8.12,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "by_owner": {
+          "Антон": 3,
+          "Вера": 7,
+          "Игорь": 1
+        },
+        "most_loaded": "Вера"
+      }
+    },
+    {
+      "case": "transcript_facts",
+      "model": "gemini-3.5-flash-low",
+      "passed": false,
+      "exact": false,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 5,
+      "reads": 3,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 9.61,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "release_date": "2024-07-09",
+        "risk": "общая квота Antigravity",
+        "coding_model": "GPT-5.5",
+        "pilot_scope": "обратимые операции",
+        "success_threshold_percent": 90
+      }
+    },
+    {
+      "case": "transcript_facts",
+      "model": "gemini-3-flash-agent",
+      "passed": false,
+      "exact": false,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 5,
+      "reads": 3,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 12.0,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "release_date": "2024-07-09",
+        "risk": "общая квота Antigravity",
+        "coding_model": "GPT-5.5",
+        "pilot_scope": "обратимые операции",
+        "success_threshold_percent": 90
+      }
+    },
+    {
+      "case": "dependency_order",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 7.65,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "order": [
+          "backup",
+          "code",
+          "tests",
+          "deploy"
+        ]
+      }
+    },
+    {
+      "case": "dependency_order",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.49,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "order": [
+          "backup",
+          "code",
+          "tests",
+          "deploy"
+        ]
+      }
+    },
+    {
+      "case": "discover_marker",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.02,
+      "final_text": "精 DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "file": "archive/c.txt",
+        "marker": "hermes-safe-pilot",
+        "owner": "Anton"
+      }
+    },
+    {
+      "case": "discover_marker",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 6,
+      "tool_calls": 5,
+      "reads": 3,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 8.38,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "file": "archive/c.txt",
+        "marker": "hermes-safe-pilot",
+        "owner": "Anton"
+      }
+    },
+    {
+      "case": "benchmark_compare",
+      "model": "gemini-3-flash-agent",
+      "passed": false,
+      "exact": false,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 12.41,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "winner": "flash-agent",
+        "success_rate_delta_pp": 5.0,
+        "speedup_percent": 53.1,
+        "error_delta": -1
+      }
+    },
+    {
+      "case": "benchmark_compare",
+      "model": "gemini-3.5-flash-low",
+      "passed": false,
+      "exact": false,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 4,
+      "reads": 2,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 12.12,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "winner": "flash-agent",
+        "success_rate_delta_pp": 5.0,
+        "speedup_percent": 53.1,
+        "error_delta": -1
+      }
+    },
+    {
+      "case": "alert_filter",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.77,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "notify_ids": [
+          2,
+          4
+        ],
+        "silent_ids": [
+          1,
+          3,
+          5
+        ]
+      }
+    },
+    {
+      "case": "alert_filter",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 7.43,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "notify_ids": [
+          2,
+          4
+        ],
+        "silent_ids": [
+          1,
+          3,
+          5
+        ]
+      }
+    },
+    {
+      "case": "normalize_addresses",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.98,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "groups": [
+          {
+            "canonical": "Королёв, улица Лесная, 10",
+            "count": 2
+          },
+          {
+            "canonical": "Москва, проспект Мира, 119",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "normalize_addresses",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.75,
+      "final_text": "Now I should reply only DONE.",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "groups": [
+          {
+            "canonical": "Королёв, улица Лесная, 10",
+            "count": 2
+          },
+          {
+            "canonical": "Москва, проспект Мира, 119",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "release_notes",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 7.78,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "features": [
+          "add agentic routing flag"
+        ],
+        "fixes": [
+          "prevent duplicate travel saves",
+          "stop fallback after tool call"
+        ],
+        "other_count": 2
+      }
+    },
+    {
+      "case": "release_notes",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 3,
+      "reads": 1,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 8.71,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "features": [
+          "add agentic routing flag"
+        ],
+        "fixes": [
+          "prevent duplicate travel saves",
+          "stop fallback after tool call"
+        ],
+        "other_count": 2
+      }
+    },
+    {
+      "case": "feature_flags",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 5,
+      "reads": 3,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 11.16,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "valid": true,
+        "enabled": [
+          "agentic"
+        ],
+        "violations": []
+      }
+    },
+    {
+      "case": "feature_flags",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 5,
+      "tool_calls": 6,
+      "reads": 3,
+      "writes": 2,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 13.0,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file",
+        "write_file"
+      ],
+      "parsed": {
+        "valid": true,
+        "enabled": [
+          "agentic"
+        ],
+        "violations": []
+      }
+    },
+    {
+      "case": "handoff_checkpoint",
+      "model": "gemini-3.5-flash-low",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 4,
+      "tool_calls": 6,
+      "reads": 4,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 6.77,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "changed_files": [
+          "gateway/task_router.py",
+          "tests/gateway/test_model_routing_experiments.py"
+        ],
+        "commands": [
+          "pytest tests/gateway/test_model_routing_experiments.py",
+          "git diff --check"
+        ],
+        "verified": [
+          "42 passed",
+          "diff check passed"
+        ],
+        "remaining": [
+          "collect 20-30 real pilot tasks",
+          "keep long_context_split disabled"
+        ]
+      }
+    },
+    {
+      "case": "handoff_checkpoint",
+      "model": "gemini-3-flash-agent",
+      "passed": true,
+      "exact": true,
+      "output_exists": true,
+      "source_mutated": false,
+      "api_calls": 7,
+      "tool_calls": 6,
+      "reads": 4,
+      "writes": 1,
+      "lists": 1,
+      "tool_errors": 0,
+      "nudges": 0,
+      "seconds": 13.7,
+      "final_text": "DONE",
+      "parse_error": "",
+      "error": "",
+      "trace": [
+        "list_files",
+        "read_file",
+        "read_file",
+        "read_file",
+        "read_file",
+        "write_file"
+      ],
+      "parsed": {
+        "changed_files": [
+          "gateway/task_router.py",
+          "tests/gateway/test_model_routing_experiments.py"
+        ],
+        "commands": [
+          "pytest tests/gateway/test_model_routing_experiments.py",
+          "git diff --check"
+        ],
+        "verified": [
+          "42 passed",
+          "diff check passed"
+        ],
+        "remaining": [
+          "collect 20-30 real pilot tasks",
+          "keep long_context_split disabled"
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "gemini-3-flash-agent": {
+      "passed": 21,
+      "total": 24,
+      "pass_rate": 87.5,
+      "avg_seconds": 9.01,
+      "median_seconds": 8.38,
+      "avg_api_calls": 4.75,
+      "avg_tool_calls": 3.92,
+      "tool_errors": 0,
+      "nudges": 0,
+      "source_mutations": 0,
+      "failed_cases": [
+        "action_items",
+        "transcript_facts",
+        "benchmark_compare"
+      ]
+    },
+    "gemini-3.5-flash-low": {
+      "passed": 22,
+      "total": 24,
+      "pass_rate": 91.7,
+      "avg_seconds": 8.32,
+      "median_seconds": 7.78,
+      "avg_api_calls": 4.33,
+      "avg_tool_calls": 3.75,
+      "tool_errors": 0,
+      "nudges": 0,
+      "source_mutations": 0,
+      "failed_cases": [
+        "transcript_facts",
+        "benchmark_compare"
+      ]
+    }
+  }
+}
