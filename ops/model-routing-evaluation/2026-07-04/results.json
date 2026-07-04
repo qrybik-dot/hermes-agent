@@ -1,0 +1,73 @@
+{
+  "date": "2026-07-04",
+  "status": "completed_without_routing_change",
+  "models": {
+    "gemini-3.5-flash-low": {
+      "structured_tasks": {"score": 400, "max": 400, "avg_seconds": 3.43},
+      "coding": {"tests_passed": 6, "tests_total": 6, "seconds": 5.86, "format_ok": true},
+      "long_context": {"facts_correct": 7, "facts_total": 7, "seconds": 9.19},
+      "file_tools_simple": {"score": 100, "seconds": 16.14},
+      "verdict": "keep_simple_parser_primary"
+    },
+    "gemini-3-flash-agent": {
+      "structured_tasks": {"score": 380, "max": 400, "avg_seconds": 2.46},
+      "coding": {"tests_passed": 6, "tests_total": 6, "seconds": 4.91, "format_ok": true},
+      "long_context": {"facts_correct": 7, "facts_total": 7, "seconds": 3.54},
+      "file_tools_simple": {"score": 100, "seconds": 16.78},
+      "file_tools_multifile": {"score": 100, "seconds": 25.92, "reads": 3, "writes": 2},
+      "verdict": "pilot_agentic_and_long_context_extraction"
+    },
+    "gemini-pro-agent": {
+      "structured_tasks": {"score": 400, "max": 400, "avg_seconds": 10.31},
+      "coding": {"tests_passed": 6, "tests_total": 6, "seconds": 11.82, "format_ok": true},
+      "function_call": {"passed": true},
+      "verdict": "shadow_only"
+    },
+    "gemini-3.1-pro-low": {
+      "structured_tasks": {"score": 380, "max": 400, "avg_seconds": 9.75},
+      "coding": {"tests_passed": 6, "tests_total": 6, "seconds": 13.14, "format_ok": true},
+      "long_context": {"facts_correct": 7, "facts_total": 7, "seconds": 19.12},
+      "expert_decision": {"choice": "limited_pilot", "seconds": 16.21, "pilot_tasks": 15, "main_weakness": "failure_domain interpreted as task scope"},
+      "verdict": "keep_research_deep_context_but_not_simple_extraction"
+    },
+    "claude-sonnet-4-6": {
+      "structured_tasks": {"score": 367, "max": 400, "avg_seconds": 6.83},
+      "coding": {"tests_passed": 6, "tests_total": 6, "seconds": 3.58, "format_ok": true},
+      "long_context": {"facts_correct": 7, "facts_total": 7, "seconds": 4.88},
+      "expert_decision": {"choice": "limited_pilot", "seconds": 18.81, "pilot_tasks": 200, "main_strength": "detailed metrics and stop conditions", "main_weakness": "overengineered pilot size"},
+      "verdict": "ab_pilot_expert_analysis_planning_reviewer"
+    },
+    "claude-opus-4-6-thinking": {
+      "structured_tasks": {"score": 367, "max": 400, "avg_seconds": 7.21},
+      "coding": {"tests_passed": 6, "tests_total": 6, "seconds": 8.6, "format_ok": false},
+      "verdict": "manual_critical_only"
+    },
+    "gpt-5.5": {
+      "structured_tasks": {"score": 200, "max": 200, "avg_seconds": 64.14, "coverage": ["parser", "schedule"]},
+      "coding": {"tests_passed": 6, "tests_total": 6, "seconds": 51.07, "format_ok": false},
+      "verdict": "keep_coding_server_debug_primary"
+    },
+    "gemini-3.1-flash-image": {
+      "image_smoke": {"passed": true, "seconds": 12.85, "format": "JPEG", "resolution": "1408x768", "bytes": 449443},
+      "verdict": "candidate_fast_image_edit_not_recognition"
+    }
+  },
+  "conclusions": [
+    "Do not replace the current routing globally.",
+    "Flash Low remains the best proven default for simple and parser tasks.",
+    "Flash Agent deserves a controlled pilot for read-only and reversible multi-step tasks.",
+    "Sonnet deserves an A/B pilot for expert_analysis, general planning and reviewer work, but not an immediate full switch.",
+    "Gemini Pro should remain for research and difficult long-context reasoning, not every long document extraction.",
+    "GPT-5.5 remains primary for repository changes and server work; latency makes it unsuitable for routine tasks.",
+    "Pro Agent remains shadow-only until it beats Flash Agent on real tool workflows.",
+    "Opus remains manual critical escalation.",
+    "Flash Image is an image generation/editing route, not the default OCR or visual recognition route."
+  ],
+  "limitations": [
+    "Antigravity models were called through direct CLIProxy while GPT-5.5 used the full Codex runtime, so raw latency is not directly comparable.",
+    "The coding test measured correctness of a proposed patch, not multi-file repository execution.",
+    "Only Flash Low and Flash Agent completed the identical simple file-tool scenario; Flash Agent additionally completed the longer multi-file workflow.",
+    "No automated image quality ranking was claimed because file validity and resolution do not measure visual quality.",
+    "The benchmark does not justify automatic routing changes without a real 20-30 task pilot."
+  ]
+}
