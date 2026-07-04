@@ -1,8 +1,8 @@
 {
-  "captured_at": "2026-07-04T09:30:27Z",
+  "captured_at": "2026-07-04T11:11:56Z",
   "status": "READY",
   "production_branch": "integration/hermes-v018-routing-lite",
-  "capture_head": "9475c179bd9180348bca451350874d5263044a0b",
+  "capture_head": "7056c2e9826703d90f1ebbbf392dff058a986b06",
   "release_tag": "prod/hermes-v018-ready-20260704T1001Z",
   "upstream_target": {
     "tag": "v2026.7.1",
@@ -92,7 +92,13 @@
     "update_radar": "silent live run; fixture delivery; repeat zero output",
     "systemd_failed_units": 0,
     "git_sync_guard": "passed after clean fast-forward of hermes-homelander",
-    "startup_notifier": "bounded journal check; timeout non-fatal; Telegram send passed; systemd success"
+    "startup_notifier": "bounded journal check; timeout non-fatal; Telegram send passed; systemd success",
+    "snapshot_head_alignment": "HEAD/origin/tag/runtime aligned at 7056c2e9826703d90f1ebbbf392dff058a986b06",
+    "cloudflared_runtime": "live process and /usr/bin/cloudflared share inode 2049:2432; version 2026.6.1",
+    "graphify_natural_timer_run": "passed at 2026-07-04T11:00:21Z with exit 0",
+    "notebooklm_natural_watchdog_run": "passed at 2026-07-04T11:00:09.762351Z; next 2026-07-04T11:15:00Z",
+    "update_radar_manual_run": "systemd production service run passed and stayed silent",
+    "update_radar_first_natural_run": "scheduled verification after 2026-07-05 timer trigger"
   },
   "model_qualification": {
     "gemini-3.5-flash-low": "ACTIVE",
@@ -117,5 +123,50 @@
     "cliproxy_binary": "/home/hermes/.hermes/backups/cli-proxy-api-7.2.49",
     "notebooklm_backup": "/home/hermes/.hermes/backups/notebooklm-20260704T085233Z",
     "graphify_0850_runtime": "/home/hermes/.hermes/tools/graphify-0.8.50/venv"
+  },
+  "runtime_head": "7056c2e9826703d90f1ebbbf392dff058a986b06",
+  "post_release_tail_audit": {
+    "audited_at": "2026-07-04T11:11:56Z",
+    "status": "READY_WITH_NATURAL_RADAR_RUN_SCHEDULED",
+    "git": {
+      "head": "7056c2e9826703d90f1ebbbf392dff058a986b06",
+      "origin_head": "7056c2e9826703d90f1ebbbf392dff058a986b06",
+      "release_tag": "prod/hermes-v018-ready-20260704T1001Z",
+      "release_tag_head": "7056c2e9826703d90f1ebbbf392dff058a986b06",
+      "worktree_clean_before_update": true
+    },
+    "runtime": {
+      "gateway_pid": 1546100,
+      "command": "/home/hermes/hermes-v018-integration/.venv/bin/python -m hermes_cli.main gateway run --replace",
+      "runtime_head": "7056c2e9826703d90f1ebbbf392dff058a986b06"
+    },
+    "cloudflared": {
+      "pid": 1503764,
+      "started_at": "Fri Jul 3 22:06:42 2026 UTC",
+      "version": "cloudflared version 2026.6.1",
+      "same_inode_as_disk_binary": true,
+      "device_inode": "2049:2432"
+    },
+    "graphify": {
+      "last_natural_run_at": "2026-07-04T11:00:21Z",
+      "exit_status": 0,
+      "result": "success",
+      "next_run_at": "2026-07-04T11:15:21Z"
+    },
+    "notebooklm_watchdog": {
+      "enabled": true,
+      "last_status": "ok",
+      "last_error": null,
+      "last_run_at": "2026-07-04T11:00:09.762351+00:00",
+      "next_run_at": "2026-07-04T11:15:00+00:00",
+      "delivery": "telegram:256818214"
+    },
+    "update_radar": {
+      "manual_production_run_at": "2026-07-04T09:00:08Z",
+      "manual_run_result": "success_and_silent",
+      "first_natural_scheduled_run": "pending_2026-07-05",
+      "next_timer_at": "2026-07-05T07:17:04Z",
+      "verification_scheduled_for": "2026-07-05T09:35:00+02:00 Europe/Stockholm"
+    }
   }
 }

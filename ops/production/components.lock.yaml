@@ -1,4 +1,4 @@
-captured_at: '2026-07-04T09:30:27Z'
+captured_at: '2026-07-04T11:11:56Z'
 components:
   hermes:
     installed: v0.18.0-custom
@@ -19,7 +19,8 @@ components:
     installed: 2026.6.1
     target: 2026.6.1
     source: cloudflare/cloudflared
-    status: current
+    status: current_runtime_verified
+    verification: live process shares inode 2049:2432 with /usr/bin/cloudflared
   uv:
     installed: 0.11.26
     target: 0.11.26
@@ -29,19 +30,21 @@ components:
     installed: 0.8.2
     target: 0.8.2
     source: PyPI / jacob-bd/notebooklm-mcp-cli
-    status: current_auth_valid
+    status: current_watchdog_verified
     verification: login check, 6-notebook list and read-only query passed
     watchdog: enabled; telegram:256818214
     rollback: /home/hermes/.hermes/backups/notebooklm-20260704T085233Z
+    scheduled_verification: natural watchdog run status ok at 2026-07-04T11:00:09.762351Z
   graphifyy:
     installed: 0.9.5
     target: 0.9.5
     source: PyPI
-    status: current
+    status: current_timer_verified
     runtime: /home/hermes/.hermes/tools/graphify-0.9.5/venv
     global_tool: 0.9.5
     rollback: /home/hermes/.hermes/tools/graphify-0.8.50/venv plus saved skill/scripts
     verification: 23 nodes, 40 links, 4 communities; timer active
+    scheduled_verification: natural timer run success at 2026-07-04T11:00:21Z
   syncthing:
     installed: 2.1.1
     target: 2.1.1
@@ -64,11 +67,12 @@ components:
     status: current
   update_radar:
     installed: v3
-    status: active
+    status: active_manual_run_verified
     schedule: daily 07:15 UTC with up to 15 minutes randomized delay
     contract: silent when unchanged; no automatic updates
     verification: live baseline silent; systemd run success; one fixture report delivered;
       repeat produced zero output
+    natural_timer_verification: scheduled after first trigger on 2026-07-05
   xray:
     installed: 26.6.1
     source: active Docker container teddysun/xray
@@ -78,3 +82,11 @@ components:
     runtime: v0.18 python
     timeout_seconds: 60
     verification: manual start exit 0; Telegram send ok; journal timeout non-fatal
+release_tail_audit:
+  runtime_head: 7056c2e9826703d90f1ebbbf392dff058a986b06
+  release_tag: prod/hermes-v018-ready-20260704T1001Z
+  cloudflared_runtime_verified: true
+  graphify_timer_verified: true
+  notebooklm_watchdog_verified: true
+  update_radar_manual_run_verified: true
+  update_radar_first_natural_run_pending: true
