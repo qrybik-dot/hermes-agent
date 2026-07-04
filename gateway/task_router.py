@@ -843,6 +843,8 @@ def route_turn(
             role = "agentic"
             reason = "safe multi-step agentic pilot"
     planning_policy = adaptive_planning_policy(text, role)
+    if role == "long_context_extract":
+        planning_policy = AdaptivePlanningPolicy(reason="fast extraction role")
     if planning_policy.reviewer_required and role in {"simple", "parser"}:
         role = "expert_analysis"
         reason = f"{reason}; promoted_for={planning_policy.reason}"

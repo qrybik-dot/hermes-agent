@@ -71,6 +71,9 @@ def test_long_context_extract_split_is_narrow_and_optional():
     assert route.role == "long_context_extract"
     assert route.max_iterations == 12
     assert "terminal" not in route.toolsets
+    assert "delegation" not in route.toolsets
+    assert "plan" not in route.skill_names
+    assert "adaptive_plan" not in route.reason
     assert "точные факты" in route.operational_context
 
     deep = "Сделай глубокий анализ большого документа, оцени риски и альтернативы\n" + ("строка данных " * 5000)
