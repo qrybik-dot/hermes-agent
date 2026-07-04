@@ -1,7 +1,7 @@
 ---
 name: city-travel-concierge
 description: "City travel concierge: addresses, routes, weather, events, nearby places, parking candidates, and map links."
-version: 0.4.4
+version: 0.4.5
 author: Hermes local
 license: MIT
 platforms: [linux, macos, windows]
@@ -49,6 +49,7 @@ CTC3="python3 $BASE/city_travel_discovery.py"
 CTCP="python3 $BASE/city_travel_parking.py"
 CTCT="python3 $BASE/city_travel_trip.py"
 CTCS="python3 $BASE/travel_place_save.py"
+CTCSF="python3 $BASE/travel_place_save_from_file.py"
 ```
 
 ## One-call route and parking
@@ -73,23 +74,23 @@ When the user explicitly asks to save a place for a future trip:
 3. Verify changing facts such as prices, schedule, and opening hours from a
    current official or otherwise clearly attributed source. Keep source claims
    separate from verified facts and never invent missing values.
-4. Save the structured result only after extraction and verification:
+4. Use the `file` tool to write the structured result as UTF-8 JSON to
+   `/home/hermes/.hermes/tmp/travel-place-save.json`. Allowed keys are
+   `name`, `location`, `description`, `price`, `schedule`, `hours`,
+   `source_url`, and `verified_source_url`.
+5. Run only this fixed ASCII terminal command. Do not place user text or
+   Cyrillic values directly in a shell command:
 
 ```bash
-$CTCS \
-  --name "Place name" \
-  --location "City, country or full address" \
-  --description "Why it is worth saving" \
-  --price "Current price or unknown" \
-  --schedule "Seasonal or visit schedule" \
-  --hours "Current opening hours" \
-  --source-url "https://example.com/source"
+/usr/bin/python3 /home/hermes/.hermes/skills/productivity/city-travel-concierge/scripts/travel_place_save_from_file.py
 ```
 
 Report success only when the helper returns `saved=true` or
-`already_exists=true` and `readback_count>0`. If the source is inaccessible,
-make one alternative search from visible metadata. Ask one targeted question
-only when the place remains genuinely ambiguous.
+`already_exists=true` and `readback_count>0`. If it fails, return the exact
+`status` and `message`; do not fall back to the generic memory tool and do not
+search the skill source code. If the source is inaccessible, make one
+alternative search from visible metadata. Ask one targeted question only when
+the place remains genuinely ambiguous.
 
 ## Addresses and nearby POI
 
