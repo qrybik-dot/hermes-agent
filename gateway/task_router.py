@@ -206,6 +206,13 @@ _TRAVEL_SOURCE_CAPTURE_RE = re.compile(
     r"\b(?:место|локаци|цен|расписан|время\s+работы|час(?:ы|ов)?\s+работы)\w*\b",
     re.I | re.S,
 )
+_TRAVEL_SOURCE_SAVE_COMPACT_RE = re.compile(
+    r"(?:\b(?:сохрани|запиши|добавь)\w*\b.{0,120}"
+    r"\b(?:место|локаци|точк|объект)\w*\b|"
+    r"\b(?:место|локаци|точк|объект)\w*\b.{0,120}"
+    r"\b(?:сохрани|запиши|добавь)\w*\b)",
+    re.I | re.S,
+)
 _TRAVEL_SOURCE_REFERENCE_RE = re.compile(
     r"https?://|\b(?:рилс|reels?|instagram|инстаграм|ссылк|пост)\w*\b",
     re.I,
@@ -427,7 +434,7 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "tutu": bool(_TUTU_RE.search(value)),
         "travel": bool(
             _TRAVEL_RE.search(value)
-            or _TRAVEL_SOURCE_CAPTURE_RE.search(value)
+            or travel_is_source_capture(value)
             or _TRAVEL_PLACE_REFERENCE_RE.search(value)
         ),
         "context7": bool(_CONTEXT7_RE.search(value)),
@@ -477,7 +484,11 @@ def _long_context_extract_candidate(text: str) -> bool:
 
 def travel_is_source_capture(text: str) -> bool:
     value = text or ""
-    return bool(_TRAVEL_SOURCE_CAPTURE_RE.search(value) and _TRAVEL_SOURCE_REFERENCE_RE.search(value))
+    save_intent = bool(
+        _TRAVEL_SOURCE_CAPTURE_RE.search(value)
+        or _TRAVEL_SOURCE_SAVE_COMPACT_RE.search(value)
+    )
+    return bool(save_intent and _TRAVEL_SOURCE_REFERENCE_RE.search(value))
 
 
 def travel_needs_web_or_browser(text: str) -> bool:
@@ -741,7 +752,8 @@ def travel_operational_context() -> str:
         "Сначала определи тип источника по URL текущего сообщения: Яндекс Карты, Google Maps, 2ГИС, Instagram/Reels, TikTok, YouTube или обычная веб-страница. "
         "URL текущего сообщения имеет приоритет над историей. Не добавляй Instagram, рилс, карту или иной источник из прошлых сообщений, если его нет в текущем сообщении или явном reply-контексте и совпадение объекта не проверено. "
         "Ссылка на карту означает карточку указанного объекта, а не подтверждает связь с прошлым рилсом. Для карт используй web и не запускай платный cloud browser. "
-        "Для Instagram/TikTok сначала используй web-поиск и видимые метаданные, browser только как резерв после неудачи web. "
+        "Если к текущему сообщению уже приложен локальный видеофайл из кэша того же URL, сначала обработай этот файл и не скачивай исходный URL повторно. "
+        "Для Instagram/TikTok без локального файла сначала используй web-поиск и видимые метаданные, browser только как резерв после неудачи web. "
         "Сначала классифицируй содержание публикации: физическое место, событие, товар/услуга, совет/подборка или другое. Travel-place сохраняй только для однозначно определённого физического места. "
         "Для ссылки без команды ничего не сохраняй автоматически: дай суть и предложи один уместный вариант действия. "
         "Для текущих отзывов, рейтингов, режима работы и актуальных часов кафе используй web или browser. "

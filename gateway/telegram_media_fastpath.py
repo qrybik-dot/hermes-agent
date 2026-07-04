@@ -41,7 +41,15 @@ SUMMARY_INTENT_RE = re.compile(
 )
 TEXT_INTENT_RE = re.compile(r"транскриб|расшифр|полный\s+текст|текстом", re.I)
 STATUS_RE = re.compile(r"^\s*(?:статус|прогресс|что\s+там|как\s+там)[.!?]*\s*$", re.I)
+LOCATION_SAVE_RE = re.compile(
+    r"(?:\b(?:сохрани|запиши|добавь)\w*\b.{0,120}"
+    r"\b(?:место|локаци|точк|объект)\w*\b|"
+    r"\b(?:место|локаци|точк|объект)\w*\b.{0,120}"
+    r"\b(?:сохрани|запиши|добавь)\w*\b)",
+    re.I | re.S,
+)
 STATE_TTL_SECONDS = 600.0
+DEFAULT_CACHED_SOURCE_MAX_MB = 50.0
 
 
 def _repo_root() -> Path:
@@ -86,6 +94,59 @@ def _bytes(value: Any) -> str:
 
 def _platform_name(url: str) -> str:
     return "YouTube" if "youtu" in url.lower() else "Instagram"
+
+
+def _normalize_media_url(url: str) -> str:
+    return str(url or "").split("?", 1)[0].rstrip("/") + "/"
+
+
+def _cached_media_for_url(url: str) -> Path | None:
+    cache_path = _media_dir() / "cache.json"
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        item = payload.get(_normalize_media_url(url)) if isinstance(payload, dict) else None
+        raw_path = item.get("path") if isinstance(item, dict) else None
+        candidate = Path(str(raw_path or "")).expanduser().resolve()
+        media_root = _media_dir().resolve()
+        if not candidate.is_relative_to(media_root):
+            return None
+        if not candidate.is_file() or candidate.stat().st_size <= 0:
+            return None
+        try:
+            max_mb = float(os.getenv("HERMES_TRAVEL_SOURCE_MEDIA_MAX_MB", DEFAULT_CACHED_SOURCE_MAX_MB))
+        except (TypeError, ValueError):
+            max_mb = DEFAULT_CACHED_SOURCE_MAX_MB
+        max_bytes = int(min(500.0, max(1.0, max_mb)) * 1024 * 1024)
+        if candidate.stat().st_size > max_bytes:
+            return None
+        return candidate
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def attach_cached_media_to_event(event: Any) -> bool:
+    """Attach a same-URL cached video to a save-place follow-up."""
+    text = str(getattr(event, "text", "") or "")
+    match = MEDIA_URL_RE.search(text)
+    if not match or not LOCATION_SAVE_RE.search(text):
+        return False
+    source_url = match.group(0).rstrip(".,);]")
+    cached = _cached_media_for_url(source_url)
+    if cached is None:
+        return False
+    media_urls = getattr(event, "media_urls", None)
+    media_types = getattr(event, "media_types", None)
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(media_urls, list) or not isinstance(media_types, list):
+        return False
+    cached_str = str(cached)
+    if cached_str not in media_urls:
+        media_urls.append(cached_str)
+        media_types.append("video/mp4")
+    if isinstance(metadata, dict):
+        metadata["telegram_cached_source_url"] = source_url
+        metadata["telegram_cached_source_path"] = cached_str
+    return True
 
 
 def _context_key(msg: Any) -> str:
@@ -282,6 +343,7 @@ async def run_video_download(adapter: Any, record: dict[str, Any]) -> None:
 
         actual_size = os.path.getsize(video_path)
         record["actual_bytes"] = actual_size
+        record["video_path"] = video_path
         if actual_size > upload_limit:
             message = f"Файл оказался {_bytes(actual_size)} и превышает безопасный лимит {_bytes(upload_limit)}. Не отправляю его."
             record.update(stage="skipped", video_done=True, last_status=message)

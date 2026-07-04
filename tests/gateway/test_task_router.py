@@ -281,6 +281,22 @@ def test_travel_cafe_rating_gets_web_browser_tools():
 
 
 
+def test_compact_instagram_save_location_routes_to_travel_capture():
+    route = route_turn(
+        "https://www.instagram.com/reel/example/\nсохрани локацию",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "simple"
+    assert route.skill_names == ("city-travel-concierge",)
+    assert {"browser", "skills", "terminal", "web"}.issubset(route.toolsets)
+    assert route.max_iterations >= 20
+    assert "локальный видеофайл" in route.operational_context
+    assert "travel_place_save_from_file.py" in route.operational_context
+
+
 def test_travel_place_from_instagram_routes_to_extraction_and_save_contract():
     cases = (
         "https://www.instagram.com/reel/example/\n\n"

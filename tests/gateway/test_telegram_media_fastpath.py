@@ -130,3 +130,49 @@ async def test_size_guard_stops_before_download_process(monkeypatch):
     assert record["video_done"] is True
     assert adapter.videos == []
     assert any("безопасный лимит" in item[2] for item in adapter.edited)
+
+def test_save_location_followup_attaches_same_url_cached_video(tmp_path, monkeypatch):
+    media_dir = tmp_path / "media_downloader"
+    downloads = media_dir / "downloads"
+    downloads.mkdir(parents=True)
+    video = downloads / "source.mp4"
+    video.write_bytes(b"video")
+    url = "https://www.instagram.com/reel/abc123/?igsh=test"
+    (media_dir / "cache.json").write_text(
+        __import__("json").dumps(
+            {
+                "https://www.instagram.com/reel/abc123/": {
+                    "path": str(video),
+                    "title": "Instagram Reel",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(media, "_media_dir", lambda: media_dir)
+    event = SimpleNamespace(
+        text=f"{url}\nсохрани локацию",
+        media_urls=[],
+        media_types=[],
+        metadata={},
+    )
+
+    assert media.attach_cached_media_to_event(event) is True
+    assert event.media_urls == [str(video.resolve())]
+    assert event.media_types == ["video/mp4"]
+    assert event.metadata["telegram_cached_source_url"] == url
+
+
+def test_non_save_media_message_does_not_attach_cached_video(tmp_path, monkeypatch):
+    media_dir = tmp_path / "media_downloader"
+    media_dir.mkdir()
+    monkeypatch.setattr(media, "_media_dir", lambda: media_dir)
+    event = SimpleNamespace(
+        text="https://www.instagram.com/reel/abc123/ перескажи ролик",
+        media_urls=[],
+        media_types=[],
+        metadata={},
+    )
+
+    assert media.attach_cached_media_to_event(event) is False
+    assert event.media_urls == []
