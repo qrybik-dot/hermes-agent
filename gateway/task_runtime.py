@@ -22,6 +22,7 @@ from gateway.task_continuation import (
     is_pause_request,
     should_track_task,
 )
+from gateway.intent_uncertainty import clarification_question, detect_uncertain_intent
 from gateway.task_router import (
     TaskRoute, route_turn, should_generate_html_report,
     travel_is_route_or_parking, travel_is_source_capture, travel_needs_web_or_browser,
@@ -1787,6 +1788,26 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     if travel_followup_response is not None:
         return PreparedTaskTurn(original, initial_route, None, travel_followup_response, False)
 
+    pre_continuation_uncertainty = detect_uncertain_intent(current_text)
+    if pre_continuation_uncertainty is not None and not store.active(platform_key, str(chat_id)):
+        return PreparedTaskTurn(
+            original,
+            initial_route,
+            None,
+            early_response(
+                clarification_question(current_text, pre_continuation_uncertainty),
+                role="no_llm",
+                reason="deterministic uncertainty gate before continuation",
+                diagnostics={
+                    "clarification_required": True,
+                    "clarification_kind": pre_continuation_uncertainty,
+                    "tool_call_count": 0,
+                    "uncertainty_gate": "pre_model",
+                },
+            ),
+            False,
+        )
+
     decision = store.resolve(original, platform_key, str(chat_id))
     pending_calendar = None
     if decision.kind == "none":
@@ -1820,10 +1841,17 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         return PreparedTaskTurn(
             original, None, task,
             early_response(
-                "BLOCKED\nАвтоматические продолжения остановлены после двух исчерпаний лимита шагов. "
-                "Нужна ручная эскалация с новым планом или сужением объёма",
-                status="blocked", task_id=task.task_id, role=task.role,
-                reason="budget exhaustion escalation",
+                "Я уже дважды дошёл до лимита без подтверждённого результата и не буду продолжать перебор. "
+                "Как продолжить: сузить задачу до одного результата, использовать другой источник "
+                "или остановить её?",
+                task_id=task.task_id, role=task.role,
+                reason="budget exhaustion clarification",
+                diagnostics={
+                    "clarification_required": True,
+                    "clarification_kind": "budget_exhaustion",
+                    "tool_call_count": 0,
+                    "uncertainty_gate": "pre_model",
+                },
             ),
             True,
         )
@@ -1946,6 +1974,29 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 + "Reserve the last 5 iterations for tests, Definition of Done checks, checkpoint persistence, and final delivery."
             ).strip(),
         )
+
+    if task is None:
+        uncertainty_kind = detect_uncertain_intent(base_text)
+        clarify_only = route.toolsets == ["clarify"]
+        if uncertainty_kind is not None or clarify_only:
+            kind = uncertainty_kind or "ambiguous_action"
+            return PreparedTaskTurn(
+                str(message or ""),
+                route,
+                None,
+                early_response(
+                    clarification_question(base_text, kind),
+                    role="no_llm",
+                    reason="deterministic uncertainty gate",
+                    diagnostics={
+                        "clarification_required": True,
+                        "clarification_kind": kind,
+                        "tool_call_count": 0,
+                        "uncertainty_gate": "pre_model",
+                    },
+                ),
+                False,
+            )
 
     if task is None:
         travel_fast_response = _run_city_travel_trip_fast_path(

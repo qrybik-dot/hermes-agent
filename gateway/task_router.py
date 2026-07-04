@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from gateway.intent_uncertainty import detect_uncertain_intent
+
 ROLE_ORDER = (
     "no_llm",
     "simple",
@@ -249,8 +251,6 @@ _EXTERNAL_ACTION_RE = re.compile(
     r"установи|подключи|обнови|исправь|почини|настрой)\w*\b",
     re.I,
 )
-_BARE_URL_RE = re.compile(r"^\s*https?://\S+\s*$", re.I)
-_AMBIGUOUS_SAVE_RE = re.compile(r"^\s*(?:сохрани|запиши|добавь)\s+(?:это(?:\s+для\s+меня)?|мне|для\s+меня)(?:\s+это)?[.!?]*\s*$", re.I)
 _EXTERNAL_PROVIDER_SENSITIVE_RE = re.compile(
     r"\b(?:mosreg|esia|мосрег|есиа|госуслуг|паспорт|снилс|"
     r"токен\w*|парол\w*|cookie|oauth|authorization|api[_ -]?key|секрет\w*)\b|"
@@ -649,10 +649,7 @@ def select_toolsets(
     if flags["skills_query"]:
         requested.discard("no_mcp")
         requested.update({"skills", "terminal", "file"})
-    elif role == "simple" and _AMBIGUOUS_SAVE_RE.fullmatch(text or ""):
-        requested.discard("no_mcp")
-        requested.add("clarify")
-    elif role == "simple" and _BARE_URL_RE.fullmatch(text or ""):
+    elif role == "simple" and detect_uncertain_intent(text or "") is not None:
         requested.discard("no_mcp")
         requested.add("clarify")
     elif role == "simple" and not any(flags.values()) and _EXTERNAL_ACTION_RE.search(text or ""):

@@ -7103,13 +7103,18 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
-        from gateway.telegram_media_fastpath import attach_cached_media_to_event, handle_media_fast_path
+        from gateway.telegram_media_fastpath import (
+            attach_cached_media_to_event,
+            attach_pending_media_source_to_event,
+            handle_media_fast_path,
+        )
         if await handle_media_fast_path(self, msg):
             return
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        attach_pending_media_source_to_event(event, self, msg)
         attach_cached_media_to_event(event)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)

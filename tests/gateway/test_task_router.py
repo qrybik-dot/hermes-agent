@@ -457,9 +457,9 @@ def test_adaptive_planner_install_request_routes_to_execution_tools():
 
 def test_simple_external_action_gets_universal_safe_tools():
     for text in (
-        "Скачай ролик",
-        "Проверь, что находится по этой ссылке",
-        "Отправь мне этот файл в телеграм",
+        "Скачай ролик https://youtu.be/example",
+        "Проверь, что находится по этой ссылке https://example.com",
+        "Отправь мне файл /tmp/report.pdf в телеграм",
     ):
         route = route_turn(
             text,
@@ -522,6 +522,27 @@ def test_ambiguous_save_prefers_clarify_buttons():
         platform_toolsets=ALL_ALLOWED,
     )
     assert route.toolsets == ["clarify"]
+
+
+def test_ambiguous_actions_use_clarify_only():
+    for text in (
+        "сделай это",
+        "обработай",
+        "проверь это",
+        "сделай с этим что-нибудь",
+        "сохрани локацию",
+        "скачай ролик",
+        "проверь ссылку",
+    ):
+        route = route_turn(
+            text,
+            command=None,
+            platform_key="telegram",
+            user_config={"agent": {}},
+            platform_toolsets=ALL_ALLOWED,
+        )
+        assert route.role == "simple"
+        assert route.toolsets == ["clarify"]
 
 
 def test_known_calendar_route_does_not_gain_generic_web_tool():

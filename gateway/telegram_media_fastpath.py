@@ -124,6 +124,33 @@ def _cached_media_for_url(url: str) -> Path | None:
         return None
 
 
+def attach_pending_media_source_to_event(event: Any, adapter: Any, msg: Any) -> bool:
+    """Reuse the latest undecided media URL for a clear follow-up command."""
+    text = str(getattr(event, "text", "") or "").strip()
+    if not text or MEDIA_URL_RE.search(text):
+        return False
+    if not (
+        LOCATION_SAVE_RE.search(text)
+        or SUMMARY_INTENT_RE.search(text)
+        or TEXT_INTENT_RE.search(text)
+        or VIDEO_INTENT_RE.search(text)
+        or DOWNLOAD_RE.fullmatch(text)
+    ):
+        return False
+    state = getattr(adapter, "_latest_media_by_chat", None) or {}
+    record = state.get(_context_key(msg))
+    if not record or time.monotonic() - float(record.get("created", 0)) > STATE_TTL_SECONDS:
+        return False
+    source_url = str(record.get("url") or "").strip()
+    if not source_url:
+        return False
+    event.text = f"{source_url}\n{text}"
+    metadata = getattr(event, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata["telegram_pending_source_url"] = source_url
+    return True
+
+
 def attach_cached_media_to_event(event: Any) -> bool:
     """Attach a same-URL cached video to a save-place follow-up."""
     text = str(getattr(event, "text", "") or "")
@@ -462,32 +489,42 @@ async def handle_media_fast_path(adapter: Any, msg: Any) -> bool:
 
     match = MEDIA_URL_RE.search(value)
     if not match:
-        if DOWNLOAD_RE.fullmatch(value):
-            record = state.get(key)
-            if record and time.monotonic() - float(record.get("created", 0)) <= STATE_TTL_SECONDS:
+        record = state.get(key)
+        if record and time.monotonic() - float(record.get("created", 0)) <= STATE_TTL_SECONDS:
+            if DOWNLOAD_RE.fullmatch(value):
                 await run_video_download(adapter, record)
+                return True
+            is_youtube = "youtu" in str(record.get("url") or "").lower()
+            if is_youtube and SUMMARY_INTENT_RE.search(value):
+                await run_youtube_action(adapter, record, "summary")
+                return True
+            if is_youtube and TEXT_INTENT_RE.search(value):
+                await run_youtube_action(adapter, record, "text")
                 return True
         return False
 
     url = match.group(0).rstrip(".,);]")
     is_full_link = MEDIA_URL_RE.fullmatch(value) is not None
     is_youtube = "youtu" in url.lower()
-    wants_video = bool(VIDEO_INTENT_RE.search(value)) or is_full_link
+    wants_video = bool(VIDEO_INTENT_RE.search(value))
     wants_summary = bool(SUMMARY_INTENT_RE.search(value))
     wants_text = bool(TEXT_INTENT_RE.search(value))
-
-    if not is_youtube and not wants_video:
-        return False
-    if not (wants_video or wants_summary or wants_text):
-        return False
 
     record = {
         "url": url,
         "chat_id": str(msg.chat.id),
         "thread_id": getattr(msg, "message_thread_id", None),
         "created": time.monotonic(),
+        "stage": "awaiting_intent" if is_full_link else "queued",
     }
     state[key] = record
+
+    if is_full_link and not (wants_video or wants_summary or wants_text):
+        return False
+    if not is_youtube and not wants_video:
+        return False
+    if not (wants_video or wants_summary or wants_text):
+        return False
     if wants_video:
         await run_video_download(adapter, record)
     if is_youtube and wants_summary:

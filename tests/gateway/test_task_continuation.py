@@ -866,8 +866,74 @@ def test_after_two_budget_exhaustions_continuation_escalates_without_model(tmp_p
 
     assert prepared.early_response is not None
     assert prepared.early_response["model"] == "deterministic"
-    assert prepared.early_response["final_response"].startswith("BLOCKED")
-    assert "двух исчерпаний" in prepared.early_response["final_response"]
+    assert "не буду продолжать перебор" in prepared.early_response["final_response"]
+    assert prepared.early_response["diagnostics"]["clarification_required"] is True
+    assert prepared.early_response["diagnostics"]["clarification_kind"] == "budget_exhaustion"
+
+def test_uncertainty_gate_asks_before_model_or_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    common = dict(
+        platform_key="telegram",
+        chat_id="1",
+        session_key="session-a",
+        session_id="session-a-id",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "skills", "web", "browser", "file", "clarify"],
+    )
+
+    for index, message in enumerate((
+        "https://www.instagram.com/reel/example/",
+        "сделай это",
+        "сохрани это для меня",
+        "сохрани локацию",
+        "скачай ролик",
+    )):
+        prepared = prepare_task_turn(message=message, request_id=f"req-uncertain-{index}", **common)
+        assert prepared.task is None
+        assert prepared.early_response is not None
+        assert prepared.early_response["api_calls"] == 0
+        assert prepared.early_response["tools"] == []
+        assert prepared.early_response["diagnostics"]["clarification_required"] is True
+        assert prepared.early_response["diagnostics"]["uncertainty_gate"] == "pre_model"
+        assert prepared.early_response["diagnostics"]["tool_call_count"] == 0
+
+
+def test_uncertainty_gate_keeps_real_active_task_continuation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    task = store.create(
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="Active fix",
+        original_request="Исправь gateway regression",
+        role="server_debug",
+        toolsets=["terminal", "file"],
+        required_toolsets=["terminal"],
+        requires_execution=True,
+        status="incomplete",
+        metadata={"checkpoint": "audit done"},
+    )
+
+    prepared = prepare_task_turn(
+        message="сделай это",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-active-ambiguous",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "clarify"],
+    )
+
+    assert prepared.continued is True
+    assert prepared.task.task_id == task.task_id
+    assert prepared.early_response is None
+    assert "Saved checkpoint" in prepared.message
+
 
 def test_calendar_reply_context_supplies_structured_event(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1543,7 +1609,7 @@ def test_execution_classifier_miss_uses_universal_safe_fallback(tmp_path, monkey
         ),
     )
     prepared = prepare_task_turn(
-        message="Скачай ролик",
+        message="Скачай ролик https://youtu.be/example",
         platform_key="telegram",
         chat_id="1",
         session_key="new",

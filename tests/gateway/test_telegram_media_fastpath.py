@@ -48,7 +48,7 @@ class FakeAdapter:
         "https://www.instagram.com/reel/abc123/?igsh=test",
     ],
 )
-async def test_bare_media_link_downloads_video_without_buttons(monkeypatch, url):
+async def test_explicit_media_download_runs_without_buttons(monkeypatch, url):
     adapter = FakeAdapter()
     calls = []
 
@@ -61,8 +61,27 @@ async def test_bare_media_link_downloads_video_without_buttons(monkeypatch, url)
     monkeypatch.setattr(media, "run_video_download", fake_video)
     monkeypatch.setattr(media, "run_youtube_action", fake_action)
 
-    assert await media.handle_media_fast_path(adapter, FakeMessage(url)) is True
+    text = f"скачай видео {url}"
+    assert await media.handle_media_fast_path(adapter, FakeMessage(text)) is True
     assert calls == [("video", url)]
+
+
+@pytest.mark.asyncio
+async def test_bare_media_link_is_remembered_but_not_executed(monkeypatch):
+    adapter = FakeAdapter()
+    calls = []
+
+    async def fake_video(_adapter, record):
+        calls.append(record["url"])
+
+    monkeypatch.setattr(media, "run_video_download", fake_video)
+    url = "https://www.instagram.com/reel/abc123/?igsh=test"
+
+    assert await media.handle_media_fast_path(adapter, FakeMessage(url)) is False
+    assert calls == []
+    record = adapter._latest_media_by_chat["42:"]
+    assert record["url"] == url
+    assert record["stage"] == "awaiting_intent"
 
 
 @pytest.mark.asyncio
@@ -176,3 +195,19 @@ def test_non_save_media_message_does_not_attach_cached_video(tmp_path, monkeypat
 
     assert media.attach_cached_media_to_event(event) is False
     assert event.media_urls == []
+
+def test_pending_media_source_is_injected_into_clear_followup():
+    adapter = FakeAdapter()
+    adapter._latest_media_by_chat["42:"] = {
+        "url": "https://www.instagram.com/reel/abc123/",
+        "chat_id": "42",
+        "thread_id": None,
+        "created": __import__("time").monotonic(),
+        "stage": "awaiting_intent",
+    }
+    msg = FakeMessage("сохрани место")
+    event = SimpleNamespace(text="сохрани место", metadata={})
+
+    assert media.attach_pending_media_source_to_event(event, adapter, msg) is True
+    assert event.text.startswith("https://www.instagram.com/reel/abc123/\n")
+    assert event.metadata["telegram_pending_source_url"].endswith("/abc123/")
