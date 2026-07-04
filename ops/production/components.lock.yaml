@@ -1,4 +1,4 @@
-captured_at: '2026-07-04T11:11:56Z'
+captured_at: '2026-07-04T11:55:01Z'
 components:
   hermes:
     installed: v0.18.0-custom
@@ -82,6 +82,26 @@ components:
     runtime: v0.18 python
     timeout_seconds: 60
     verification: manual start exit 0; Telegram send ok; journal timeout non-fatal
+  model_lineup_watch:
+    status: active
+    sources:
+    - Antigravity via CLIProxy live catalog
+    - ChatGPT/Codex live subscription catalog
+    baseline_counts:
+      antigravity: 10
+      codex: 3
+    automatic_actions:
+    - detect differences
+    - identify affected routes
+    - create recommendation
+    - send deduplicated notification
+    forbidden_automatic_actions:
+    - change primary model
+    - change fallback
+    - restart gateway
+    - enable paid API
+    tests: 12
+    policy: ops/production/MODEL_LINEUP_WATCH_POLICY.md
 release_tail_audit:
   runtime_head: 7056c2e9826703d90f1ebbbf392dff058a986b06
   release_tag: prod/hermes-v018-ready-20260704T1001Z

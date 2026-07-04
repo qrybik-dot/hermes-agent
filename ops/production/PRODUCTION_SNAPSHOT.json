@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-07-04T11:11:56Z",
+  "captured_at": "2026-07-04T11:55:01Z",
   "status": "READY",
   "production_branch": "integration/hermes-v018-routing-lite",
   "capture_head": "7056c2e9826703d90f1ebbbf392dff058a986b06",
@@ -98,7 +98,8 @@
     "graphify_natural_timer_run": "passed at 2026-07-04T11:00:21Z with exit 0",
     "notebooklm_natural_watchdog_run": "passed at 2026-07-04T11:00:09.762351Z; next 2026-07-04T11:15:00Z",
     "update_radar_manual_run": "systemd production service run passed and stayed silent",
-    "update_radar_first_natural_run": "scheduled verification after 2026-07-05 timer trigger"
+    "update_radar_first_natural_run": "scheduled verification after 2026-07-05 timer trigger",
+    "model_lineup_watch": "live Antigravity and Codex catalogs baselined; repeated production run produced no output"
   },
   "model_qualification": {
     "gemini-3.5-flash-low": "ACTIVE",
@@ -168,5 +169,40 @@
       "next_timer_at": "2026-07-05T07:17:04Z",
       "verification_scheduled_for": "2026-07-05T09:35:00+02:00 Europe/Stockholm"
     }
+  },
+  "model_lineup_watch": {
+    "status": "active",
+    "antigravity_baseline_count": 10,
+    "codex_baseline_count": 3,
+    "antigravity_models": [
+      "claude-opus-4-6-thinking",
+      "claude-sonnet-4-6",
+      "gemini-3-flash",
+      "gemini-3-flash-agent",
+      "gemini-3.1-flash-image",
+      "gemini-3.1-flash-lite",
+      "gemini-3.1-pro-low",
+      "gemini-3.5-flash-extra-low",
+      "gemini-3.5-flash-low",
+      "gemini-pro-agent"
+    ],
+    "codex_models": [
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.5"
+    ],
+    "behavior": "notify on additions/removals, identify affected routes, propose qualification, never auto-change production routing",
+    "qualification_gate": [
+      "exact_response",
+      "safe_file_tool",
+      "latency",
+      "fallback",
+      "comparison",
+      "explicit_approval"
+    ],
+    "tests": "12 passed",
+    "baseline_repeat": "silent",
+    "policy_artifact": "ops/production/MODEL_LINEUP_WATCH_POLICY.md",
+    "human_report": "ops/production/HERMES_V018_HUMAN_REPORT_20260704.html"
   }
 }
