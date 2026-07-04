@@ -6,7 +6,7 @@ components:
     source: NousResearch/hermes-agent
     status: production
     branch: integration/hermes-v018-routing-lite
-    release_tag: prod/hermes-v018-20260704T0929Z
+    release_tag: prod/hermes-v018-ready-20260704T1001Z
     rollback: prod/routing-hotfix-20260703T1605Z plus saved v0.16 systemd unit
   cliproxy:
     installed: 7.2.50
@@ -73,3 +73,8 @@ components:
     installed: 26.6.1
     source: active Docker container teddysun/xray
     status: running
+  startup_notifier:
+    status: active_verified
+    runtime: v0.18 python
+    timeout_seconds: 60
+    verification: manual start exit 0; Telegram send ok; journal timeout non-fatal

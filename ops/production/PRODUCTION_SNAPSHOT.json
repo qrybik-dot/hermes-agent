@@ -3,7 +3,7 @@
   "status": "READY",
   "production_branch": "integration/hermes-v018-routing-lite",
   "capture_head": "9475c179bd9180348bca451350874d5263044a0b",
-  "release_tag": "prod/hermes-v018-20260704T0929Z",
+  "release_tag": "prod/hermes-v018-ready-20260704T1001Z",
   "upstream_target": {
     "tag": "v2026.7.1",
     "commit": "7c1a029553d87c43ecff8a3821336bc95872213b",
@@ -55,6 +55,12 @@
       "ActiveState": "active",
       "SubState": "waiting",
       "ActiveEnterTimestamp": "Sat 2026-07-04 07:45:30 UTC"
+    },
+    "hermes-startup-notify.service": {
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "Result": "success",
+      "ExecMainStatus": "0"
     }
   },
   "versions": {
@@ -85,7 +91,8 @@
     "graphify": "23 nodes; 40 links; 4 communities; timer active",
     "update_radar": "silent live run; fixture delivery; repeat zero output",
     "systemd_failed_units": 0,
-    "git_sync_guard": "passed after clean fast-forward of hermes-homelander"
+    "git_sync_guard": "passed after clean fast-forward of hermes-homelander",
+    "startup_notifier": "bounded journal check; timeout non-fatal; Telegram send passed; systemd success"
   },
   "model_qualification": {
     "gemini-3.5-flash-low": "ACTIVE",
