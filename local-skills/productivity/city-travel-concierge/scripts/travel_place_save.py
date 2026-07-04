@@ -40,10 +40,11 @@ def build_request(args: argparse.Namespace) -> dict[str, Any]:
         for value in (args.verified_source_url or [])
     ]
     sources = list(dict.fromkeys([source_url, *verified_urls]))
+    verified_fields = {str(value) for value in (getattr(args, "verified_fields", []) or []) if str(value) in {"price", "schedule", "hours"}}
     optional = {
-        "price": _clean(args.price),
-        "schedule": _clean(args.schedule),
-        "hours": _clean(args.hours),
+        "price": _clean(args.price) if "price" in verified_fields else "",
+        "schedule": _clean(args.schedule) if "schedule" in verified_fields else "",
+        "hours": _clean(args.hours) if "hours" in verified_fields else "",
     }
     labels = {
         "price": "Цена",
@@ -136,6 +137,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--hours", default="")
     value.add_argument("--source-url", required=True)
     value.add_argument("--verified-source-url", action="append", default=[])
+    value.add_argument("--verified-field", dest="verified_fields", action="append", choices=("price", "schedule", "hours"), default=[])
     value.add_argument("--dry-run", action="store_true")
     return value
 

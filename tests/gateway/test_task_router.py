@@ -318,8 +318,26 @@ def test_travel_map_place_reference_keeps_travel_tools_available():
     assert route.role == "simple"
     assert route.skill_names == ("city-travel-concierge",)
     assert {"skills", "terminal"}.issubset(route.toolsets)
+    assert "web" in route.toolsets
+    assert "browser" not in route.toolsets
+    assert "Ссылка на карту означает" in route.operational_context
     assert "no_mcp" not in route.toolsets
     assert "intents=travel" in route.reason
+
+
+
+
+def test_google_maps_place_reference_uses_travel_web_without_browser():
+    route = route_turn(
+        "https://maps.app.goo.gl/example",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.skill_names == ("city-travel-concierge",)
+    assert "web" in route.toolsets
+    assert "browser" not in route.toolsets
 
 
 def test_skill_recommendation_requires_factual_tools():

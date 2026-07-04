@@ -185,7 +185,7 @@ _TRAVEL_SOURCE_REFERENCE_RE = re.compile(
     re.I,
 )
 _TRAVEL_PLACE_REFERENCE_RE = re.compile(
-    r"https?://(?:www\.)?(?:yandex\.(?:ru|com)/maps(?:/|\?|$)|2gis\.(?:ru|com)(?:/|$))",
+    r"https?://(?:www\.)?(?:yandex\.(?:ru|com)/maps(?:/|\?|$)|maps\.yandex\.(?:ru|com)(?:/|\?|$)|2gis\.(?:ru|com)(?:/|$)|maps\.app\.goo\.gl/|goo\.gl/maps/|google\.[a-z.]+/maps(?:/|\?|$)|maps\.google\.[a-z.]+/)",
     re.I,
 )
 _TRAVEL_LIVE_TRAFFIC_RE = re.compile(
@@ -414,7 +414,7 @@ def travel_is_source_capture(text: str) -> bool:
 
 def travel_needs_web_or_browser(text: str) -> bool:
     value = text or ""
-    return bool(travel_is_source_capture(value) or _TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
+    return bool(_TRAVEL_PLACE_REFERENCE_RE.search(value) or travel_is_source_capture(value) or _TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
 
 
 def travel_is_route_or_parking(text: str) -> bool:
@@ -557,7 +557,9 @@ def select_toolsets(
         requested.discard("no_mcp")
         requested.update({"skills", "terminal"})
         if travel_needs_web_or_browser(text):
-            requested.update({"browser", "web"})
+            requested.add("web")
+            if not _TRAVEL_PLACE_REFERENCE_RE.search(text or ""):
+                requested.add("browser")
     if flags["context7"] and role in {"coding", "research", "planning"}:
         requested.discard("no_mcp")
         requested.add("context7")
@@ -648,6 +650,12 @@ def travel_operational_context() -> str:
         "Если helper вернул маршрут, ссылку и хотя бы parking candidates, данных достаточно для ответа: сразу "
         "сформируй короткий пользовательский ответ и не выполняй web_search для уверенности. "
         "Максимум одна альтернативная попытка при падении конкретного provider; после двух одинаковых ошибок остановись. "
+        "Сначала определи тип источника по URL текущего сообщения: Яндекс Карты, Google Maps, 2ГИС, Instagram/Reels, TikTok, YouTube или обычная веб-страница. "
+        "URL текущего сообщения имеет приоритет над историей. Не добавляй Instagram, рилс, карту или иной источник из прошлых сообщений, если его нет в текущем сообщении или явном reply-контексте и совпадение объекта не проверено. "
+        "Ссылка на карту означает карточку указанного объекта, а не подтверждает связь с прошлым рилсом. Для карт используй web и не запускай платный cloud browser. "
+        "Для Instagram/TikTok сначала используй web-поиск и видимые метаданные, browser только как резерв после неудачи web. "
+        "Сначала классифицируй содержание публикации: физическое место, событие, товар/услуга, совет/подборка или другое. Travel-place сохраняй только для однозначно определённого физического места. "
+        "Для ссылки без команды ничего не сохраняй автоматически: дай суть и предложи один уместный вариант действия. "
         "Для текущих отзывов, рейтингов, режима работы и актуальных часов кафе используй web или browser. "
         "Если пользователь прислал ссылку, рилс или пост и просит сохранить место для будущей поездки, не проси "
         "геолокацию до попытки извлечения. Сначала открой исходный материал через web/browser, определи название, "
@@ -655,8 +663,11 @@ def travel_operational_context() -> str:
         "утверждения из публикации и подтверждённые актуальные факты; ничего не додумывай. После сбора через file "
         "запиши UTF-8 JSON в `/home/hermes/.hermes/tmp/travel-place-save.json`, затем выполни только фиксированную "
         "ASCII-команду `/usr/bin/python3 /home/hermes/.hermes/skills/productivity/city-travel-concierge/scripts/"
-        "travel_place_save_from_file.py`. Не помещай пользовательский текст прямо в shell-команду. Говори «сохранено» "
-        "только если helper вернул saved=true либо already_exists=true вместе с readback_count>0. При ошибке верни "
+        "travel_place_save_from_file.py`. Не помещай пользовательский текст прямо в shell-команду."
+        "В JSON поле source_url должно быть URL текущего сообщения, а verified_source_url содержит только реально открытые проверочные страницы. "
+        "Для price, schedule и hours укажи verified_fields только если значение явно найдено в текущем или проверочном источнике; предположения и пометки «обычно» или «уточнять» не сохраняй. "
+        "readback_count означает число совпавших фрагментов проверки, а не количество отдельных записей; не сообщай «создано 3 записи». "
+        "Говори «сохранено» только если helper вернул saved=true либо already_exists=true вместе с readback_count>0. При ошибке верни "
         "точные status и message; не переходи к generic memory и не ищи код skill. Если Instagram недоступен, используй "
         "видимую подпись/метаданные и одну альтернативную попытку поиска по названию или ключевым словам. Один точный "
         "уточняющий вопрос допустим только если после этого место всё ещё нельзя определить однозначно. "

@@ -19,7 +19,7 @@ SPEC.loader.exec_module(MODULE)
 MAX_SIZE = 32 * 1024
 ALLOWED_KEYS = {
     "name", "location", "description", "price", "schedule", "hours",
-    "source_url", "verified_source_url",
+    "source_url", "verified_source_url", "verified_fields",
 }
 
 
@@ -44,6 +44,7 @@ def load_args(path: Path) -> argparse.Namespace:
         verified = [verified]
     if not isinstance(verified, list) or not all(isinstance(item, str) for item in verified):
         raise ValueError("verified_source_url must be a string list")
+    verified_fields = data.get("verified_fields") or []
     return argparse.Namespace(
         name=data.get("name", ""),
         location=data.get("location", ""),
@@ -53,6 +54,7 @@ def load_args(path: Path) -> argparse.Namespace:
         hours=data.get("hours", ""),
         source_url=data.get("source_url", ""),
         verified_source_url=verified,
+        verified_fields=verified_fields,
         dry_run=False,
     )
 

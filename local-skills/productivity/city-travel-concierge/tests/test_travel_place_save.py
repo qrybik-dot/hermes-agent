@@ -30,6 +30,7 @@ class TravelPlaceSaveTests(unittest.TestCase):
             "hours": "10:00-18:00",
             "source_url": "https://www.instagram.com/reel/example/",
             "verified_source_url": ["https://example.com/official"],
+            "verified_fields": ["price", "schedule", "hours"],
             "dry_run": True,
         }
         values.update(updates)
@@ -55,6 +56,12 @@ class TravelPlaceSaveTests(unittest.TestCase):
         first = MODULE.build_request(self._args())
         second = MODULE.build_request(self._args())
         self.assertEqual(first["idempotency_key"], second["idempotency_key"])
+
+
+    def test_unverified_optional_fields_are_omitted(self):
+        request = MODULE.build_request(self._args(verified_fields=[]))
+        facts = request["payload"]["accepted_facts"]
+        self.assertFalse(any(item.startswith(("Цена:", "Расписание:", "Время работы:")) for item in facts))
 
     def test_invalid_source_url_is_rejected(self):
         with self.assertRaises(ValueError):
