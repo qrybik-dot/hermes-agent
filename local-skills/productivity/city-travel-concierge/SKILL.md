@@ -1,7 +1,7 @@
 ---
 name: city-travel-concierge
 description: "City travel concierge: addresses, routes, weather, events, nearby places, parking candidates, and map links."
-version: 0.4.3
+version: 0.4.4
 author: Hermes local
 license: MIT
 platforms: [linux, macos, windows]
@@ -48,6 +48,7 @@ CTC2="python3 $BASE/city_travel_itinerary.py"
 CTC3="python3 $BASE/city_travel_discovery.py"
 CTCP="python3 $BASE/city_travel_parking.py"
 CTCT="python3 $BASE/city_travel_trip.py"
+CTCS="python3 $BASE/travel_place_save.py"
 ```
 
 ## One-call route and parking
@@ -60,6 +61,35 @@ For route, ETA, map-link, and parking requests, call `city_travel_trip.py`
 first. If it returns `answer_ready=true`, a Yandex route link, and parking
 candidates, answer immediately from that JSON. Do not run additional web
 searches for confidence.
+
+
+## Save a place from a link, reel, post, or forwarded description
+
+When the user explicitly asks to save a place for a future trip:
+
+1. Inspect the supplied source with `web` or `browser` before asking the user
+   to provide facts already present in it.
+2. Extract the place name, location, and useful description.
+3. Verify changing facts such as prices, schedule, and opening hours from a
+   current official or otherwise clearly attributed source. Keep source claims
+   separate from verified facts and never invent missing values.
+4. Save the structured result only after extraction and verification:
+
+```bash
+$CTCS \
+  --name "Place name" \
+  --location "City, country or full address" \
+  --description "Why it is worth saving" \
+  --price "Current price or unknown" \
+  --schedule "Seasonal or visit schedule" \
+  --hours "Current opening hours" \
+  --source-url "https://example.com/source"
+```
+
+Report success only when the helper returns `saved=true` or
+`already_exists=true` and `readback_count>0`. If the source is inaccessible,
+make one alternative search from visible metadata. Ask one targeted question
+only when the place remains genuinely ambiguous.
 
 ## Addresses and nearby POI
 

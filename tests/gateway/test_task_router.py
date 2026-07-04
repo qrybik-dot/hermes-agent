@@ -279,6 +279,31 @@ def test_travel_cafe_rating_gets_web_browser_tools():
 
 
 
+
+
+def test_travel_place_from_instagram_routes_to_extraction_and_save_contract():
+    cases = (
+        "https://www.instagram.com/reel/example/\n\n"
+        "Сохрани место для будущих путешествий, локацию и описание",
+        "вытащи всю информацию из рилс: название места, локация, описание, цены, "
+        "расписание и время работы",
+    )
+    for text in cases:
+        route = route_turn(
+            text,
+            command=None,
+            platform_key="telegram",
+            user_config={"agent": {}},
+            platform_toolsets=ALL_ALLOWED,
+        )
+        assert route.role == "simple"
+        assert route.skill_names == ("city-travel-concierge",)
+        assert {"browser", "skills", "terminal", "web"}.issubset(route.toolsets)
+        assert "no_mcp" not in route.toolsets
+        assert route.max_iterations >= 20
+        assert "не проси геолокацию" in route.operational_context
+        assert "travel_place_save.py" in route.operational_context
+        assert "readback_count>0" in route.operational_context
 def test_skill_recommendation_requires_factual_tools():
     route = route_turn(
         "Какие навыки еще будут полезны для меня? Сделай подборку",

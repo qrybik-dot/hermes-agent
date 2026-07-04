@@ -171,6 +171,15 @@ _TRAVEL_CAFE_CURRENT_RE = re.compile(
     r"актуальн\w*\s+(?:отзыв|час|рейтинг)|сравни\s+кафе)\w*\b",
     re.I,
 )
+_TRAVEL_SOURCE_CAPTURE_RE = re.compile(
+    r"\b(?:сохрани|запиши|добавь)\w*\b.{0,180}"
+    r"\b(?:место|локаци|точк|объект)\w*\b.{0,180}"
+    r"\b(?:путешеств|поездк|посетить|travel)\w*\b|"
+    r"\b(?:вытащи|извлеки|собери)\w*\b.{0,140}"
+    r"\b(?:рилс|reels?|instagram|инстаграм|ссылк)\w*\b.{0,240}"
+    r"\b(?:место|локаци|цен|расписан|время\s+работы|час(?:ы|ов)?\s+работы)\w*\b",
+    re.I | re.S,
+)
 _TRAVEL_LIVE_TRAFFIC_RE = re.compile(
     r"\b(?:пробк|traffic|live\s*traffic|актуальн\w*\s+(?:дорог|трафик|время\s+в\s+пути))\w*\b",
     re.I,
@@ -379,7 +388,7 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "memory": bool(_MEMORY_RE.search(value)),
         "report": bool(_REPORT_RE.search(value)),
         "tutu": bool(_TUTU_RE.search(value)),
-        "travel": bool(_TRAVEL_RE.search(value)),
+        "travel": bool(_TRAVEL_RE.search(value) or _TRAVEL_SOURCE_CAPTURE_RE.search(value)),
         "context7": bool(_CONTEXT7_RE.search(value)),
         "skills_query": bool(_SKILLS_QUERY_RE.search(value)),
         "notebooklm": bool(_NOTEBOOKLM_RE.search(value)),
@@ -388,7 +397,7 @@ def _intent_flags(text: str) -> dict[str, bool]:
 
 def travel_needs_web_or_browser(text: str) -> bool:
     value = text or ""
-    return bool(_TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
+    return bool(_TRAVEL_SOURCE_CAPTURE_RE.search(value) or _TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
 
 
 def travel_is_route_or_parking(text: str) -> bool:
@@ -623,6 +632,14 @@ def travel_operational_context() -> str:
         "сформируй короткий пользовательский ответ и не выполняй web_search для уверенности. "
         "Максимум одна альтернативная попытка при падении конкретного provider; после двух одинаковых ошибок остановись. "
         "Для текущих отзывов, рейтингов, режима работы и актуальных часов кафе используй web или browser. "
+        "Если пользователь прислал ссылку, рилс или пост и просит сохранить место для будущей поездки, не проси "
+        "геолокацию до попытки извлечения. Сначала открой исходный материал через web/browser, определи название, "
+        "локацию и описание, затем отдельно проверь изменяемые данные: цены, расписание и часы работы. Разделяй "
+        "утверждения из публикации и подтверждённые актуальные факты; ничего не додумывай. После сбора вызови через "
+        "terminal helper `travel_place_save.py` из этого skill и передай исходный URL. Говори «сохранено» только если "
+        "helper вернул saved=true либо already_exists=true вместе с readback_count>0. Если Instagram недоступен, используй "
+        "видимую подпись/метаданные и одну альтернативную попытку поиска по названию или ключевым словам. Один точный "
+        "уточняющий вопрос допустим только если после этого место всё ещё нельзя определить однозначно. "
         "Не оценивай время в пути, расстояние, парковку или рейтинг по памяти. "
         "Geoapify не учитывает live traffic: всегда помечай это и давай ссылку Яндекс Карт для проверки перед "
         "выездом. Парковку называй бесплатной только при официальном подтверждении или свежем подтверждении "
