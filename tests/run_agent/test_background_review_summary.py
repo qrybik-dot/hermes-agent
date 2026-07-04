@@ -128,3 +128,14 @@ def test_removed_or_replaced_relabels_by_target():
 
     assert "User profile updated" in actions
     assert "Memory updated" in actions
+
+
+def test_ignores_staged_pending_writes():
+    staged = {
+        "success": True,
+        "staged": True,
+        "message": "Skill updated.",
+        "target": "memory",
+    }
+    actions = _summarize([_tool_msg("pending", staged)], [])
+    assert actions == []
