@@ -118,10 +118,11 @@ def save_request(request: dict[str, Any]) -> dict[str, Any]:
         result = json.loads(lines[-1])
     except json.JSONDecodeError as exc:
         raise RuntimeError("knowledge quick-save returned invalid JSON") from exc
-    if proc.returncode != 0 and result.get("status") != "error":
-        result["status"] = "error"
-        result["saved"] = False
-        result["message"] = _clean(proc.stderr or "quick-save failed", limit=1000)
+    if proc.returncode != 0:
+        result.setdefault("status", "error")
+        result.setdefault("saved", False)
+        if not result.get("message"):
+            result["message"] = _clean(proc.stderr or f"quick-save exited with code {proc.returncode}", limit=1000)
     return result
 
 

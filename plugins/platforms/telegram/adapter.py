@@ -501,6 +501,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Serialize updates per status bubble to prevent duplicate and out-of-order sends.
+        self._status_update_locks: Dict[tuple, asyncio.Lock] = {}
         # Background task that runs post-connect housekeeping (command-menu
         # registration + DM-topic setup) off the connect path so a slow Bot
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
@@ -3581,21 +3583,27 @@ class TelegramAdapter(BasePlatformAdapter):
         we drop the cached id and send fresh.
         """
         key = (str(chat_id), str(status_key))
-        cached_id = self._status_message_ids.get(key)
-        if cached_id is not None:
-            result = await self.edit_message(
-                chat_id, cached_id, content, finalize=True, metadata=metadata,
-            )
-            if result.success:
-                if result.message_id:
-                    self._status_message_ids[key] = str(result.message_id)
-                return result
-            # Edit failed — clear the cached id and fall through to a fresh send.
-            self._status_message_ids.pop(key, None)
-        result = await self.send(chat_id, content, metadata=metadata)
-        if result.success and result.message_id:
-            self._status_message_ids[key] = str(result.message_id)
-        return result
+        lock = self._status_update_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._status_update_locks[key] = lock
+
+        async with lock:
+            cached_id = self._status_message_ids.get(key)
+            if cached_id is not None:
+                result = await self.edit_message(
+                    chat_id, cached_id, content, finalize=True, metadata=metadata,
+                )
+                if result.success:
+                    if result.message_id:
+                        self._status_message_ids[key] = str(result.message_id)
+                    return result
+                # Edit failed — clear the cached id and fall through to a fresh send.
+                self._status_message_ids.pop(key, None)
+            result = await self.send(chat_id, content, metadata=metadata)
+            if result.success and result.message_id:
+                self._status_message_ids[key] = str(result.message_id)
+            return result
 
     async def edit_message(
         self,

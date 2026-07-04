@@ -302,8 +302,26 @@ def test_travel_place_from_instagram_routes_to_extraction_and_save_contract():
         assert "no_mcp" not in route.toolsets
         assert route.max_iterations >= 20
         assert "не проси геолокацию" in route.operational_context
-        assert "travel_place_save.py" in route.operational_context
+        assert "travel_place_save_from_file.py" in route.operational_context
         assert "readback_count>0" in route.operational_context
+
+
+def test_travel_map_place_reference_keeps_travel_tools_available():
+    route = route_turn(
+        "Лес Приключений Мещерский парк "
+        "https://yandex.ru/maps/org/les_priklyucheniy/125554921399",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "simple"
+    assert route.skill_names == ("city-travel-concierge",)
+    assert {"skills", "terminal"}.issubset(route.toolsets)
+    assert "no_mcp" not in route.toolsets
+    assert "intents=travel" in route.reason
+
+
 def test_skill_recommendation_requires_factual_tools():
     route = route_turn(
         "Какие навыки еще будут полезны для меня? Сделай подборку",

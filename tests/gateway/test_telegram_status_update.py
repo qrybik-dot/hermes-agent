@@ -9,6 +9,7 @@ The status-update path must:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from types import SimpleNamespace
@@ -160,3 +161,35 @@ async def test_distinct_chat_ids_do_not_collide(adapter):
     adapter.edit_message.assert_not_awaited()
     assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
     assert adapter._status_message_ids[("chat-2", "lifecycle")] == "200"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_updates_are_serialized_per_status_key(adapter):
+    calls = []
+
+    async def slow_send(chat_id, content, metadata=None):
+        calls.append(("send", content))
+        await asyncio.sleep(0.02)
+        return SendResult(success=True, message_id="100")
+
+    async def fast_edit(chat_id, message_id, content, finalize=False, metadata=None):
+        calls.append(("edit", content))
+        await asyncio.sleep(0)
+        return SendResult(success=True, message_id=message_id)
+
+    adapter.send.side_effect = slow_send
+    adapter.edit_message.side_effect = fast_edit
+
+    await asyncio.gather(
+        adapter.send_or_update_status("chat-1", "lifecycle", "retry 1/3"),
+        adapter.send_or_update_status("chat-1", "lifecycle", "retry 2/3"),
+        adapter.send_or_update_status("chat-1", "lifecycle", "retry 3/3"),
+    )
+
+    assert adapter.send.await_count == 1
+    assert adapter.edit_message.await_count == 2
+    assert calls == [
+        ("send", "retry 1/3"),
+        ("edit", "retry 2/3"),
+        ("edit", "retry 3/3"),
+    ]

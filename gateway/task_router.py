@@ -184,6 +184,10 @@ _TRAVEL_SOURCE_REFERENCE_RE = re.compile(
     r"https?://|\b(?:рилс|reels?|instagram|инстаграм|ссылк|пост)\w*\b",
     re.I,
 )
+_TRAVEL_PLACE_REFERENCE_RE = re.compile(
+    r"https?://(?:www\.)?(?:yandex\.(?:ru|com)/maps(?:/|\?|$)|2gis\.(?:ru|com)(?:/|$))",
+    re.I,
+)
 _TRAVEL_LIVE_TRAFFIC_RE = re.compile(
     r"\b(?:пробк|traffic|live\s*traffic|актуальн\w*\s+(?:дорог|трафик|время\s+в\s+пути))\w*\b",
     re.I,
@@ -392,7 +396,11 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "memory": bool(_MEMORY_RE.search(value)),
         "report": bool(_REPORT_RE.search(value)),
         "tutu": bool(_TUTU_RE.search(value)),
-        "travel": bool(_TRAVEL_RE.search(value) or _TRAVEL_SOURCE_CAPTURE_RE.search(value)),
+        "travel": bool(
+            _TRAVEL_RE.search(value)
+            or _TRAVEL_SOURCE_CAPTURE_RE.search(value)
+            or _TRAVEL_PLACE_REFERENCE_RE.search(value)
+        ),
         "context7": bool(_CONTEXT7_RE.search(value)),
         "skills_query": bool(_SKILLS_QUERY_RE.search(value)),
         "notebooklm": bool(_NOTEBOOKLM_RE.search(value)),
@@ -644,9 +652,12 @@ def travel_operational_context() -> str:
         "Если пользователь прислал ссылку, рилс или пост и просит сохранить место для будущей поездки, не проси "
         "геолокацию до попытки извлечения. Сначала открой исходный материал через web/browser, определи название, "
         "локацию и описание, затем отдельно проверь изменяемые данные: цены, расписание и часы работы. Разделяй "
-        "утверждения из публикации и подтверждённые актуальные факты; ничего не додумывай. После сбора вызови через "
-        "terminal helper `travel_place_save.py` из этого skill и передай исходный URL. Говори «сохранено» только если "
-        "helper вернул saved=true либо already_exists=true вместе с readback_count>0. Если Instagram недоступен, используй "
+        "утверждения из публикации и подтверждённые актуальные факты; ничего не додумывай. После сбора через file "
+        "запиши UTF-8 JSON в `/home/hermes/.hermes/tmp/travel-place-save.json`, затем выполни только фиксированную "
+        "ASCII-команду `/usr/bin/python3 /home/hermes/.hermes/skills/productivity/city-travel-concierge/scripts/"
+        "travel_place_save_from_file.py`. Не помещай пользовательский текст прямо в shell-команду. Говори «сохранено» "
+        "только если helper вернул saved=true либо already_exists=true вместе с readback_count>0. При ошибке верни "
+        "точные status и message; не переходи к generic memory и не ищи код skill. Если Instagram недоступен, используй "
         "видимую подпись/метаданные и одну альтернативную попытку поиска по названию или ключевым словам. Один точный "
         "уточняющий вопрос допустим только если после этого место всё ещё нельзя определить однозначно. "
         "Не оценивай время в пути, расстояние, парковку или рейтинг по памяти. "

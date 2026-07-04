@@ -1880,6 +1880,13 @@ def _gateway_final_status(agent_result: Dict[str, Any]) -> str:
     return "success"
 
 
+def _should_attach_tool_progress_callback(needs_progress_queue: bool, active_task) -> bool:
+    return bool(
+        needs_progress_queue
+        or (active_task is not None and getattr(active_task, "requires_execution", False))
+    )
+
+
 def _build_gateway_request_metrics(
     *,
     request_id: str,
@@ -17873,7 +17880,7 @@ message_context={
             # who set thinking_progress:true but kept tool_progress:off got a
             # None callback — so _thinking scratch bubbles never relayed even
             # though the progress queue was created for them.
-            agent.tool_progress_callback = progress_callback if needs_progress_queue else None
+            agent.tool_progress_callback = progress_callback if _should_attach_tool_progress_callback(needs_progress_queue, _active_task) else None
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (
@@ -18508,7 +18515,11 @@ message_context={
             if _active_task is not None:
                 from gateway.task_continuation import TaskStateStore, is_progress_only
                 _task_store = TaskStateStore()
-                _task_tool_calls = int(request_metrics.get("tool_call_count", 0) or 0)
+                _task_tool_calls = max(
+                    int(request_metrics.get("tool_call_count", 0) or 0),
+                    int(getattr(agent, "_executed_tool_call_count", 0) or 0),
+                )
+                request_metrics["tool_call_count"] = _task_tool_calls
                 _turn_exit_reason = str(result.get("turn_exit_reason") or "")
                 _budget_exhausted = _turn_exit_reason.startswith("max_iterations_reached")
                 _no_execution_tools = _active_task.requires_execution and _task_tool_calls == 0

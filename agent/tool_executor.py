@@ -859,6 +859,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             # `blocked` calls never actually ran — don't let a guardrail
             # block count as either a failure or a success.
             if not blocked:
+                agent._executed_tool_call_count = int(getattr(agent, "_executed_tool_call_count", 0) or 0) + 1
                 try:
                     agent._record_file_mutation_result(
                         function_name, function_args, function_result, is_error,
@@ -1533,6 +1534,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
+
+        if not _execution_blocked:
+            agent._executed_tool_call_count = int(getattr(agent, "_executed_tool_call_count", 0) or 0) + 1
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:
