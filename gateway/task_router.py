@@ -180,6 +180,10 @@ _TRAVEL_SOURCE_CAPTURE_RE = re.compile(
     r"\b(?:место|локаци|цен|расписан|время\s+работы|час(?:ы|ов)?\s+работы)\w*\b",
     re.I | re.S,
 )
+_TRAVEL_SOURCE_REFERENCE_RE = re.compile(
+    r"https?://|\b(?:рилс|reels?|instagram|инстаграм|ссылк|пост)\w*\b",
+    re.I,
+)
 _TRAVEL_LIVE_TRAFFIC_RE = re.compile(
     r"\b(?:пробк|traffic|live\s*traffic|актуальн\w*\s+(?:дорог|трафик|время\s+в\s+пути))\w*\b",
     re.I,
@@ -395,9 +399,14 @@ def _intent_flags(text: str) -> dict[str, bool]:
     }
 
 
+def travel_is_source_capture(text: str) -> bool:
+    value = text or ""
+    return bool(_TRAVEL_SOURCE_CAPTURE_RE.search(value) and _TRAVEL_SOURCE_REFERENCE_RE.search(value))
+
+
 def travel_needs_web_or_browser(text: str) -> bool:
     value = text or ""
-    return bool(_TRAVEL_SOURCE_CAPTURE_RE.search(value) or _TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
+    return bool(travel_is_source_capture(value) or _TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
 
 
 def travel_is_route_or_parking(text: str) -> bool:

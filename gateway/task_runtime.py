@@ -24,7 +24,7 @@ from gateway.task_continuation import (
 )
 from gateway.task_router import (
     TaskRoute, route_turn, should_generate_html_report,
-    travel_is_route_or_parking, travel_needs_web_or_browser,
+    travel_is_route_or_parking, travel_is_source_capture, travel_needs_web_or_browser,
 )
 from gateway.quick_note_capture import (
     build_location_place_note,
@@ -1096,6 +1096,9 @@ def _deterministic_location_place_flow(*, text: str, route: TaskRoute, platform_
     reply_location = msg_ctx.reply_location if _location_coords(msg_ctx.reply_location) else None
     location_only = current_location is not None and _LOCATION_ONLY_TEXT_RE.fullmatch(text or "") is not None
     intent = _place_intent_from_text(text)
+
+    if travel_is_source_capture(text):
+        return None
 
     if current_location is not None:
         store.save(platform=platform_key, chat_id=str(chat_id), session_key=effective_session, sender_id=sender_id, kind="location", payload=current_location)

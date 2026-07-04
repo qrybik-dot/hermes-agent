@@ -1687,6 +1687,19 @@ def _location_common(tmp_path, monkeypatch, *, chat_id="1", sender_id="42", sess
         message_context={"chat_id": chat_id, "sender_id": sender_id, "session_key": session_key},
     )
 
+def test_travel_source_save_bypasses_personal_location_interceptor(tmp_path, monkeypatch):
+    common = _location_common(tmp_path, monkeypatch)
+    monkeypatch.setattr("gateway.task_runtime._with_preloaded_skills", lambda route, task_id: (route, ()))
+    message = ("https://www.instagram.com/reel/example/\n\n"
+               "Сохрани это место для будущих путешествий. Сам вытащи из рилс название, локацию, описание, цены, расписание и время работы.")
+    result = prepare_task_turn(message=message, request_id="travel-source-1", **common)
+    assert result.early_response is None
+    assert result.route is not None
+    assert "city-travel-concierge" in result.route.skill_names
+    assert {"terminal", "web", "browser"}.issubset(set(result.route.toolsets))
+    assert "не проси геолокацию" in result.route.operational_context
+
+
 def test_telegram_location_then_save_home_is_deterministic(tmp_path, monkeypatch):
     common = _location_common(tmp_path, monkeypatch)
     saved_notes = []
