@@ -84,3 +84,80 @@ def test_known_health_failure_is_baselined_then_transition_notified():
     assert radar.evaluate([obs], {"observed": {"auth": {"status": "error"}}}) == []
     findings = radar.evaluate([obs], {"observed": {"auth": {"status": "ok"}}})
     assert len(findings) == 1
+
+
+def test_model_catalog_addition_produces_safe_proposal():
+    obs = radar.Observation(
+        key="codex_model_catalog",
+        name="Codex subscription model catalog",
+        kind="inventory",
+        current=["gpt-5.5", "gpt-5.6"],
+        source="live",
+        details={"configured_models": ["gpt-5.5"]},
+    )
+    findings = radar.evaluate(
+        [obs],
+        {"observed": {"codex_model_catalog": {"current": ["gpt-5.5"]}}},
+    )
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.finding_type == "model_catalog"
+    assert finding.verdict == "🧪 доступна новая модель"
+    assert finding.details["added"] == ["gpt-5.6"]
+    assert finding.details["automatic_routing_change"] is False
+    assert "coding" in finding.details["role_suggestions"]["gpt-5.6"]
+
+
+def test_active_model_removal_is_urgent():
+    obs = radar.Observation(
+        key="antigravity_model_catalog",
+        name="Antigravity model catalog",
+        kind="inventory",
+        current=["gemini-3.1-pro-low"],
+        source="live",
+        details={"configured_models": ["claude-sonnet-4-6", "gemini-3.1-pro-low"]},
+    )
+    findings = radar.evaluate(
+        [obs],
+        {"observed": {"antigravity_model_catalog": {"current": ["claude-sonnet-4-6", "gemini-3.1-pro-low"]}}},
+    )
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.verdict == "🚨 активная модель исчезла"
+    assert finding.details["active_removed"] == ["claude-sonnet-4-6"]
+
+
+def test_model_catalog_baseline_is_silent():
+    obs = radar.Observation(
+        key="codex_model_catalog",
+        name="Codex subscription model catalog",
+        kind="inventory",
+        current=["gpt-5.5"],
+        source="live",
+        details={"configured_models": ["gpt-5.5"]},
+    )
+    assert radar.evaluate([obs], {"observed": {}}) == []
+
+
+def test_model_catalog_report_never_auto_switches():
+    finding = radar.Finding(
+        key="codex_model_catalog",
+        name="Codex subscription model catalog",
+        finding_type="model_catalog",
+        current=["gpt-5.5"],
+        latest=["gpt-5.5", "gpt-5.6"],
+        status="ok",
+        verdict="🧪 доступна новая модель",
+        reason="changed",
+        source="live",
+        details={
+            "added": ["gpt-5.6"],
+            "removed": [],
+            "active_removed": [],
+            "role_suggestions": {"gpt-5.6": ["coding", "planning"]},
+            "automatic_routing_change": False,
+        },
+    )
+    report = radar.deterministic_report([finding])
+    assert "автоматически не менялась" in report
+    assert "gpt-5.6" in report

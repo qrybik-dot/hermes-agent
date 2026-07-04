@@ -270,7 +270,32 @@ def _resolve_local_proxy_key() -> tuple[str, str]:
     return base, key
 
 
-def model_catalog() -> Observation:
+def active_routing_models() -> list[str]:
+    """Return models that are currently selected or configured as fallbacks."""
+    try:
+        config = yaml.safe_load((HERMES_HOME / "config.yaml").read_text()) or {}
+    except Exception:
+        return []
+    models: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            model = value.get("model")
+            if isinstance(model, str) and model.strip() and model != "no_llm":
+                models.add(model.strip())
+            for nested in value.values():
+                collect(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect(nested)
+
+    for key in ("model_roles", "role_fallbacks", "codex_quality_fallback", "image_gen"):
+        collect(config.get(key))
+    return sorted(models)
+
+
+def antigravity_model_catalog() -> Observation:
+    """Read the live Gemini/Claude catalog exposed by CLIProxyAPI."""
     try:
         base, key = _resolve_local_proxy_key()
         if not key:
@@ -279,10 +304,100 @@ def model_catalog() -> Observation:
         with urllib.request.urlopen(request, timeout=15) as response:
             data = json.load(response)
         models = sorted(str(item.get("id")) for item in data.get("data", []) if item.get("id"))
-        selected = [m for m in models if any(token in m.lower() for token in ("gemini", "claude", "gpt-5"))]
-        return Observation(key="model_catalog", name="CLIProxy model catalog", kind="inventory", current=selected, details={"count": len(models)})
+        selected = [m for m in models if any(token in m.lower() for token in ("gemini", "claude"))]
+        return Observation(
+            key="antigravity_model_catalog",
+            name="Antigravity model catalog",
+            kind="inventory",
+            current=selected,
+            source="CLIProxyAPI live /models catalog",
+            details={"catalog_count": len(models), "configured_models": active_routing_models()},
+        )
     except Exception as exc:
-        return Observation(key="model_catalog", name="CLIProxy model catalog", kind="health", status="error", error=f"{type(exc).__name__}: {exc}")
+        return Observation(key="antigravity_model_catalog", name="Antigravity model catalog", kind="health", status="error", error=f"{type(exc).__name__}: {exc}")
+
+
+def codex_model_catalog() -> Observation:
+    """Read the live model catalog available to the ChatGPT/Codex subscription."""
+    try:
+        sys.path.insert(0, str(REPO))
+        from hermes_cli.models import provider_model_ids
+
+        models = sorted(provider_model_ids("openai-codex", force_refresh=True))
+        return Observation(
+            key="codex_model_catalog",
+            name="Codex subscription model catalog",
+            kind="inventory",
+            current=models,
+            source="ChatGPT Codex live model catalog",
+            details={"catalog_count": len(models), "configured_models": active_routing_models()},
+        )
+    except Exception as exc:
+        return Observation(key="codex_model_catalog", name="Codex subscription model catalog", kind="health", status="error", error=f"{type(exc).__name__}: {exc}")
+
+
+def model_catalog() -> Observation:
+    """Backward-compatible alias for the former combined catalog probe."""
+    return antigravity_model_catalog()
+
+
+def suggested_model_roles(model: str) -> list[str]:
+    """Produce conservative qualification targets from a model slug."""
+    value = model.lower()
+    roles: list[str] = []
+    if any(token in value for token in ("image", "vision")):
+        roles.append("image_generation")
+    if any(token in value for token in ("codex", "gpt-5", "agent")):
+        roles.extend(["coding", "server_debug"])
+    if any(token in value for token in ("opus", "thinking", "reasoning")):
+        roles.extend(["critical_review", "expert_analysis"])
+    if any(token in value for token in ("sonnet", "pro", "gpt-5")):
+        roles.extend(["planning", "expert_analysis", "long_context"])
+    if any(token in value for token in ("flash", "mini", "lite", "extra-low")):
+        roles.extend(["simple", "parser", "fast_tools"])
+    deduped: list[str] = []
+    for role in roles or ["manual_qualification"]:
+        if role not in deduped:
+            deduped.append(role)
+    return deduped
+
+
+def model_catalog_change(item: Observation, old: Any) -> Finding:
+    before = sorted(str(value) for value in (old or []))
+    after = sorted(str(value) for value in (item.current or []))
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+    configured = set((item.details or {}).get("configured_models") or [])
+    active_removed = sorted(set(removed) & configured)
+    suggestions = {model: suggested_model_roles(model) for model in added}
+    if active_removed:
+        verdict = "🚨 активная модель исчезла"
+        reason = "configured model disappeared from the subscription catalog; existing runtime fallback must cover it until routing is reviewed"
+    elif added:
+        verdict = "🧪 доступна новая модель"
+        reason = "subscription model lineup changed; qualify the new model before changing production routing"
+    else:
+        verdict = "🧪 модельный ряд изменился"
+        reason = "one or more previously visible models disappeared; confirm entitlement and fallback coverage"
+    return Finding(
+        item.key,
+        item.name,
+        "model_catalog",
+        before,
+        after,
+        item.status,
+        verdict,
+        reason,
+        item.source,
+        details={
+            "added": added,
+            "removed": removed,
+            "active_removed": active_removed,
+            "role_suggestions": suggestions,
+            "automatic_routing_change": False,
+            "recommended_gate": ["exact_response", "file_tool", "latency", "fallback", "manual_approval"],
+        },
+    )
 
 
 def notebooklm_auth() -> Observation:
@@ -329,7 +444,7 @@ def collect_observations() -> list[Observation]:
         xray = observe_release(key="xray", name="Xray-core", current=xray_current, latest_loader=lambda: github_release("XTLS/Xray-core"))
         xray.details = {"container": xray_container}
         items.append(xray)
-    items.extend([notebooklm_auth(), model_catalog(), configured_mcp(), docker_inventory()])
+    items.extend([notebooklm_auth(), antigravity_model_catalog(), codex_model_catalog(), configured_mcp(), docker_inventory()])
     return items
 
 
@@ -362,7 +477,10 @@ def evaluate(observations: list[Observation], previous: dict[str, Any]) -> list[
         elif item.kind == "inventory":
             old = (previous_observed.get(item.key) or {}).get("current")
             if old is not None and old != item.current:
-                findings.append(Finding(item.key, item.name, "inventory", old, item.current, item.status, "🧪 проверить", "runtime inventory changed", item.source, details=item.details))
+                if item.key in {"antigravity_model_catalog", "codex_model_catalog"}:
+                    findings.append(model_catalog_change(item, old))
+                else:
+                    findings.append(Finding(item.key, item.name, "inventory", old, item.current, item.status, "🧪 проверить", "runtime inventory changed", item.source, details=item.details))
     return findings
 
 
@@ -392,6 +510,22 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
 def deterministic_report(findings: list[Finding]) -> str:
     lines = ["🛰 Update Radar", ""]
     for finding in findings:
+        if finding.finding_type == "model_catalog":
+            details = finding.details or {}
+            lines.extend([f"{finding.verdict} {finding.name}"])
+            if details.get("added"):
+                lines.append("Добавлены: " + ", ".join(details["added"]))
+            if details.get("removed"):
+                lines.append("Исчезли: " + ", ".join(details["removed"]))
+            if details.get("active_removed"):
+                lines.append("Затронуты активные маршруты: " + ", ".join(details["active_removed"]))
+            for model, roles in (details.get("role_suggestions") or {}).items():
+                lines.append(f"Предложение для {model}: сначала проверить роли {', '.join(roles)}")
+            lines.append("Production-маршрутизация автоматически не менялась. После smoke-теста Hermes предложит точечную замену.")
+            if finding.source:
+                lines.append(f"Источник: {finding.source}")
+            lines.append("")
+            continue
         lines.extend([
             f"{finding.verdict} {finding.name}",
             f"Сейчас: {finding.current if finding.current not in (None, '') else '—'}",
