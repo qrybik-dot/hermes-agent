@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hermes v0.18 — полный человеческий отчёт</title>
+<style>
+:root{--bg:#07111f;--panel:#10233b;--panel2:#0b192b;--line:#294766;--text:#eef5ff;--muted:#9fb4ca;--ok:#39d98a;--warn:#ffc95e;--bad:#ff7180;--blue:#6db8ff;--violet:#b99cff;--chip:#142d49}
+html[data-theme="light"]{--bg:#edf3f9;--panel:#ffffff;--panel2:#f7fafe;--line:#bfd0e0;--text:#14263b;--muted:#5c7186;--ok:#087f51;--warn:#966600;--bad:#b2354a;--blue:#176cae;--violet:#6844a2;--chip:#e6eef7}
+@media (prefers-color-scheme:light){html:not([data-theme="dark"]){--bg:#edf3f9;--panel:#fff;--panel2:#f7fafe;--line:#bfd0e0;--text:#14263b;--muted:#5c7186;--ok:#087f51;--warn:#966600;--bad:#b2354a;--blue:#176cae;--violet:#6844a2;--chip:#e6eef7}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 15% 0,#163a64 0,var(--bg) 44%,#030912 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;line-height:1.5}.wrap{max-width:1180px;margin:auto;padding:20px}.hero,.card,.section,.toc{background:linear-gradient(145deg,color-mix(in srgb,var(--panel) 96%,transparent),color-mix(in srgb,var(--panel2) 96%,transparent));border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 42px rgba(0,0,0,.25)}.hero{padding:26px}.badge{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border:1px solid color-mix(in srgb,var(--warn) 55%,transparent);background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn);border-radius:999px;font-weight:850;font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:var(--warn);box-shadow:0 0 16px var(--warn)}h1{font-size:36px;line-height:1.08;margin:15px 0 9px}h2{font-size:24px;margin:0 0 14px}h3{font-size:17px;margin:20px 0 9px}.muted{color:var(--muted)}.lead{font-size:18px;max-width:980px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.chip{background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:6px 10px;font-size:12px;color:var(--text)}code{background:#06101d;border:1px solid #27415f;color:#ddecff;border-radius:6px;padding:2px 5px;overflow-wrap:anywhere}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:11px;margin:15px 0}.card{padding:15px}.metric{font-size:27px;font-weight:900}.ok{color:var(--ok)}.warn{color:var(--warn)}.blue{color:var(--blue)}.violet{color:var(--violet)}.bad{color:var(--bad)}.small{font-size:12px}.toc{padding:18px;margin:15px 0}.toc ol{margin:6px 0 0;padding-left:22px;columns:2;column-gap:36px}.toc li{margin:7px 0;break-inside:avoid}.toc a{color:var(--blue);text-decoration:none}.toc a:hover{text-decoration:underline}.section{padding:21px;margin:14px 0}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.item{background:color-mix(in srgb,var(--panel2) 80%,transparent);border:1px solid var(--line);border-left:4px solid var(--ok);padding:13px 14px;border-radius:12px}.item.warnline{border-left-color:var(--warn)}.item.blueline{border-left-color:var(--blue)}.item.violetline{border-left-color:var(--violet)}.item.badline{border-left-color:var(--bad)}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:10px 8px;border-bottom:1px solid color-mix(in srgb,var(--line) 75%,transparent);text-align:left;vertical-align:top}th{font-size:12px;text-transform:uppercase;letter-spacing:.045em;color:var(--muted)}.status{font-weight:850}.status.active{color:var(--ok)}.status.fallback{color:var(--warn)}.status.manual{color:var(--violet)}.status.available{color:var(--blue)}.status.pending{color:var(--warn)}details{border:1px solid var(--line);border-radius:12px;margin:10px 0;background:color-mix(in srgb,var(--panel2) 74%,transparent)}summary{cursor:pointer;padding:12px 14px;font-weight:800}.detail{padding:0 14px 14px}.callout{padding:14px;border-radius:12px;background:color-mix(in srgb,var(--blue) 10%,var(--panel2));border:1px solid color-mix(in srgb,var(--blue) 45%,var(--line))}.callout.warnbox{background:color-mix(in srgb,var(--warn) 9%,var(--panel2));border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}.flow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.flow span{padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}.arrow{color:var(--muted);font-weight:900}.check{margin:6px 0}.check:before{content:"✓";color:var(--ok);font-weight:900;margin-right:8px}.pendingcheck:before{content:"◷";color:var(--warn);font-weight:900;margin-right:8px}.footer{color:var(--muted);font-size:12px;margin:18px 3px 6px}.back{float:right;font-size:12px;color:var(--blue);text-decoration:none}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}@media (max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.grid2,.grid3{grid-template-columns:1fr}.toc ol{columns:1}}@media (max-width:520px){.wrap{padding:10px}.hero,.section,.toc{padding:16px}h1{font-size:28px}.metrics{grid-template-columns:1fr}th,td{font-size:12px;padding:8px 5px}}
+</style>
+</head>
+<body><!-- Hermes Report Finalizer -->
+<div class="wrap" id="top">
+<section class="hero">
+<span class="badge" data-status="PARTIAL"><span class="dot"></span>Технически READY · один плановый контроль ожидается</span>
+<h1>Hermes v0.18: что изменилось и как теперь всё работает</h1>
+<p class="lead">Полный отчёт простым языком: что внедрено на VPS, какие модели доступны по подпискам Codex и Antigravity, какая модель отвечает за каждый тип задач, как работает fallback и как Hermes теперь узнает о появлении новых моделей.</p>
+<div class="chips"><span class="chip">Runtime release: <code>prod/hermes-v018-ready-20260704T1001Z</code></span><span class="chip">Release commit: <code>7056c2e98</code></span><span class="chip">Tail audit: <code>9f318e426</code></span><span class="chip">Model watch: <code>796ebd49f</code></span></div>
+</section>
+<div class="metrics">
+<div class="card"><div class="metric ok">0</div><div class="muted small">failed systemd units</div></div>
+<div class="card"><div class="metric blue">13</div><div class="muted small">текстовых моделей в двух подписках</div></div>
+<div class="card"><div class="metric violet">1</div><div class="muted small">максимальный fallback на задачу</div></div>
+<div class="card"><div class="metric ok">12/12</div><div class="muted small">тестов model-lineup watcher</div></div>
+<div class="card"><div class="metric warn">05.07</div><div class="muted small">первый естественный запуск Radar</div></div>
+</div>
+<nav class="toc">
+<h2>Оглавление</h2>
+<ol>
+<li><a href="#status">Текущий статус и что ещё ждём</a></li>
+<li><a href="#done">Что было сделано</a></li>
+<li><a href="#components">Версии и сервисы</a></li>
+<li><a href="#catalogs">Все доступные модели</a></li>
+<li><a href="#routing">Основные модели и fallback по задачам</a></li>
+<li><a href="#fallback">Как именно работает fallback</a></li>
+<li><a href="#modelwatch">Уведомления о новых моделях</a></li>
+<li><a href="#tests">Проверки и доказательства</a></li>
+<li><a href="#rollback">Откат и безопасность</a></li>
+<li><a href="#artifacts">Git, commits и артефакты</a></li>
+<li><a href="#next">Что произойдёт дальше</a></li>
+</ol>
+</nav>
+
+<section class="section" id="status"><a class="back" href="#top">к оглавлению ↑</a><h2>1. Текущий статус</h2>
+<div class="grid2"><div class="item"><b>Все технические хвосты закрыты</b><br>Gateway, CLIProxy, cloudflared, Graphify и timers активны. Failed units отсутствуют. Snapshot, Git и runtime сверены.</div><div class="item warnline"><b>Остался один плановый контроль</b><br>Update Radar был включён после сегодняшнего окна запуска. Его первый естественный timer-run будет 5 июля около 07:17 UTC. Проверка уже запланирована.</div></div>
+<p class="check">Cloudflared реально работает на версии 2026.6.1, а не просто лежит новым файлом на диске.</p>
+<p class="check">Graphify несколько раз подряд успешно отработал по расписанию.</p>
+<p class="check">NotebookLM watchdog успешно отработал по расписанию.</p>
+<p class="check">Update Radar прошёл ручной production-run и сохранил полную тишину при отсутствии изменений.</p>
+<p class="pendingcheck">После естественного запуска Update Radar отчёт можно будет перевести из «READY с ожидаемым контролем» в окончательный READY.</p>
+</section>
+
+<section class="section" id="done"><a class="back" href="#top">к оглавлению ↑</a><h2>2. Что было сделано</h2>
+<div class="grid2">
+<div class="item"><b>Hermes обновлён до v0.18</b><br>Сохранена ваша production-логика: маршрутизация, Telegram UX, память, отчётность, семейные сценарии и безопасная работа с инструментами.</div>
+<div class="item"><b>Перенесён новый runtime</b><br>Gateway работает из отдельного v0.18 окружения. Это упрощает обновление и откат.</div>
+<div class="item"><b>Исправлен штатный restart</b><br>Остановка через systemd теперь считается нормальной, завершается кодом 0 и не выглядит как падение.</div>
+<div class="item"><b>Проверен реальный rollback</b><br>Hermes переключался на v0.16, запускался, а затем возвращался на v0.18.</div>
+<div class="item"><b>CLIProxy обновлён до 7.2.50</b><br>Проверены Gemini, Sonnet и Opus. GPT-5.5 работает отдельным путём через Codex.</div>
+<div class="item"><b>NotebookLM обновлён до 0.8.2</b><br>Авторизация восстановлена, notebooks читаются, query проходит, watchdog включён.</div>
+<div class="item"><b>Graphify обновлён до 0.9.5</b><br>Граф сохранил 23 узла, 40 связей и 4 сообщества. Старый runtime 0.8.50 оставлен для отката.</div>
+<div class="item"><b>Введён Update Radar v3</b><br>Он проверяет версии и состояние сервисов, но ничего не обновляет самостоятельно.</div>
+<div class="item"><b>Исправлен startup notifier</b><br>Медленный journal больше не создаёт ложную красную тревогу.</div>
+<div class="item"><b>Закрыта тестовая изоляция</b><br>Restart-тесты больше не оставляют тестовые marker-файлы в production-профиле.</div>
+<div class="item"><b>Обновлены Git и база знаний</b><br>Есть release tag, audit commits, canonical snapshot, model policy и evidence-записи.</div>
+<div class="item"><b>Добавлен контроль модельного ряда</b><br>Hermes отдельно следит за моделями Antigravity и Codex и предлагает изменения без скрытого автопереключения.</div>
+</div>
+</section>
+
+<section class="section" id="components"><a class="back" href="#top">к оглавлению ↑</a><h2>3. Версии и сервисы</h2>
+<table><thead><tr><th>Компонент</th><th>Версия</th><th>Состояние</th><th>Зачем нужен</th></tr></thead><tbody>
+<tr><td>Hermes Agent</td><td>0.18.0 custom / upstream v2026.7.1</td><td class="status active">ACTIVE</td><td>Основной агент и Telegram gateway</td></tr>
+<tr><td>CLIProxyAPI</td><td>7.2.50</td><td class="status active">ACTIVE</td><td>Доступ к моделям Antigravity</td></tr>
+<tr><td>NotebookLM MCP/CLI</td><td>0.8.2</td><td class="status active">AUTH VALID</td><td>Работа с notebooks, отчётами и источниками</td></tr>
+<tr><td>Graphify</td><td>0.9.5</td><td class="status active">TIMER ACTIVE</td><td>Граф связей в базе знаний</td></tr>
+<tr><td>Update Radar</td><td>v3 + model lineup watch</td><td class="status active">ACTIVE</td><td>Релизы, безопасность и изменение списка моделей</td></tr>
+<tr><td>cloudflared</td><td>2026.6.1</td><td class="status active">RUNTIME VERIFIED</td><td>Туннель локальных сервисов</td></tr>
+<tr><td>uv</td><td>0.11.26</td><td class="status active">CURRENT</td><td>Python environments и инструменты</td></tr>
+<tr><td>Tailscale</td><td>1.98.8</td><td class="status active">ACTIVE</td><td>Приватный сетевой доступ</td></tr>
+<tr><td>Chrome</td><td>150.0.7871.46</td><td class="status active">CURRENT</td><td>Browser automation и NotebookLM auth</td></tr>
+<tr><td>Restic / Syncthing</td><td>0.19.0 / 2.1.1</td><td class="status active">CURRENT</td><td>Backup и синхронизация базы знаний</td></tr>
+</tbody></table>
+</section>
+
+<section class="section" id="catalogs"><a class="back" href="#top">к оглавлению ↑</a><h2>4. Какие модели сейчас доступны</h2>
+<div class="callout"><b>Важно:</b> «доступна в подписке» не означает «уже используется в production». Hermes использует только проверенные модели, остальные остаются кандидатами до smoke-тестов.</div>
+<h3>Antigravity / CLIProxy — 10 моделей</h3>
+<div class="grid3">
+<div class="item violetline"><b>Claude</b><br><code>claude-opus-4-6-thinking</code><br><code>claude-sonnet-4-6</code></div>
+<div class="item blueline"><b>Gemini, основные</b><br><code>gemini-3.5-flash-low</code><br><code>gemini-3.1-pro-low</code><br><code>gemini-3-flash-agent</code></div>
+<div class="item blueline"><b>Gemini, доступные кандидаты</b><br><code>gemini-3-flash</code><br><code>gemini-3.1-flash-image</code><br><code>gemini-3.1-flash-lite</code><br><code>gemini-3.5-flash-extra-low</code><br><code>gemini-pro-agent</code></div>
+</div>
+<h3>ChatGPT / Codex — 3 модели</h3>
+<div class="grid3"><div class="item"><b><code>gpt-5.5</code></b><br>Текущая production-модель для planning, coding и server debug.</div><div class="item blueline"><b><code>gpt-5.4</code></b><br>Доступна в подписке, но не назначена на production-роли.</div><div class="item blueline"><b><code>gpt-5.4-mini</code></b><br>Доступна в подписке, но требует отдельной квалификации.</div></div>
+<h3>Изображения</h3><div class="item violetline"><b><code>gpt-image-2-medium</code></b> через <code>openai-codex</code> — основной проверенный канал генерации изображений.</div>
+</section>
+
+<section class="section" id="routing"><a class="back" href="#top">к оглавлению ↑</a><h2>5. Основные модели и fallback по типам задач</h2>
+<table><thead><tr><th>Тип задачи</th><th>Основная модель</th><th>Fallback</th><th>Пример</th></tr></thead><tbody>
+<tr><td><b>Simple</b></td><td><code>gemini-3.5-flash-low</code></td><td><code>gemini-3.1-pro-low</code></td><td>Короткий ответ, бытовой вопрос, простая команда</td></tr>
+<tr><td><b>Parser</b></td><td><code>gemini-3.5-flash-low</code></td><td><code>gemini-3.1-pro-low</code></td><td>Разбор ссылки, команды, структуры входящего сообщения</td></tr>
+<tr><td><b>Planning</b></td><td><code>gpt-5.5</code> / Codex</td><td><code>gemini-3.1-pro-low</code></td><td>План внедрения, архитектура, декомпозиция</td></tr>
+<tr><td><b>Coding</b></td><td><code>gpt-5.5</code> / Codex</td><td><code>gemini-3.1-pro-low</code></td><td>Разработка, исправление кода, code review</td></tr>
+<tr><td><b>Server debug</b></td><td><code>gpt-5.5</code> / Codex</td><td><code>gemini-3.1-pro-low</code></td><td>Диагностика VPS и сервисов</td></tr>
+<tr><td><b>Long context</b></td><td><code>gemini-3.1-pro-low</code></td><td>Public: <code>claude-sonnet-4-6</code><br>Sensitive: <code>gemini-3.5-flash-low</code></td><td>Большие документы, длинные чаты, сводные отчёты</td></tr>
+<tr><td><b>Research</b></td><td><code>gemini-3.1-pro-low</code></td><td>Public: <code>claude-sonnet-4-6</code><br>Sensitive: <code>gemini-3.5-flash-low</code></td><td>Исследования, сравнения, изучение источников</td></tr>
+<tr><td><b>Expert analysis</b></td><td><code>gemini-3.1-pro-low</code></td><td><code>claude-sonnet-4-6</code></td><td>Прожарка решений, сложная аналитика</td></tr>
+<tr><td><b>Critical review</b></td><td>Назначается явно</td><td><code>claude-opus-4-6-thinking</code></td><td>Самая сложная проверка, рискованное решение</td></tr>
+<tr><td><b>No-LLM commands</b></td><td>Без модели</td><td>Не требуется</td><td><code>/tasks</code>, health, memory search, schema check</td></tr>
+</tbody></table>
+<div class="callout warnbox"><b>Opus не стоит в автоматической цепочке.</b> Он доступен и квалифицирован, но используется только явно для критической проверки. Это снижает задержки и не тратит тяжёлую модель на обычные задачи.</div>
+</section>
+
+<section class="section" id="fallback"><a class="back" href="#top">к оглавлению ↑</a><h2>6. Как работает fallback</h2>
+<div class="flow"><span>Основная модель</span><span class="arrow">→</span><span>1 повтор при допустимой ошибке</span><span class="arrow">→</span><span>не более 1 fallback</span><span class="arrow">→</span><span>честный итог или blocker</span></div>
+<h3>Когда fallback разрешён</h3><p>Rate limit, исчерпание лимита подписки, проблемы авторизации, billing status, model not found, перегрузка, server error, timeout, format error и другие подтверждённые provider errors.</p>
+<h3>Защита coding и server debug</h3><div class="item badline">Fallback на Gemini для coding/server debug разрешён только <b>до первого tool-call</b>. Контекст изолируется, инструменты отключены. Это не даёт второй модели продолжить опасную серверную операцию, не зная точного состояния после действий первой модели.</div>
+<h3>Почему fallback только один</h3><p>Чтобы Hermes не ходил по длинной цепочке слабых моделей, не терял контекст, не создавал повторные действия и не скрывал реальный blocker.</p>
+</section>
+
+<section class="section" id="modelwatch"><a class="back" href="#top">к оглавлению ↑</a><h2>7. Как Hermes теперь узнает о новых моделях</h2>
+<div class="grid2"><div class="item"><b>Antigravity проверяется отдельно</b><br>Hermes сохраняет live-список Gemini и Claude из CLIProxy.</div><div class="item"><b>Codex проверяется отдельно</b><br>Hermes получает live-каталог моделей, доступных именно по текущей ChatGPT/Codex подписке.</div></div>
+<h3>Если появилась новая модель</h3>
+<p class="check">Hermes определяет, какая модель добавилась.</p><p class="check">Предлагает роли для теста: simple, planning, coding, long context или critical review.</p><p class="check">Отправляет одно дедуплицированное уведомление в Telegram.</p><p class="check">Предлагает точечную замену после проверки.</p><p class="pendingcheck">Production-маршрутизация не меняется автоматически.</p>
+<h3>Если активная модель исчезла</h3><p>Уведомление становится срочным. Hermes показывает, какие основные или fallback-роли затронуты. До решения работает уже настроенный runtime fallback.</p>
+<h3>Обязательный тест новой модели</h3><div class="grid3"><div class="item blueline"><b>1. Ответ</b><br>Точный короткий response marker.</div><div class="item blueline"><b>2. Инструмент</b><br>Безопасный file-tool call.</div><div class="item blueline"><b>3. Надёжность</b><br>Latency, timeout и fallback.</div><div class="item violetline"><b>4. Сравнение</b><br>Качество против текущей модели этой роли.</div><div class="item violetline"><b>5. Решение</b><br>Конкретное предложение: заменить, оставить fallback или не использовать.</div><div class="item warnline"><b>6. Approval</b><br>Только после подтверждения меняется production config.</div></div>
+<details><summary>Почему не включено полное автоматическое переключение</summary><div class="detail">Новая модель может быть быстрее, но хуже работать с инструментами, иметь другой лимит контекста, нестабильный entitlement или неожиданные ошибки. Поэтому автоматизированы обнаружение, анализ и предложение. Само изменение primary/fallback остаётся контролируемым.</div></details>
+</section>
+
+<section class="section" id="tests"><a class="back" href="#top">к оглавлению ↑</a><h2>8. Проверки и доказательства</h2>
+<div class="grid3"><div class="card"><div class="metric ok">696</div><div class="muted small">integration gate executions</div></div><div class="card"><div class="metric ok">165 + 124</div><div class="muted small">финальные core и restart/Radar tests</div></div><div class="card"><div class="metric ok">12</div><div class="muted small">model-lineup watcher tests</div></div></div>
+<p class="check">Telegram outbound после финального restart прошёл.</p><p class="check">LLM response после restart прошёл.</p><p class="check">Memory add/read/remove/read прошёл.</p><p class="check">Calendar read-only вернул 6 событий.</p><p class="check">NotebookLM: 6 notebooks и read-only query.</p><p class="check">Graphify: 23 nodes, 40 links, 4 communities.</p><p class="check">Live Antigravity catalog: 10 моделей.</p><p class="check">Live Codex catalog: 3 модели.</p><p class="check">После baseline повторный Radar-run дал пустой вывод.</p>
+<p class="muted small">Числа suites частично пересекаются; это количество выполненных проверок по этапам, а не число уникальных тестовых функций.</p>
+</section>
+
+<section class="section" id="rollback"><a class="back" href="#top">к оглавлению ↑</a><h2>9. Откат и безопасность</h2>
+<table><thead><tr><th>Компонент</th><th>Готовый откат</th></tr></thead><tbody>
+<tr><td>Hermes</td><td>Tag <code>prod/routing-hotfix-20260703T1605Z</code> и сохранённый v0.16 systemd unit</td></tr>
+<tr><td>CLIProxy</td><td>Бинарник 7.2.49, также сохранён старый baseline 7.2.42</td></tr>
+<tr><td>Graphify</td><td>Отдельный pinned runtime 0.8.50 и backups скриптов</td></tr>
+<tr><td>NotebookLM</td><td>Backup tool/profile перед обновлением до 0.8.2</td></tr>
+<tr><td>Update Radar</td><td>Независимый service/timer; можно отключить без остановки gateway</td></tr>
+</tbody></table>
+<div class="callout"><b>Главное правило:</b> Update Radar и model lineup watcher только наблюдают и предлагают. Они не обновляют компоненты и не меняют маршрутизацию самостоятельно.</div>
+</section>
+
+<section class="section" id="artifacts"><a class="back" href="#top">к оглавлению ↑</a><h2>10. Git, commits и артефакты</h2>
+<h3>Ключевые commits</h3><table><thead><tr><th>Commit</th><th>Что зафиксировано</th></tr></thead><tbody>
+<tr><td><code>7056c2e98</code></td><td>Финальная runtime release-точка v0.18</td></tr>
+<tr><td><code>9f318e426</code></td><td>Post-release audit: snapshot, cloudflared, timers</td></tr>
+<tr><td><code>796ebd49f</code></td><td>Отдельный контроль модельных рядов Codex и Antigravity</td></tr>
+</tbody></table>
+<h3>Canonical artifacts</h3><div class="grid2"><div class="item"><code>ops/production/PRODUCTION_SNAPSHOT.json</code><br>Фактическое состояние release.</div><div class="item"><code>ops/production/components.lock.yaml</code><br>Версии и статусы компонентов.</div><div class="item"><code>ops/production/TAILS_CLOSEOUT_20260704.md</code><br>Закрытие последних хвостов.</div><div class="item"><code>ops/production/MODEL_LINEUP_WATCH_POLICY.md</code><br>Правила реакции на новые модели.</div><div class="item"><code>docs/MODEL_QUALIFICATION.md</code><br>Какие модели проверены и для чего.</div><div class="item"><code>scripts/update_radar.py</code><br>Наблюдение за релизами и каталогами моделей.</div></div>
+</section>
+
+<section class="section" id="next"><a class="back" href="#top">к оглавлению ↑</a><h2>11. Что произойдёт дальше</h2>
+<div class="grid2"><div class="item warnline"><b>5 июля: естественный Update Radar run</b><br>После trigger будет проверен LastTrigger, exit status, journal и отсутствие лишнего Telegram-сообщения.</div><div class="item"><b>При нормальном результате</b><br>Closeout меняется с «ожидается плановый контроль» на окончательный READY, evidence добавляется в Hermes Knowledge.</div></div>
+<h3>Дальнейшая работа с новыми моделями</h3><p>Когда подписка начнёт показывать более новую модель, Hermes не будет ждать ручного обнаружения ошибки. Он увидит изменение каталога, сообщит, какая модель появилась или исчезла, покажет затронутые роли и предложит безопасный план теста и замены.</p>
+<div class="callout"><b>Итог:</b> система теперь не привязана навечно к сегодняшним названиям моделей. Она умеет заметить обновление модельного ряда и подготовить решение, но сохраняет контроль над production-маршрутизацией.</div>
+</section>
+<div class="footer">Сформировано 4 июля 2026 · Hermes VPS · автоматические обновления и автоматическая смена production-моделей отключены</div>
+</div>
+</body>
+</html>
