@@ -175,6 +175,21 @@ _TRAVEL_LIVE_TRAFFIC_RE = re.compile(
     r"\b(?:пробк|traffic|live\s*traffic|актуальн\w*\s+(?:дорог|трафик|время\s+в\s+пути))\w*\b",
     re.I,
 )
+_TRAVEL_CURRENT_LISTINGS_RE = re.compile(
+    r"\b(?:сегодня|завтра|сейчас|на\s+выходн\w*|вечером|утром)\b.{0,140}"
+    r"\b(?:программ\w*|мероприят\w*|событи\w*|развлечени\w*|афиш\w*|расписани\w*|работа\w*|открыт\w*)\b|"
+    r"\b(?:программ\w*|мероприят\w*|событи\w*|развлечени\w*|афиш\w*|расписани\w*)\b.{0,140}"
+    r"\b(?:сегодня|завтра|сейчас|на\s+выходн\w*|вечером|утром)\b",
+    re.I | re.S,
+)
+_TRAVEL_PARKING_REFINEMENT_RE = re.compile(
+    r"\b(?:около|рядом|возле|ближе|ближайш\w*)\b.{0,120}"
+    r"\b(?:парк\w*|вднх|вход\w*|парков\w*|вариант\w*)\b.{0,120}"
+    r"\b(?:бесплатн\w*|дешев\w*|ближе|ближайш\w*|парков\w*)\b|"
+    r"\b(?:бесплатн\w*|дешев\w*|ближе|ближайш\w*)\b.{0,120}"
+    r"\b(?:парк\w*|вднх|вход\w*|парков\w*|вариант\w*)\b",
+    re.I | re.S,
+)
 _TRAVEL_ROUTE_PARKING_RE = re.compile(
     r"\b(?:сколько|как)\s+(?:ехать|идти|добираться|доехать)\b|"
     r"\b(?:маршрут|дорог[аи]|доехать|ехать|парковк|припарковаться|яндекс\s*карт|2гис)\w*\b",
@@ -379,7 +394,9 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "memory": bool(_MEMORY_RE.search(value)),
         "report": bool(_REPORT_RE.search(value)),
         "tutu": bool(_TUTU_RE.search(value)),
-        "travel": bool(_TRAVEL_RE.search(value)),
+        "travel": bool(
+            _TRAVEL_RE.search(value) or _TRAVEL_PARKING_REFINEMENT_RE.search(value)
+        ),
         "context7": bool(_CONTEXT7_RE.search(value)),
         "skills_query": bool(_SKILLS_QUERY_RE.search(value)),
         "notebooklm": bool(_NOTEBOOKLM_RE.search(value)),
@@ -388,7 +405,12 @@ def _intent_flags(text: str) -> dict[str, bool]:
 
 def travel_needs_web_or_browser(text: str) -> bool:
     value = text or ""
-    return bool(_TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
+    return bool(
+        _TRAVEL_CAFE_CURRENT_RE.search(value)
+        or _TRAVEL_LIVE_TRAFFIC_RE.search(value)
+        or _TRAVEL_CURRENT_LISTINGS_RE.search(value)
+        or _TRAVEL_PARKING_REFINEMENT_RE.search(value)
+    )
 
 
 def travel_is_route_or_parking(text: str) -> bool:
@@ -457,6 +479,8 @@ def classify_task(text: str, *, command: str | None = None) -> tuple[str, str]:
         return "coding", "explicit code change intent"
     if _NOTEBOOKLM_RE.search(value):
         return "research", "NotebookLM intent"
+    if (_TRAVEL_RE.search(value) or _TRAVEL_PARKING_REFINEMENT_RE.search(value)) and travel_needs_web_or_browser(value):
+        return "research", "live travel listings intent"
     if _RESEARCH_RE.search(value):
         return "research", "external research intent"
     if _EXPERT_ANALYSIS_RE.search(value):

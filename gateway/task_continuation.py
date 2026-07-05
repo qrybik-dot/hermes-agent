@@ -20,6 +20,11 @@ _CONTEXTUAL_CONTINUE_RE = re.compile(
     r"(?:\u044d\u0442\u043e|\u0435\u0433\u043e|\u0435[\u0435\u0451]|\u0442\u0435\u0441\u0442|smoke[- ]?test)\s*[.!?]*$",
     re.I,
 )
+_IMPLICIT_REFINEMENT_RE = re.compile(
+    r"^\s*(?:один\s+(?:результат|вариант)|только\s+один(?:\s+(?:результат|вариант))?|"
+    r"лучший\s+(?:результат|вариант)|первый\s+вариант)\s*[.!?]*$",
+    re.I,
+)
 _NUMERIC_CHOICE_RE = re.compile(r"^\s*(\d{1,2})[\s.!?]*$")
 _OPAQUE_INPUT_RE = re.compile(
     r"(?<![A-Za-z0-9])[A-Za-z0-9][A-Za-z0-9_.-]{23,}(?![A-Za-z0-9])"
@@ -230,6 +235,7 @@ class TaskStateStore:
         match = _CONTINUE_RE.search(value)
         prefix_match = _CONTINUE_RE.search(value.splitlines()[0]) if value.splitlines() else None
         contextual = _CONTEXTUAL_CONTINUE_RE.search(value)
+        refinement = _IMPLICIT_REFINEMENT_RE.fullmatch(value)
         numeric = _NUMERIC_CHOICE_RE.fullmatch(value)
 
         if numeric and not match and not prefix_match:
@@ -266,6 +272,19 @@ class TaskStateStore:
         if not match and not prefix_match and not contextual:
             tasks = self.active(platform, str(chat_id))
             implicit_input = bool(_OPAQUE_INPUT_RE.search(value))
+            refinement_task = tasks[0] if tasks else None
+            if (
+                refinement
+                and refinement_task is not None
+                and refinement_task.status in {"paused", "blocked", "incomplete"}
+                and time.time() - refinement_task.updated_at <= 30 * 60
+                and (
+                    refinement_task.last_error in {"iteration_budget_exhausted", "reported verdict PARTIAL"}
+                    or int(refinement_task.metadata.get("budget_exhaustions", 0) or 0) > 0
+                )
+            ):
+                _CHOICE_CACHE.pop(key, None)
+                return ContinuationDecision("selected", task=refinement_task)
             if (
                 implicit_input
                 and len(tasks) == 1
