@@ -4,7 +4,7 @@ Date: 2026-07-04
 
 ## Status
 
-**PARTIAL only because the first natural Update Radar timer trigger is scheduled for 2026-07-05.** All checks available on 2026-07-04 are closed.
+**READY.** The final remaining observation, the first natural `hermes-update-radar.timer` trigger, was verified on 2026-07-05. All release tails are closed.
 
 ## Closed tails
 
@@ -16,11 +16,22 @@ Date: 2026-07-04
 - NotebookLM watchdog natural run passed at `2026-07-04T11:00:09.762351Z`; next run was scheduled for `11:15Z`; delivery target is `telegram:256818214`.
 - Update Radar production service run passed at `2026-07-04T09:00:08Z` and stayed silent.
 
-## Remaining observation
+## Final Update Radar timer verification
 
-The first natural `hermes-update-radar.timer` trigger is scheduled for `2026-07-05T07:17:04Z`. A one-time verification is scheduled for `2026-07-05 09:35 Europe/Stockholm`.
+Verified on 2026-07-05 after the first natural scheduled run.
 
-The verification may inspect service/timer evidence and update this closeout, but it must not install or update any component.
+Evidence:
+
+- `hermes-update-radar.timer` last triggered at `2026-07-05T07:17:16Z`.
+- The next scheduled timer elapse is `2026-07-06T07:24:43Z`.
+- `hermes-update-radar.service` completed with `Result=success`, `ExecMainStatus=0`, start `2026-07-05T07:17:16Z`, exit `2026-07-05T07:18:10Z`.
+- Journal shows clean start, one Telegram delivery, clean deactivation and no service error.
+- The delivery was justified: Update Radar detected Graphify `0.9.5 -> 0.9.6` and classified it as `сначала пилот`; no auto-update was performed.
+- Runtime state recorded `last_run_at=2026-07-05T07:17:56Z` and notified fingerprint for `graphify`.
+- Ubuntu security updates list was empty.
+- `systemctl --failed` returned zero failed units.
+
+No component was installed, updated, restarted or version-bumped during this verification.
 
 ## Canonical references
 
