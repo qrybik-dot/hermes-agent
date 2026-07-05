@@ -870,6 +870,21 @@ def test_after_two_budget_exhaustions_continuation_escalates_without_model(tmp_p
     assert prepared.early_response["diagnostics"]["clarification_required"] is True
     assert prepared.early_response["diagnostics"]["clarification_kind"] == "budget_exhaustion"
 
+def test_reminder_clarification_choices_are_compact():
+    from gateway.intent_uncertainty import clarification_choices
+
+    assert clarification_choices("", "missing_reminder_date_time") == [
+        "Сегодня в 19:00", "Завтра в 09:00", "Завтра в 19:00"
+    ]
+    assert clarification_choices("", "missing_reminder_date") == [
+        "Сегодня", "Завтра", "Послезавтра"
+    ]
+    assert clarification_choices("", "missing_reminder_time") == [
+        "В 09:00", "В 15:00", "В 19:00"
+    ]
+    assert clarification_choices("", "bare_url") is None
+
+
 def test_uncertainty_gate_asks_before_model_or_tools(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
@@ -888,6 +903,7 @@ def test_uncertainty_gate_asks_before_model_or_tools(tmp_path, monkeypatch):
         "сохрани это для меня",
         "сохрани локацию",
         "скачай ролик",
+        "Запиши напоминание - разобраться с штрафами, сделать заявления",
     )):
         prepared = prepare_task_turn(message=message, request_id=f"req-uncertain-{index}", **common)
         assert prepared.task is None
@@ -2146,3 +2162,23 @@ def test_city_travel_exact_parking_points_and_selected_route_from_saved_home(tmp
     assert selected.early_response["diagnostics"]["selected_parking_index"] == 2
     assert "rtext=55.920000,37.820000~55.832335,37.615861" in selected_text
     assert len(calls) == 1
+
+
+def test_relative_reminder_requires_cronjob_evidence():
+    execution, required = infer_execution_contract(
+        "Напомни через два часа разобраться со штрафами",
+        "simple",
+        ["cronjob"],
+    )
+    assert execution is True
+    assert required == ("cronjob",)
+
+
+def test_english_google_calendar_requires_workspace_evidence():
+    execution, required = infer_execution_contract(
+        "Добавь напоминание в Google Calendar завтра в 10:00",
+        "simple",
+        ["skills", "terminal"],
+    )
+    assert execution is True
+    assert required == ("skills", "terminal")

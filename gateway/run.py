@@ -81,6 +81,43 @@ _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-
 _FINAL_DELIVERY_DEDUPER = FinalDeliveryDeduper()
 
 
+def _inject_auto_skill_context(event: Any, context_prompt: str, task_id: str) -> tuple[str, list[str]]:
+    """Load bound skills into ephemeral context without changing user text.
+
+    ``event.text`` is the canonical user request used by deterministic routing,
+    task persistence, status UX, and preflight guards.  Auto-loaded skill
+    payloads are instructions for the model, not user-authored content, so they
+    must stay out of that field.
+    """
+    auto_skill = getattr(event, "auto_skill", None)
+    if not auto_skill:
+        return str(context_prompt or ""), []
+
+    from agent.skill_commands import _build_skill_message, _load_skill_payload
+
+    skill_names = [auto_skill] if isinstance(auto_skill, str) else list(auto_skill)
+    combined_parts: list[str] = []
+    loaded_names: list[str] = []
+    for skill_name in skill_names:
+        loaded = _load_skill_payload(skill_name, task_id=task_id)
+        if not loaded:
+            continue
+        loaded_skill, skill_dir, display_name = loaded
+        note = (
+            f'[IMPORTANT: The "{display_name}" skill is auto-loaded. '
+            f"Follow its instructions for this session.]"
+        )
+        part = _build_skill_message(loaded_skill, skill_dir, note)
+        if part:
+            combined_parts.append(part)
+            loaded_names.append(skill_name)
+
+    if not combined_parts:
+        return str(context_prompt or ""), loaded_names
+    merged = "\n\n".join([str(context_prompt or "").strip(), *combined_parts]).strip()
+    return merged, loaded_names
+
+
 def _final_delivery_task_id(agent_result: dict[str, Any]) -> str:
     return str(agent_result.get("task_id") or "")
 
@@ -10630,40 +10667,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_entry.auto_reset_reason = None
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
-        # Only inject on NEW sessions — ongoing conversations already have the
-        # skill content in their conversation history from the first message.
+        # Discord channel_skill_bindings). Supports a single name or ordered list.
+        # Keep skill payloads in ephemeral system context on every bound turn.
+        # Never prepend them to event.text: that field is the canonical user
+        # request for deterministic routing, task persistence and preflight.
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
+        if _auto:
             try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
-                _combined_parts: list[str] = []
-                _loaded_names: list[str] = []
-                for _sname in _skill_names:
-                    _loaded = _load_skill_payload(_sname, task_id=_quick_key)
-                    if _loaded:
-                        _loaded_skill, _skill_dir, _display_name = _loaded
-                        _note = (
-                            f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
-                            f"Follow its instructions for this session.]"
-                        )
-                        _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
-                        if _part:
-                            _combined_parts.append(_part)
-                            _loaded_names.append(_sname)
-                    else:
-                        logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
-                if _combined_parts:
-                    # Append the user's original text after all skill payloads
-                    _combined_parts.append(event.text)
-                    event.text = "\n\n".join(_combined_parts)
+                context_prompt, _loaded_names = _inject_auto_skill_context(
+                    event, context_prompt, _quick_key
+                )
+                if _loaded_names:
                     logger.info(
                         "[Gateway] Auto-loaded skill(s) %s for session %s",
                         _loaded_names, session_key,
                     )
+                else:
+                    logger.warning("[Gateway] Auto-skill(s) %s not found", _auto)
             except Exception as e:
-                logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
+                logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _auto, e)
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
@@ -17529,19 +17551,126 @@ message_context={
 
             from gateway.task_runtime import prepare_task_turn
 
+            def _await_pre_model_clarification(
+                question: str, choices: list[str]
+            ) -> tuple[str | None, bool]:
+                """Ask through the platform UI without invoking an LLM."""
+                if not _status_adapter or not choices:
+                    return None, False
+
+                from tools import clarify_gateway as _clarify_mod
+                import uuid as _uuid
+
+                clarify_id = _uuid.uuid4().hex[:10]
+                _clarify_mod.register(
+                    clarify_id=clarify_id,
+                    session_key=session_key or "",
+                    question=question,
+                    choices=list(choices),
+                )
+                try:
+                    _status_adapter.pause_typing_for_chat(_status_chat_id)
+                except Exception:
+                    pass
+
+                try:
+                    future = safe_schedule_threadsafe(
+                        _status_adapter.send_clarify(
+                            chat_id=_status_chat_id,
+                            question=question,
+                            choices=list(choices),
+                            clarify_id=clarify_id,
+                            session_key=session_key or "",
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="Pre-model clarify send failed to schedule",
+                    )
+                    if future is None:
+                        _clarify_mod.clear_session(session_key or "")
+                        return None, False
+                    try:
+                        sent = future.result(timeout=15)
+                    except Exception as exc:
+                        logger.warning("Pre-model clarify send failed: %s", exc)
+                        _clarify_mod.clear_session(session_key or "")
+                        return None, False
+                    if not bool(getattr(sent, "success", False)):
+                        _clarify_mod.clear_session(session_key or "")
+                        return None, False
+
+                    timeout = _clarify_mod.get_clarify_timeout()
+                    response = _clarify_mod.wait_for_response(
+                        clarify_id, float(timeout)
+                    )
+                    return response, True
+                finally:
+                    try:
+                        _status_adapter.resume_typing_for_chat(_status_chat_id)
+                    except Exception:
+                        pass
+
+            _task_request_id = (
+                (session_id or session_key or "task") + ":" + str(run_generation)
+            )
             _prepared_task = prepare_task_turn(
                 message=str(message or ""),
                 platform_key=platform_key,
                 chat_id=str(source.chat_id),
                 session_key=session_key or "",
                 session_id=session_id or "",
-                request_id=(session_id or session_key or "task") + ":" + str(run_generation),
+                request_id=_task_request_id,
                 user_config=user_config,
                 platform_toolsets=platform_allowed_toolsets,
                 message_context=message_context,
             )
             if _prepared_task.early_response is not None:
-                return _prepared_task.early_response
+                _early = _prepared_task.early_response
+                _early_diagnostics = _early.get("diagnostics") or {}
+                _clarification_kind = str(
+                    _early_diagnostics.get("clarification_kind") or ""
+                )
+                from gateway.intent_uncertainty import clarification_choices
+                _choices = clarification_choices(str(message or ""), _clarification_kind)
+                if _early_diagnostics.get("clarification_required") and _choices:
+                    _answer, _prompt_sent = _await_pre_model_clarification(
+                        str(_early.get("final_response") or "Уточни, пожалуйста."),
+                        _choices,
+                    )
+                    if _prompt_sent and _answer:
+                        _clarified_message = (
+                            str(message or "").strip()
+                            + "\n\nУточнение пользователя: "
+                            + str(_answer).strip()
+                        )
+                        _clarified_context = dict(message_context or {})
+                        _clarified_context["current_text"] = _clarified_message
+                        _prepared_task = prepare_task_turn(
+                            message=_clarified_message,
+                            platform_key=platform_key,
+                            chat_id=str(source.chat_id),
+                            session_key=session_key or "",
+                            session_id=session_id or "",
+                            request_id=_task_request_id,
+                            user_config=user_config,
+                            platform_toolsets=platform_allowed_toolsets,
+                            message_context=_clarified_context,
+                        )
+                        if _prepared_task.early_response is not None:
+                            return _prepared_task.early_response
+                    elif _prompt_sent:
+                        _timeout_result = dict(_early)
+                        _timeout_result["final_response"] = (
+                            "Не получил дату и время. Повтори запрос, когда будешь готов."
+                        )
+                        _timeout_result["completed"] = False
+                        _timeout_result["partial"] = True
+                        return _timeout_result
+                    else:
+                        return _early
+                else:
+                    return _early
             message = _prepared_task.message
             _task_route = _prepared_task.route
             _active_task = _prepared_task.task

@@ -103,11 +103,18 @@ def test_family_intent_distinguishes_memory_calendar_and_image():
     memory = detect_family_intent("Запомни врача Веры")
     calendar = detect_family_intent("Поставь приём врача в календарь")
     image = detect_family_intent("[The user sent an image] приёмы ребёнка")
+    reminder = detect_family_intent("Запиши напоминание - разобраться с штрафами")
+    calendar_reminder = detect_family_intent("Добавь напоминание в календарь завтра в 10:00")
 
     assert memory.memory_write
     assert calendar.calendar_write
     assert image.image and image.family_sensitive
     assert image.active is False
+    assert reminder.reminder
+    assert reminder.memory_write is False
+    assert reminder.calendar_write is False
+    assert calendar_reminder.calendar_write
+    assert calendar_reminder.memory_write is False
 
 
 @pytest.mark.asyncio
@@ -139,3 +146,18 @@ def test_plain_image_does_not_activate_family_router():
 def test_plain_forward_does_not_activate_family_router():
     event = _event("Посмотри и скажи суть", reply="[Forwarded message] обычный пост")
     assert _rewrite_family_event(event=event) == {"action": "allow"}
+
+
+
+def test_plain_reminder_is_neither_memory_nor_calendar():
+    intent = detect_family_intent("Запиши напоминание: разобраться со штрафами")
+    assert intent.reminder
+    assert intent.memory_write is False
+    assert intent.calendar_write is False
+
+
+def test_explicit_memory_and_calendar_still_route_separately():
+    memory = detect_family_intent("Запиши в память: наш врач Иванов")
+    calendar = detect_family_intent("Запиши событие в календарь завтра в 10:00")
+    assert memory.memory_write and not memory.calendar_write
+    assert calendar.calendar_write and not calendar.memory_write

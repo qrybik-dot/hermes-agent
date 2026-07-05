@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from gateway.intent_uncertainty import detect_uncertain_intent
+from gateway.intent_uncertainty import detect_uncertain_intent, is_reminder_request
 
 ROLE_ORDER = (
     "no_llm",
@@ -421,6 +421,7 @@ def _intent_flags(text: str) -> dict[str, bool]:
     email = bool(_EMAIL_RE.search(value))
     calendar = bool(_CALENDAR_RE.search(value))
     drive = bool(_DRIVE_RE.search(value))
+    reminder = is_reminder_request(value)
     # A mention of Granola inside a Google Workspace request describes the sender,
     # subject, or file contents, not a request to open the Granola MCP server.
     granola = bool(_GRANOLA_RE.search(value)) and not email and not calendar and not drive
@@ -428,6 +429,7 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "email": email,
         "calendar": calendar,
         "drive": drive,
+        "reminder": reminder,
         "granola": granola,
         "memory": bool(_MEMORY_RE.search(value)),
         "report": bool(_REPORT_RE.search(value)),
@@ -456,7 +458,7 @@ def _routing_experiment_flags(user_config: Mapping[str, Any] | None) -> dict[str
 def _agentic_candidate(text: str, flags: Mapping[str, bool]) -> bool:
     value = text or ""
     if any(flags.get(name, False) for name in (
-        "email", "calendar", "drive", "granola", "travel", "tutu", "context7", "notebooklm"
+        "email", "calendar", "drive", "reminder", "granola", "travel", "tutu", "context7", "notebooklm"
     )):
         return False
     if _AGENTIC_FORBIDDEN_RE.search(value):
@@ -595,6 +597,11 @@ def select_toolsets(
 ) -> list[str]:
     flags = _intent_flags(text)
 
+    uncertain = detect_uncertain_intent(text or "")
+    known_map_reference = bool(flags["travel"] and _TRAVEL_PLACE_REFERENCE_RE.search(text or ""))
+    if role == "simple" and uncertain is not None and not known_map_reference:
+        return _apply_platform_policy({"clarify"}, platform_toolsets)
+
     if role == "no_llm":
         return ["no_mcp"]
     if role == "simple":
@@ -630,6 +637,9 @@ def select_toolsets(
     if flags["email"] or flags["calendar"] or flags["drive"]:
         # Google Workspace is currently exposed through its skill and CLI.
         requested.update({"skills", "terminal", "file"})
+    if flags["reminder"] and not flags["calendar"]:
+        requested.discard("no_mcp")
+        requested.add("cronjob")
     if flags["granola"]:
         requested.discard("no_mcp")
         requested.add("granola")
@@ -649,9 +659,6 @@ def select_toolsets(
     if flags["skills_query"]:
         requested.discard("no_mcp")
         requested.update({"skills", "terminal", "file"})
-    elif role == "simple" and detect_uncertain_intent(text or "") is not None:
-        requested.discard("no_mcp")
-        requested.add("clarify")
     elif role == "simple" and not any(flags.values()) and _EXTERNAL_ACTION_RE.search(text or ""):
         requested.discard("no_mcp")
         requested.update({"clarify", "skills", "file", "web", "terminal"})
@@ -723,6 +730,15 @@ def compact_operational_context(platform_key: str, role: str) -> str:
             "Не превращай задачу в глубокую стратегическую оценку и не додумывай отсутствующие сведения."
         )
     return common
+
+
+def reminder_operational_context() -> str:
+    return (
+        "Контракт обычного напоминания: используй cronjob, а не постоянную память и не Google Calendar, "
+        "если пользователь явно не попросил календарь. Если не хватает даты или времени, сначала задай один "
+        "конкретный вопрос и не запускай модель или инструменты. Создавай ровно одно напоминание, затем проверь "
+        "его через cronjob и сообщи расписание и идентификатор. Не проверяй напоминание через grep по ~/.hermes."
+    )
 
 
 def skills_facts_operational_context() -> str:
@@ -881,6 +897,9 @@ def route_turn(
             "Сигнал обучения: это может быть устойчивое предпочтение, коррекция поведения или успешный способ работы. "
             "Сохраняй только действительно повторно полезное правило; не создавай дубль и после записи сделай read-back.").strip()
     max_iterations = max_turns_for_role(role, agent_cfg)
+    if flags["reminder"] and not flags["calendar"]:
+        operational_context = (operational_context + "\n\n" + reminder_operational_context()).strip()
+        max_iterations = min(max_iterations, 8)
     if planning_policy.reviewer_required:
         max_iterations = max(max_iterations, 24)
     if flags["skills_query"]:

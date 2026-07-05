@@ -11,6 +11,7 @@ ALL_ALLOWED = [
     "clarify",
     "code_execution",
     "context7",
+    "cronjob",
     "delegation",
     "file",
     "granola",
@@ -180,7 +181,9 @@ def test_gateway_run_sync_scoping_regression():
     assert source.rfind(marker, 0, run_sync) != -1
     segment = source[run_sync : source.index("            _executor_task = asyncio.ensure_future", run_sync)]
     init = segment.index("routed_toolsets = list(platform_allowed_toolsets)")
-    route_call = segment.index("platform_toolsets=platform_allowed_toolsets")
+    direct_arg = "platform_toolsets=platform_allowed_toolsets"
+    kwargs_arg = '"platform_toolsets": platform_allowed_toolsets'
+    route_call = segment.index(direct_arg) if direct_arg in segment else segment.index(kwargs_arg)
     assert init < route_call
     assert "platform_toolsets=enabled_toolsets" not in segment
     assert "enabled_toolsets = _task_route.toolsets" not in segment
@@ -640,3 +643,47 @@ def test_learning_signal_gets_memory_and_skill_tools():
     assert "memory" in route.toolsets
     assert "skills" in route.toolsets
     assert "Сигнал обучения" in route.operational_context
+
+
+
+def test_plain_reminder_routes_to_cronjob_not_google_workspace():
+    route = route_turn(
+        "Напомни завтра в 10:00 разобраться со штрафами и сделать заявления",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "simple"
+    assert "cronjob" in route.toolsets
+    assert "no_mcp" not in route.toolsets
+    assert "google-workspace" not in route.skill_names
+    assert "cronjob" in route.operational_context
+    assert route.max_iterations <= 8
+
+
+def test_explicit_calendar_request_does_not_route_to_cronjob():
+    route = route_turn(
+        "Добавь в календарь событие завтра в 10:00: разобраться со штрафами",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert "cronjob" not in route.toolsets
+    assert "google-workspace" in route.skill_names
+    assert "skills" in route.toolsets
+    assert "terminal" in route.toolsets
+
+
+def test_incomplete_reminder_exposes_clarify_only():
+    route = route_turn(
+        "Запиши напоминание - разобраться с штрафами, сделать заявления",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "simple"
+    assert route.toolsets == ["clarify"]
+    assert route.skill_names == ()

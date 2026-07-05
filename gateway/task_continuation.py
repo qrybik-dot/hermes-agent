@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+from gateway.intent_uncertainty import is_reminder_request
+
 _ACTIVE = ("running", "paused", "blocked", "incomplete", "awaiting_delivery", "delivery_failed")
 _CONTINUE_RE = re.compile(
     r"(?:^|\n)\s*(?:готов\s+продолжить|продолж(?:ай|ить|им)|дальше|возобнов(?:и|ить)|"
@@ -314,12 +316,16 @@ def is_progress_only(text: str) -> bool:
 
 
 def infer_execution_contract(text: str, role: str, toolsets: Iterable[str]) -> tuple[bool, tuple[str, ...]]:
-    execution = bool(_EXECUTION_RE.search(text or "")) and not bool(_PLAN_ONLY_RE.search(text or ""))
+    reminder_request = is_reminder_request(text or "")
+    execution = (bool(_EXECUTION_RE.search(text or "")) or reminder_request) and not bool(_PLAN_ONLY_RE.search(text or ""))
     required: set[str] = set()
     lowered = (text or "").lower()
     if execution and _TERMINAL_EXECUTION_RE.search(text or ""):
         required.add("terminal")
-    if execution and any(term in lowered for term in ("календар", "напомин", "письм", "почт")):
+    explicit_calendar = "календар" in lowered or "google calendar" in lowered
+    if execution and reminder_request and not explicit_calendar:
+        required.add("cronjob")
+    if execution and (explicit_calendar or any(term in lowered for term in ("письм", "почт"))):
         required.update({"skills", "terminal"})
     if execution and role in {"coding", "server_debug"}:
         required.add("terminal")
