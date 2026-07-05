@@ -882,7 +882,7 @@ def test_reminder_clarification_choices_are_compact():
     assert clarification_choices("", "missing_reminder_time") == [
         "В 09:00", "В 15:00", "В 19:00"
     ]
-    assert clarification_choices("", "bare_url") is None
+    assert clarification_choices("", "bare_url") == ["Кратко разобрать", "Сохранить ссылку"]
 
 
 def test_uncertainty_gate_asks_before_model_or_tools(tmp_path, monkeypatch):

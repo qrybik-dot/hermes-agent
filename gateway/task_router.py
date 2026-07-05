@@ -232,6 +232,11 @@ _TRAVEL_ROUTE_PARKING_RE = re.compile(
     r"\b(?:маршрут|дорог[аи]|доехать|ехать|парковк|припарковаться|яндекс\s*карт|2гис)\w*\b",
     re.I,
 )
+_LIVE_LISTINGS_RE = re.compile(
+    r"(?=.*\b(?:кинотеатр|кино|фильм|сеанс|афиш|театр|спектакл|концерт)\w*\b)"
+    r"(?=.*\b(?:расписан|сеанс|показ|цен|билет|ближайш|вариант)\w*\b)",
+    re.I | re.S,
+)
 _CONTEXT7_RE = re.compile(
     r"\bcontext7\b|официальн\w*\s+документац|документац\w*\s+(?:api|sdk|библиотек)|"
     r"\b(?:next\.js|react|supabase)\b",
@@ -416,12 +421,17 @@ def explicit_role_override(text: str) -> str | None:
     return None
 
 
+def is_live_listing_request(text: str) -> bool:
+    return bool(_LIVE_LISTINGS_RE.search(text or ""))
+
+
 def _intent_flags(text: str) -> dict[str, bool]:
     value = text or ""
     email = bool(_EMAIL_RE.search(value))
     calendar = bool(_CALENDAR_RE.search(value))
     drive = bool(_DRIVE_RE.search(value))
     reminder = is_reminder_request(value)
+    live_listings = is_live_listing_request(value)
     # A mention of Granola inside a Google Workspace request describes the sender,
     # subject, or file contents, not a request to open the Granola MCP server.
     granola = bool(_GRANOLA_RE.search(value)) and not email and not calendar and not drive
@@ -430,14 +440,18 @@ def _intent_flags(text: str) -> dict[str, bool]:
         "calendar": calendar,
         "drive": drive,
         "reminder": reminder,
+        "live_listings": live_listings,
         "granola": granola,
         "memory": bool(_MEMORY_RE.search(value)),
         "report": bool(_REPORT_RE.search(value)),
         "tutu": bool(_TUTU_RE.search(value)),
         "travel": bool(
-            _TRAVEL_RE.search(value)
-            or travel_is_source_capture(value)
-            or _TRAVEL_PLACE_REFERENCE_RE.search(value)
+            not live_listings
+            and (
+                _TRAVEL_RE.search(value)
+                or travel_is_source_capture(value)
+                or _TRAVEL_PLACE_REFERENCE_RE.search(value)
+            )
         ),
         "context7": bool(_CONTEXT7_RE.search(value)),
         "skills_query": bool(_SKILLS_QUERY_RE.search(value)),
@@ -458,7 +472,7 @@ def _routing_experiment_flags(user_config: Mapping[str, Any] | None) -> dict[str
 def _agentic_candidate(text: str, flags: Mapping[str, bool]) -> bool:
     value = text or ""
     if any(flags.get(name, False) for name in (
-        "email", "calendar", "drive", "reminder", "granola", "travel", "tutu", "context7", "notebooklm"
+        "email", "calendar", "drive", "reminder", "live_listings", "granola", "travel", "tutu", "context7", "notebooklm"
     )):
         return False
     if _AGENTIC_FORBIDDEN_RE.search(value):
@@ -500,6 +514,8 @@ def travel_needs_web_or_browser(text: str) -> bool:
 
 def travel_is_route_or_parking(text: str) -> bool:
     value = text or ""
+    if is_live_listing_request(value):
+        return False
     return bool(_TRAVEL_RE.search(value) and _TRAVEL_ROUTE_PARKING_RE.search(value))
 
 
@@ -564,6 +580,8 @@ def classify_task(text: str, *, command: str | None = None) -> tuple[str, str]:
         return "coding", "explicit code change intent"
     if _NOTEBOOKLM_RE.search(value):
         return "research", "NotebookLM intent"
+    if is_live_listing_request(value):
+        return "research", "live listings intent"
     if _RESEARCH_RE.search(value):
         return "research", "external research intent"
     if _EXPERT_ANALYSIS_RE.search(value):
@@ -594,12 +612,13 @@ def select_toolsets(
     role: str,
     text: str,
     platform_toolsets: list[str] | None = None,
+    *,
+    context_text: str = "",
 ) -> list[str]:
     flags = _intent_flags(text)
 
-    uncertain = detect_uncertain_intent(text or "")
-    known_map_reference = bool(flags["travel"] and _TRAVEL_PLACE_REFERENCE_RE.search(text or ""))
-    if role == "simple" and uncertain is not None and not known_map_reference:
+    uncertain = detect_uncertain_intent(text or "", context_text=context_text)
+    if role == "simple" and uncertain is not None:
         return _apply_platform_policy({"clarify"}, platform_toolsets)
 
     if role == "no_llm":
@@ -640,6 +659,8 @@ def select_toolsets(
     if flags["reminder"] and not flags["calendar"]:
         requested.discard("no_mcp")
         requested.add("cronjob")
+    if flags["live_listings"]:
+        requested = {"web", "browser", "clarify"}
     if flags["granola"]:
         requested.discard("no_mcp")
         requested.add("granola")
@@ -702,8 +723,9 @@ def compact_operational_context(platform_key: str, role: str) -> str:
         "Live-статусом сложной задачи управляет gateway по фактическим подзадачам и действиям инструментов. Не печатай собственный прогресс-бар и не возвращай progress-only вместо результата. "
         "Для обычного информационного запроса отправляй один законченный ответ без READY/PARTIAL, технических метрик и повторного отчёта. Не повторяй тот же вывод вторым блоком. "
         "Верстка Telegram: главный вывод в первых строках; короткие абзацы; пустая строка между смысловыми блоками; жирные мини-заголовки и списки только когда они помогают чтению. Используй не более трёх смысловых эмодзи на весь ответ и не ставь эмодзи в каждый пункт. "
-        "Если задача неоднозначна или не хватает ссылки, файла, места, даты либо другого объекта, не возвращай внутреннюю ошибку маршрутизации. Задай один конкретный вопрос: что именно нужно прислать или выбрать, чтобы продолжить. "
-        "Когда есть 2–3 понятных варианта, используй clarify с короткими вариантами: Telegram покажет кнопки и оставит возможность написать свой ответ. "
+        "Перед первым инструментом внутренне проверь: понятны ли цель, объект, ожидаемый результат, масштаб и обязательные данные. Если есть несколько существенно разных маршрутов или цена ошибки заметна, не перебирай инструменты и не угадывай. "
+        "Задай один вопрос, который сильнее всего разблокирует задачу. Для 2–4 коротких взаимоисключающих вариантов покажи кнопки через clarify; когда вариантов много или нужен критерий результата, используй открытый clarify. "
+        "Уточнение является нормальным завершением хода, а не ошибкой или незавершённой задачей. "
         "Сначала используй ближайший reply-контекст, единственную ссылку или файл из последних сообщений; не переспрашивай очевидное. "
         "Если нужного инструмента действительно нет после проверки skills и доступных способов, коротко объясни причину и что пользователь может сделать. Если работа не выполнена, не утверждай обратное. "
         "После технической работы дай нормальный отчёт на русском: Итог; Сделано; Проверено; Файлы; Риски; Следующий шаг, скрывая пустые разделы. Отчёт должен опираться только на фактические git diff/status, логи systemd, результаты тестов и реальные команды. Не выдумывай изменённые файлы, перезапуски, сетевые ошибки, commits или push; непроверенные факты помечай как «не проверено». Не раскрывай токены, ключи, cookies, содержимое личной почты и полные "
@@ -730,6 +752,16 @@ def compact_operational_context(platform_key: str, role: str) -> str:
             "Не превращай задачу в глубокую стратегическую оценку и не додумывай отсутствующие сведения."
         )
     return common
+
+
+def live_listings_operational_context() -> str:
+    return (
+        "Контракт актуальных афиш и расписаний: сначала найди реальные площадки, сеансы, цены и прямые "
+        "ссылки через web/browser. Не превращай запрос о кино, театре, концерте или билетах в одиночный "
+        "маршрут или поиск парковки только из-за слов «сколько ехать». Сначала собери и проверь варианты, "
+        "затем для каждого оцени время в пути от указанной точки. Если источник не подтверждает цену или "
+        "сеанс, пометь это явно. Возвращай список в формате пользователя."
+    )
 
 
 def reminder_operational_context() -> str:
@@ -847,6 +879,7 @@ def route_turn(
     platform_key: str,
     user_config: Mapping[str, Any] | None,
     platform_toolsets: list[str] | None = None,
+    context_text: str = "",
 ) -> TaskRoute:
     role, reason = classify_task(text, command=command)
     flags = _intent_flags(text)
@@ -882,7 +915,10 @@ def route_turn(
         skill_names_list.append("plan")
     skill_names = tuple(dict.fromkeys(skill_names_list))
 
-    toolsets = select_toolsets(role, text, platform_toolsets)
+    toolsets = select_toolsets(role, text, platform_toolsets, context_text=context_text)
+    clarify_only = toolsets == ["clarify"]
+    if clarify_only:
+        skill_names = ()
     if planning_policy.preload_plan_skill:
         toolsets = _apply_platform_policy(set(toolsets) | {"file", "skills"}, platform_toolsets)
     if planning_policy.reviewer_required:
@@ -897,14 +933,19 @@ def route_turn(
             "Сигнал обучения: это может быть устойчивое предпочтение, коррекция поведения или успешный способ работы. "
             "Сохраняй только действительно повторно полезное правило; не создавай дубль и после записи сделай read-back.").strip()
     max_iterations = max_turns_for_role(role, agent_cfg)
-    if flags["reminder"] and not flags["calendar"]:
+    if flags["reminder"] and not flags["calendar"] and not clarify_only:
         operational_context = (operational_context + "\n\n" + reminder_operational_context()).strip()
         max_iterations = min(max_iterations, 8)
+    if flags["live_listings"] and not clarify_only:
+        operational_context = (
+            operational_context + "\n\n" + live_listings_operational_context()
+        ).strip()
+        max_iterations = max(max_iterations, 20)
     if planning_policy.reviewer_required:
         max_iterations = max(max_iterations, 24)
     if flags["skills_query"]:
         operational_context = (operational_context + "\n\n" + skills_facts_operational_context()).strip()
-    if flags["travel"]:
+    if flags["travel"] and not clarify_only:
         operational_context = (operational_context + "\n\n" + travel_operational_context()).strip()
         if travel_needs_web_or_browser(text):
             max_iterations = max(max_iterations, 20)

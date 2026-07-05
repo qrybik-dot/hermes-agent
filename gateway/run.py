@@ -17633,10 +17633,10 @@ message_context={
                 )
                 from gateway.intent_uncertainty import clarification_choices
                 _choices = clarification_choices(str(message or ""), _clarification_kind)
-                if _early_diagnostics.get("clarification_required") and _choices:
+                if _early_diagnostics.get("clarification_required"):
                     _answer, _prompt_sent = _await_pre_model_clarification(
                         str(_early.get("final_response") or "Уточни, пожалуйста."),
-                        _choices,
+                        _choices or [],
                     )
                     if _prompt_sent and _answer:
                         _clarified_message = (
@@ -17662,7 +17662,7 @@ message_context={
                     elif _prompt_sent:
                         _timeout_result = dict(_early)
                         _timeout_result["final_response"] = (
-                            "Не получил дату и время. Повтори запрос, когда будешь готов."
+                            "Не получил уточнение. Повтори ответ, когда будешь готов."
                         )
                         _timeout_result["completed"] = False
                         _timeout_result["partial"] = True

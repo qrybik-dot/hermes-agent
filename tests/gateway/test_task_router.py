@@ -346,7 +346,7 @@ def test_travel_map_place_reference_keeps_travel_tools_available():
 
 
 
-def test_google_maps_place_reference_uses_travel_web_without_browser():
+def test_bare_google_maps_reference_asks_before_execution():
     route = route_turn(
         "https://maps.app.goo.gl/example",
         command=None,
@@ -354,9 +354,10 @@ def test_google_maps_place_reference_uses_travel_web_without_browser():
         user_config={"agent": {}},
         platform_toolsets=ALL_ALLOWED,
     )
-    assert route.skill_names == ("city-travel-concierge",)
-    assert "web" in route.toolsets
-    assert "browser" not in route.toolsets
+    assert route.skill_names == ()
+    assert route.toolsets == ["clarify"]
+    assert "terminal" not in route.toolsets
+    assert "web" not in route.toolsets
 
 
 def test_skill_recommendation_requires_factual_tools():
@@ -687,3 +688,33 @@ def test_incomplete_reminder_exposes_clarify_only():
     assert route.role == "simple"
     assert route.toolsets == ["clarify"]
     assert route.skill_names == ()
+
+
+def test_live_cinema_listing_does_not_use_city_travel_fast_route():
+    text = (
+        "Посмотри расписание Истории игрушек в кино рядом с Королёвом, Лесная 17. "
+        "Нужно десять вариантов, цены, прямые ссылки и сколько ехать, не больше 30 минут."
+    )
+    route = route_turn(
+        text,
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "research"
+    assert route.toolsets == ["browser", "clarify", "web"]
+    assert "city-travel-concierge" not in route.skill_names
+    assert "live_listings" in route.reason
+
+
+def test_short_reply_action_can_use_explicit_context():
+    route = route_turn(
+        "обнови",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+        context_text="Update Radar: Graphify 0.9.6",
+    )
+    assert route.toolsets != ["clarify"]

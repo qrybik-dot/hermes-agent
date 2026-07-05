@@ -1733,6 +1733,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     original = str(message or "")
     msg_ctx = _normalize_message_context(message_context, fallback_text=original, chat_id=str(chat_id))
     current_text = msg_ctx.current_text or original
+    uncertainty_context = "\n".join(
+        part.strip()
+        for part in (msg_ctx.reply_text or "", msg_ctx.reply_caption or "")
+        if part and part.strip()
+    )
     if re.fullmatch(r"\s*(?:почему|из-за\s+чего|в\s+ч[её]м\s+причина)\s+(?:эта\s+)?(?:ошибка|blocked|блокировка)[\s.!?]*", original, re.I):
         active = store.active(platform_key, str(chat_id))
         if len(active) == 1:
@@ -1756,7 +1761,8 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 False,
             )
     initial_route = route_turn(current_text, command=None, platform_key=platform_key,
-                               user_config=user_config, platform_toolsets=platform_toolsets)
+                               user_config=user_config, platform_toolsets=platform_toolsets,
+                               context_text=uncertainty_context)
     location_response = _deterministic_location_place_flow(
         text=current_text,
         route=initial_route,
@@ -1767,6 +1773,23 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     )
     if location_response is not None:
         return PreparedTaskTurn(original, initial_route, None, location_response, False)
+
+    pre_continuation_uncertainty = detect_uncertain_intent(current_text, context_text=uncertainty_context)
+    if pre_continuation_uncertainty is not None and not store.active(platform_key, str(chat_id)):
+        return PreparedTaskTurn(
+            original, initial_route, None,
+            early_response(
+                clarification_question(current_text, pre_continuation_uncertainty),
+                role="no_llm", reason="deterministic uncertainty gate before tools",
+                diagnostics={
+                    "clarification_required": True,
+                    "clarification_kind": pre_continuation_uncertainty,
+                    "tool_call_count": 0,
+                    "uncertainty_gate": "pre_model",
+                },
+            ),
+            False,
+        )
 
     place_lookup_response = _deterministic_place_lookup(
         text=current_text,
@@ -1788,7 +1811,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     if travel_followup_response is not None:
         return PreparedTaskTurn(original, initial_route, None, travel_followup_response, False)
 
-    pre_continuation_uncertainty = detect_uncertain_intent(current_text)
+    pre_continuation_uncertainty = detect_uncertain_intent(current_text, context_text=uncertainty_context)
     if pre_continuation_uncertainty is not None and not store.active(platform_key, str(chat_id)):
         return PreparedTaskTurn(
             original,
@@ -1941,7 +1964,8 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     base_text = task.original_request if task else str(calendar_request or message or "")
     route = route_turn(base_text, command=None, platform_key=platform_key,
-                       user_config=user_config, platform_toolsets=platform_toolsets)
+                       user_config=user_config, platform_toolsets=platform_toolsets,
+                       context_text=uncertainty_context)
     if calendar_request is not None and "google-workspace" not in route.skill_names:
         allowed = set(platform_toolsets or [])
         extra_toolsets = [
@@ -1976,7 +2000,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         )
 
     if task is None:
-        uncertainty_kind = detect_uncertain_intent(base_text)
+        uncertainty_kind = detect_uncertain_intent(base_text, context_text=uncertainty_context)
         clarify_only = route.toolsets == ["clarify"]
         if uncertainty_kind is not None or clarify_only:
             kind = uncertainty_kind or "ambiguous_action"

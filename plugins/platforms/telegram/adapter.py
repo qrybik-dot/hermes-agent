@@ -4342,8 +4342,8 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Render a clarify prompt with one inline button per choice.
 
-        Multi-choice mode (``choices`` non-empty): renders one button per
-        option plus a final "✏️ Other (type answer)" button.  Picking the
+        Multi-choice mode (``choices`` non-empty): renders compact labeled
+        buttons plus a final "✏️ Свой ответ" button. Picking the
         "Other" button flips the entry into text-capture mode so the next
         message becomes the response.
 
@@ -4377,19 +4377,22 @@ class TelegramAdapter(BasePlatformAdapter):
             }
 
             if choices:
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
+                # Telegram caps callback_data at 64 bytes; labels may stay human-readable.
                 # short.
-                rows = []
-                for idx in range(len(choices)):
-                    rows.append([
+                buttons = []
+                for idx, choice in enumerate(choices):
+                    raw_label = " ".join(str(choice).split())
+                    label = raw_label if len(raw_label) <= 40 else str(idx + 1)
+                    buttons.append(
                         InlineKeyboardButton(
-                            str(idx + 1),
+                            label,
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
-                    ])
+                    )
+                rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
                 rows.append([
                     InlineKeyboardButton(
-                        "✏️ Other (type answer)",
+                        "✏️ Свой ответ",
                         callback_data=f"cl:{clarify_id}:other",
                     )
                 ])

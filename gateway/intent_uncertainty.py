@@ -82,6 +82,30 @@ _RELATIVE_REMINDER_RE = re.compile(
     r"(?:минут\w*|час\w*|дн\w*|недел\w*|месяц\w*))\b",
     re.I,
 )
+_GENERIC_ACTION_ONLY_RE = re.compile(
+    r"^\s*(?:обнови|почини|исправь|настрой|установи|перезапусти|отправь|"
+    r"опубликуй|сохрани|добавь|создай|сделай|проверь|разберись|продолжи)\w*"
+    r"(?:\s+(?:это|его|е[её]|их|там|здесь|дальше))?[.!?]*\s*$",
+    re.I,
+)
+_VAGUE_OUTCOME_RE = re.compile(
+    r"^\s*(?:сделай|исправь|улучши|оформи)\w*\s+"
+    r"(?:нормально|лучше|красиво|как\s+надо|по[- ]?человечески)[.!?]*\s*$|"
+    r"^\s*(?:разберись|посмотри),?\s+что\s+не\s+так[.!?]*\s*$",
+    re.I,
+)
+_AMBIGUOUS_RECORD_RE = re.compile(
+    r"^\s*(?:запиши|добавь|сохрани)\w*\s+"
+    r"(?P<body>.{3,180})$",
+    re.I | re.S,
+)
+_EXPLICIT_DESTINATION_RE = re.compile(
+    r"\b(?:в\s+(?:памят|баз|профил|календар|задач|список|файл|документ|заметк)|"
+    r"как\s+(?:задач|напоминан|событи)|напомни|напоминан|календар|событи|задач|"
+    r"место|локаци|путешеств|поездк|ссылк|файл|ролик|видео|документ|контакт|"
+    r"врач|полис|профил|баз|памят)\w*\b",
+    re.I,
+)
 
 
 def _visible_user_text(text: str) -> str:
@@ -98,41 +122,76 @@ def is_reminder_request(text: str) -> bool:
     return bool(_REMINDER_REQUEST_RE.search(_visible_user_text(text)))
 
 
-def detect_uncertain_intent(text: str) -> str | None:
-    """Return a compact uncertainty kind, or None for an actionable request."""
+def detect_uncertain_intent(text: str, *, context_text: str = "") -> str | None:
+    """Return a compact uncertainty kind, or None for an actionable request.
+
+    ``context_text`` is trusted only as supporting context for the current
+    action. It can resolve a missing target or schedule, but it never creates
+    an action that is absent from the current user message.
+    """
     visible = _visible_user_text(text)
+    context = _visible_user_text(context_text)
+    evidence = "\n".join(part for part in (visible, context) if part)
     if not visible:
         return "missing_action"
     if _BARE_URL_RE.fullmatch(visible):
         return "bare_url"
-    if is_reminder_request(visible) and not _RELATIVE_REMINDER_RE.search(visible):
-        has_date = bool(_REMINDER_DATE_RE.search(visible))
-        has_time = bool(_REMINDER_TIME_RE.search(visible))
+    if is_reminder_request(visible) and not _RELATIVE_REMINDER_RE.search(evidence):
+        has_date = bool(_REMINDER_DATE_RE.search(evidence))
+        has_time = bool(_REMINDER_TIME_RE.search(evidence))
         if not has_date and not has_time:
             return "missing_reminder_date_time"
         if not has_date:
             return "missing_reminder_date"
         if not has_time:
             return "missing_reminder_time"
+    if _VAGUE_OUTCOME_RE.fullmatch(visible):
+        return "vague_outcome"
     if _AMBIGUOUS_SAVE_RE.fullmatch(visible):
         return "ambiguous_save"
+    if (
+        _AMBIGUOUS_RECORD_RE.fullmatch(visible)
+        and not _EXPLICIT_DESTINATION_RE.search(visible)
+        and not is_reminder_request(visible)
+    ):
+        return "ambiguous_destination"
     if _AMBIGUOUS_ACTION_RE.fullmatch(visible):
-        return "ambiguous_action"
-    if _MISSING_SOURCE_ACTION_RE.fullmatch(visible) and not _SOURCE_REFERENCE_RE.search(str(text or "")):
+        return None if context else "ambiguous_action"
+    if (
+        _MISSING_SOURCE_ACTION_RE.fullmatch(visible)
+        and not _SOURCE_REFERENCE_RE.search(evidence)
+    ):
         return "missing_source"
-    if _ACTION_ONLY_RE.fullmatch(visible):
-        return "missing_object"
+    if _GENERIC_ACTION_ONLY_RE.fullmatch(visible) or _ACTION_ONLY_RE.fullmatch(visible):
+        return None if context else "missing_object"
     return None
 
 
 def clarification_choices(text: str, kind: str) -> list[str] | None:
     """Return compact choices for deterministic pre-model clarification."""
+    value = str(text or "")
+    has_media = bool(_MEDIA_SOURCE_RE.search(value))
+    has_map = bool(_MAP_SOURCE_RE.search(value))
     if kind == "missing_reminder_date_time":
         return ["Сегодня в 19:00", "Завтра в 09:00", "Завтра в 19:00"]
     if kind == "missing_reminder_date":
         return ["Сегодня", "Завтра", "Послезавтра"]
     if kind == "missing_reminder_time":
         return ["В 09:00", "В 15:00", "В 19:00"]
+    if kind == "bare_url":
+        if has_media:
+            return ["Кратко пересказать", "Скачать", "Сохранить ссылку"]
+        if has_map:
+            return ["Сохранить место", "Построить маршрут", "Проверить данные"]
+        return ["Кратко разобрать", "Сохранить ссылку"]
+    if kind == "ambiguous_save":
+        if has_media:
+            return ["Сохранить файл", "Сохранить ссылку", "Сделать заметку"]
+        if has_map:
+            return ["Сохранить место", "Сохранить ссылку"]
+        return ["Сохранить объект", "Сохранить ссылку", "Сделать заметку"]
+    if kind == "ambiguous_destination":
+        return ["В задачи", "Как напоминание", "В календарь", "В память"]
     return None
 
 
@@ -166,10 +225,19 @@ def clarification_question(text: str, kind: str) -> str:
 
     if kind == "ambiguous_save":
         if has_media:
-            return "Что именно сохранить: место из публикации, сам ролик/ссылку или заметку с содержанием?"
+            return "Что именно сохранить?"
         if has_map:
-            return "Сохранить место в travel-базу или только ссылку как заметку?"
-        return "Что именно сохранить и куда: место, файл/ссылку или заметку?"
+            return "Что сохранить по этой ссылке?"
+        return "Что именно сохранить?"
+
+    if kind == "ambiguous_destination":
+        return "Куда добавить эту запись?"
+
+    if kind == "vague_outcome":
+        return (
+            "Какой результат нужен на выходе? Назови главный критерий, например: "
+            "исправить ошибку, ускорить работу, сократить или изменить стиль."
+        )
 
     if kind == "missing_source":
         return "Какой материал использовать? Пришли ссылку или файл либо ответь на сообщение с нужным объектом."
