@@ -1,7 +1,7 @@
 ---
 name: city-travel-concierge
 description: "City travel concierge: addresses, routes, weather, events, nearby places, parking candidates, and map links."
-version: 0.4.5
+version: 0.5.0
 author: Hermes local
 license: MIT
 platforms: [linux, macos, windows]
@@ -75,10 +75,16 @@ When the user explicitly asks to save a place for a future trip:
    current official or otherwise clearly attributed source. Keep source claims
    separate from verified facts and never invent missing values.
 4. Use the `file` tool to write the structured result as UTF-8 JSON to
-   `/home/hermes/.hermes/tmp/travel-place-save.json`. Allowed keys are
-   `name`, `location`, `description`, `price`, `schedule`, `hours`,
-   `source_url`, and `verified_source_url`.
-5. Run only this fixed ASCII terminal command. Do not place user text or
+   `/home/hermes/.hermes/tmp/travel-place-save.json`. Allowed keys are:
+   `name`, `location`, `description`, `category`, `map_url`, `entity_key`,
+   `price`, `schedule`, `hours`, `source_url`, `verified_source_url`,
+   `verified_fields`, `checked_at`, `infrastructure`, `parking`,
+   `nearby_food`, `important`, and `relations`.
+5. Include `map_url` whenever a stable map object is found. The helper derives
+   `entity_key` from a Yandex organisation ID, Google Place ID, coordinates, or
+   a normalized name/location fallback. Different publications about the same
+   place must update one card and merge sources instead of creating duplicates.
+6. Run only this fixed ASCII terminal command. Do not place user text or
    Cyrillic values directly in a shell command:
 
 ```bash
@@ -86,11 +92,22 @@ When the user explicitly asks to save a place for a future trip:
 ```
 
 Report success only when the helper returns `saved=true` or
-`already_exists=true` and `readback_count>0`. If it fails, return the exact
-`status` and `message`; do not fall back to the generic memory tool and do not
-search the skill source code. If the source is inaccessible, make one
-alternative search from visible metadata. Ask one targeted question only when
-the place remains genuinely ambiguous.
+`already_exists=true` and `readback_count>0`. If it returns `updated=true`, say
+that the existing place card was updated. Never edit the protected `Мои заметки`
+block. If the helper fails, return the exact `status` and `message`; do not fall
+back to the generic memory tool and do not search the skill source code. If the
+source is inaccessible, make one alternative search from visible metadata. Ask
+one targeted question only when the place remains genuinely ambiguous.
+
+## Knowledge navigation
+
+For questions about existing Hermes knowledge, prefer `knowledge_context` over
+broad file scanning. It loads `Personal Anton/00-start/INDEX.md`, one relevant
+file from `Personal Anton/views/`, and the canonical documents named there.
+Do not scan `Archive`, backups, or historical context packs unless the user asks
+for history, evidence, rollback, or the canonical files contain a conflict.
+If two current documents conflict, report the conflict instead of choosing the
+newest file by modification date.
 
 ## Addresses and nearby POI
 
