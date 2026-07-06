@@ -454,6 +454,55 @@ def test_action_delivery_claim_is_idempotent(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_morning_send_is_silent_when_requested_and_pinned(tmp_path: Path) -> None:
+    class Bot:
+        def __init__(self):
+            self.sent = []
+            self.pinned = []
+
+        async def send_message(self, **kwargs):
+            self.sent.append(kwargs)
+            return SimpleNamespace(message_id=321)
+
+        async def pin_chat_message(self, **kwargs):
+            self.pinned.append(kwargs)
+
+        async def unpin_chat_message(self, **kwargs):
+            return None
+
+        async def edit_message_text(self, **kwargs):
+            return None
+
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path)
+    state_path = tmp_path / "daily_cards.db"
+    bot = Bot()
+    settings = dc.DailyCardSettings(
+        enabled=True,
+        shadow_mode=False,
+        timezone="Europe/Moscow",
+        google_calendar=False,
+    )
+
+    result = await dc.send_or_update_card(
+        "morning",
+        TARGET,
+        db_path=db_path,
+        state_path=state_path,
+        settings=settings,
+        force_send=True,
+        silent=True,
+        bot=bot,
+        chat_id="123",
+    )
+
+    assert result["sent"] is True
+    assert result["pinned"] is True
+    assert bot.sent[0]["disable_notification"] is True
+    assert bot.pinned[0]["disable_notification"] is True
+
+
+@pytest.mark.asyncio
 async def test_action_watcher_sends_once(tmp_path: Path) -> None:
     class Bot:
         def __init__(self):
