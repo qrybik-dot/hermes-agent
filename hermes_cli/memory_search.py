@@ -24,7 +24,11 @@ def _connect(index_dir: Path) -> sqlite3.Connection:
     con = sqlite3.connect(index_dir / 'memory_fts.sqlite3')
     con.execute('pragma journal_mode=WAL')
     con.execute('pragma synchronous=NORMAL')
-    con.execute('create table if not exists docs(path text primary key, title text, mtime real, sha256 text, entity_type text, source text)')
+    con.execute('create table if not exists docs(path text primary key, title text, mtime real, sha256 text, entity_type text, source text, knowledge_project text, entity_key text)')
+    columns = {row[1] for row in con.execute('pragma table_info(docs)').fetchall()}
+    for name in ('knowledge_project', 'entity_key'):
+        if name not in columns:
+            con.execute(f'alter table docs add column {name} text')
     con.execute("create virtual table if not exists docs_fts using fts5(path unindexed, title, body, entity_type unindexed, source unindexed, tokenize='unicode61')")
     return con
 
@@ -58,7 +62,7 @@ def _frontmatter_value(text: str, key: str) -> str | None:
 
 
 def _entity_type(rel: str, text: str = '') -> str:
-    declared = _frontmatter_value(text, 'type') or _frontmatter_value(text, 'entity_type')
+    declared = _frontmatter_value(text, 'entity_type') or _frontmatter_value(text, 'type')
     if declared:
         normalized = re.sub(r'[^a-z0-9_-]+', '-', declared.lower()).strip('-')
         if normalized:
@@ -82,9 +86,11 @@ def reindex(vault: Path = DEFAULT_VAULT, index_dir: Path = DEFAULT_INDEX_DIR) ->
                 skipped += 1; continue
             scanned += 1; seen.add(rel); digest = hashlib.sha256(data).hexdigest(); st = path.stat()
             title = _title(text, path.stem); et = _entity_type(rel, text)
-            row = con.execute('select sha256, entity_type from docs where path=?', (rel,)).fetchone()
-            if row and row[0] == digest and row[1] == et: continue
-            con.execute('insert or replace into docs(path,title,mtime,sha256,entity_type,source) values(?,?,?,?,?,?)', (rel, title, st.st_mtime, digest, et, 'vault'))
+            kp = _frontmatter_value(text, 'knowledge_project') or _frontmatter_value(text, 'project') or ''
+            ek = _frontmatter_value(text, 'entity_key') or ''
+            row = con.execute('select sha256,entity_type,knowledge_project,entity_key from docs where path=?', (rel,)).fetchone()
+            if row and row[0] == digest and row[1] == et and (row[2] or '') == kp and (row[3] or '') == ek: continue
+            con.execute('insert or replace into docs(path,title,mtime,sha256,entity_type,source,knowledge_project,entity_key) values(?,?,?,?,?,?,?,?)', (rel, title, st.st_mtime, digest, et, 'vault', kp, ek))
             con.execute('delete from docs_fts where path=?', (rel,))
             con.execute('insert into docs_fts(path,title,body,entity_type,source) values(?,?,?,?,?)', (rel, title, text[:200000], et, 'vault'))
             changed += 1
