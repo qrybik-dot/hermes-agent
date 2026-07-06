@@ -22,6 +22,7 @@ Do not add qmd or another vector database now. Local FTS5 lookup is already mill
 
 - `hermes_cli/memory_search.py`
 - `local-skills/productivity/city-travel-concierge/`
+- `tools/memory_navigation/hermes_knowledge_search.py` — canonical deployment source for `/opt/hermes-knowledge-mcp/search.py`
 - `tools/memory_navigation/validate_task_navigation.py`
 - `tools/memory_navigation/build_human_indexes.py`
 - related tests
