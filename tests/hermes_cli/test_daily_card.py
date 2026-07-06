@@ -360,6 +360,32 @@ def test_google_calendar_source_filters_dates_and_redacts_description(
     assert "123456789" not in json.dumps(events[0], ensure_ascii=False)
 
 
+def test_google_calendar_sync_applies_configured_title_alias(tmp_path: Path, monkeypatch) -> None:
+    conn = dc.connect_state(tmp_path / "daily_cards.db")
+    monkeypatch.setattr(
+        calendar_source,
+        "fetch_google_calendar_payloads",
+        lambda *args, **kwargs: [
+            {
+                "title": "Младший: Хирург",
+                "event_at": _epoch("2026-07-07T10:45:00"),
+                "timezone": "Europe/Moscow",
+                "source_kind": "google_calendar",
+                "source_id": "doctor",
+                "event_id": "gcal-doctor",
+            }
+        ],
+    )
+    dc.sync_google_calendar_events(
+        conn,
+        [TARGET],
+        TZ,
+        title_aliases={"Младший:": "Федя —"},
+    )
+    row = conn.execute("SELECT title FROM daily_events WHERE id='gcal-doctor'").fetchone()
+    assert row["title"] == "Федя — Хирург"
+
+
 def test_google_calendar_sync_replaces_cached_window(tmp_path: Path, monkeypatch) -> None:
     conn = dc.connect_state(tmp_path / "daily_cards.db")
     dc.upsert_event(
