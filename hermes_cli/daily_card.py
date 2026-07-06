@@ -18,10 +18,8 @@ import hashlib
 import json
 import logging
 import sqlite3
-import subprocess
-import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 from zoneinfo import ZoneInfo
@@ -34,24 +32,6 @@ logger = logging.getLogger(__name__)
 ACTIVE_TASK_STATUSES = frozenset({"triage", "todo", "ready", "blocked", "scheduled"})
 DONE_TASK_STATUSES = frozenset({"done", "completed"})
 CARD_KINDS = frozenset({"morning", "evening"})
-EVENT_PAYLOAD_MAX_BYTES = 64 * 1024
-EVENT_PAYLOAD_KEYS = frozenset(
-    {
-        "title",
-        "event_at",
-        "timezone",
-        "person",
-        "address",
-        "location",
-        "online_url",
-        "requires_travel",
-        "preparation",
-        "importance",
-        "source_kind",
-        "source_id",
-        "event_id",
-    }
-)
 
 _RU_MONTHS = (
     "",
@@ -77,6 +57,7 @@ class DailyCardSettings:
     timezone: str = "Europe/Moscow"
     max_buttons: int = 6
     google_calendar: bool = True
+    calendar_title_aliases: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -162,12 +143,19 @@ def load_settings(config_path: Optional[Path] = None) -> DailyCardSettings:
         except Exception as exc:  # pragma: no cover - defensive config fallback
             logger.warning("Could not read daily_card config: %s", exc)
     max_buttons = int(raw.get("max_buttons") or 6)
+    aliases_raw = raw.get("calendar_title_aliases") or {}
+    aliases = (
+        {str(key): str(value) for key, value in aliases_raw.items()}
+        if isinstance(aliases_raw, dict)
+        else {}
+    )
     return DailyCardSettings(
         enabled=_coerce_bool(raw.get("enabled"), False),
         shadow_mode=_coerce_bool(raw.get("shadow_mode"), True),
         timezone=str(raw.get("timezone") or "Europe/Moscow"),
         max_buttons=max(1, min(max_buttons, 8)),
         google_calendar=_coerce_bool(raw.get("google_calendar"), True),
+        calendar_title_aliases=aliases,
     )
 
 
@@ -640,6 +628,7 @@ def sync_google_calendar_events(
     timezone: ZoneInfo,
     *,
     min_interval_seconds: int = 0,
+    title_aliases: Optional[dict[str, str]] = None,
 ) -> dict:
     """Refresh cached Google Calendar events for the requested days."""
     from hermes_cli.daily_card_calendar import fetch_google_calendar_payloads
@@ -675,7 +664,13 @@ def sync_google_calendar_events(
             (int(time.time()), start, end),
         )
     conn.commit()
+    aliases = title_aliases or {}
     for payload in payloads:
+        title = str(payload.get("title") or "")
+        for source, replacement in aliases.items():
+            if source and source in title:
+                title = title.replace(source, replacement, 1)
+        payload["title"] = title
         upsert_event(conn, **payload)
     conn.execute(
         """
@@ -1151,6 +1146,7 @@ async def send_or_update_card(
             state_conn,
             sync_dates,
             ZoneInfo(settings.timezone),
+            title_aliases=settings.calendar_title_aliases,
         )
     render = _build_render(
         kind,
@@ -1365,6 +1361,7 @@ async def send_action_reminders(
                 [now_local.date(), now_local.date() + dt.timedelta(days=1)],
                 timezone,
                 min_interval_seconds=1800,
+                title_aliases=settings.calendar_title_aliases,
             )
         rows = conn.execute(
             """
@@ -1372,7 +1369,7 @@ async def send_action_reminders(
              WHERE status='active' AND event_at>? AND event_at<=?
              ORDER BY event_at, title
             """,
-            (now_epoch, now_epoch + 2 * 60 * 60),
+            (now_epoch, now_epoch + 24 * 60 * 60),
         ).fetchall()
         due: list[tuple[CardEvent, str, str]] = []
         for row in rows:
