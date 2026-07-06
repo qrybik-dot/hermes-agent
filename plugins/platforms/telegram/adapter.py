@@ -3263,12 +3263,42 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
+            # Legacy family-task marker compatibility. Parse before MarkdownV2
+            # escaping so the marker never leaks into user-visible text.
+            custom_reply_markup = None
+            marker_match = re.search(
+                r"\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*([^\]]+)\]",
+                content,
+            )
+            if marker_match:
+                rows = []
+                for raw_button in marker_match.group(1).split(","):
+                    raw_button = raw_button.strip()
+                    if ":" not in raw_button:
+                        continue
+                    task_id, label = raw_button.split(":", 1)
+                    task_id = task_id.strip()
+                    label = label.strip()
+                    if task_id and label:
+                        rows.append([
+                            InlineKeyboardButton(
+                                label[:64], callback_data=f"kb:done:{task_id}"
+                            )
+                        ])
+                if rows:
+                    custom_reply_markup = InlineKeyboardMarkup(rows)
+                content = re.sub(
+                    r"\[ДОСТУПНЫЕ?\s+КНОПКИ:\s*[^\]]+\]",
+                    "",
+                    content,
+                ).strip()
+
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            if custom_reply_markup is None and self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -3365,6 +3395,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
+                chunk_reply_markup = (
+                    custom_reply_markup if i == len(chunks) - 1 else None
+                )
                 for _send_attempt in range(3):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
@@ -3374,6 +3407,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=chunk_reply_markup,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -3388,6 +3422,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=chunk_reply_markup,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -4905,6 +4940,154 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    async def _handle_daily_card_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id=None,
+        query_chat_type=None,
+        query_thread_id=None,
+        query_user_name=None,
+    ) -> None:
+        """Complete a daily-card task and rebuild the source message."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ Недостаточно прав.")
+            return
+
+        try:
+            from hermes_cli import daily_card as _daily_card
+            from hermes_cli import kanban_db as _kanban_db
+
+            state = _daily_card.connect_state()
+            try:
+                target = _daily_card.resolve_callback(state, data)
+            finally:
+                state.close()
+            result = _daily_card.mark_task_done(
+                _kanban_db.kanban_db_path(board="default"), target.task_id
+            )
+        except ValueError:
+            await query.answer(text="Кнопка устарела. Обновите карточку.")
+            return
+        except Exception as exc:
+            logger.error("[%s] daily-card callback failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text="Не удалось обновить задачу.")
+            return
+
+        labels = {
+            "completed": "✓ Отмечено",
+            "already_done": "Уже отмечено",
+            "not_found": "Задача не найдена",
+            "invalid_state": "Задача уже недоступна",
+        }
+        await query.answer(text=labels.get(result, "Готово"))
+        if result not in {"completed", "already_done"}:
+            return
+
+        try:
+            chat_id = str(query.message.chat_id)
+            message_id = str(query.message.message_id)
+            await _daily_card.refresh_stored_card(
+                self._bot,
+                target.card_date,
+                target.card_kind,
+                chat_id,
+                message_id=message_id,
+            )
+            if target.card_kind == "evening":
+                await _daily_card.refresh_stored_card(
+                    self._bot,
+                    target.card_date,
+                    "morning",
+                    chat_id,
+                )
+        except Exception as exc:
+            logger.warning("[%s] task completed but daily card refresh failed: %s", self.name, exc)
+
+    async def _handle_legacy_kanban_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id=None,
+        query_chat_type=None,
+        query_thread_id=None,
+        query_user_name=None,
+    ) -> None:
+        """Preserve existing /today and /tasks completion buttons."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ Недостаточно прав.")
+            return
+
+        task_id = data.split(":", 2)[2].strip() if data.count(":") >= 2 else ""
+        if not task_id:
+            await query.answer(text="Некорректная кнопка.")
+            return
+        try:
+            from hermes_cli import daily_card as _daily_card
+            from hermes_cli import kanban_db as _kanban_db
+
+            result = _daily_card.mark_task_done(
+                _kanban_db.kanban_db_path(board="default"), task_id
+            )
+        except Exception as exc:
+            logger.error("[%s] legacy kanban callback failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text="Не удалось обновить задачу.")
+            return
+
+        labels = {
+            "completed": "✓ Отмечено",
+            "already_done": "Уже отмечено",
+            "not_found": "Задача не найдена",
+            "invalid_state": "Задача уже недоступна",
+        }
+        await query.answer(text=labels.get(result, "Готово"))
+        if result not in {"completed", "already_done"}:
+            return
+
+        try:
+            markup = getattr(query.message, "reply_markup", None)
+            remaining = []
+            for row in getattr(markup, "inline_keyboard", ()) or ():
+                kept = [button for button in row if button.callback_data != data]
+                if kept:
+                    remaining.append(kept)
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup(remaining) if remaining else None
+            )
+        except Exception:
+            pass
+
+        try:
+            import datetime as _dt
+            from zoneinfo import ZoneInfo as _ZoneInfo
+
+            settings = _daily_card.load_settings()
+            today = _dt.datetime.now(_ZoneInfo(settings.timezone)).date()
+            await _daily_card.refresh_stored_card(
+                self._bot,
+                today,
+                "morning",
+                str(query.message.chat_id),
+            )
+        except Exception:
+            pass
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -4919,6 +5102,28 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Daily-card and legacy family-task callbacks ---
+        if data.startswith("dc:"):
+            await self._handle_daily_card_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+        if data.startswith("kb:done:"):
+            await self._handle_legacy_kanban_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
