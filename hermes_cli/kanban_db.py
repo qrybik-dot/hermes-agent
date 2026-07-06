@@ -907,6 +907,13 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Day-planning metadata. Kept optional for legacy rows and boards.
+    planned_for: Optional[str] = None
+    due_at: Optional[int] = None
+    importance: int = 0
+    carry_count: int = 0
+    risk_ack_at: Optional[int] = None
+    canceled_at: Optional[int] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -990,6 +997,12 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
+            planned_for=(row["planned_for"] if "planned_for" in keys else None),
+            due_at=(row["due_at"] if "due_at" in keys else None),
+            importance=(int(row["importance"] or 0) if "importance" in keys else 0),
+            carry_count=(int(row["carry_count"] or 0) if "carry_count" in keys else 0),
+            risk_ack_at=(row["risk_ack_at"] if "risk_ack_at" in keys else None),
+            canceled_at=(row["canceled_at"] if "canceled_at" in keys else None),
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
             ),
@@ -1163,6 +1176,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- Optional day-planning metadata used by the Telegram daily card.
+    -- planned_for is an ISO local date (YYYY-MM-DD); due_at is UTC epoch.
+    planned_for          TEXT,
+    due_at               INTEGER,
+    importance           INTEGER NOT NULL DEFAULT 0,
+    carry_count          INTEGER NOT NULL DEFAULT 0,
+    risk_ack_at          INTEGER,
+    canceled_at          INTEGER,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -1970,6 +1991,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    for name, definition in (
+        ("planned_for", "planned_for TEXT"),
+        ("due_at", "due_at INTEGER"),
+        ("importance", "importance INTEGER NOT NULL DEFAULT 0"),
+        ("carry_count", "carry_count INTEGER NOT NULL DEFAULT 0"),
+        ("risk_ack_at", "risk_ack_at INTEGER"),
+        ("canceled_at", "canceled_at INTEGER"),
+    ):
+        if name not in cols:
+            _add_column_if_missing(conn, "tasks", name, definition)
+
     if "block_kind" not in cols:
         # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
         # blocks. Existing blocked rows get NULL, which is treated as a
@@ -1999,6 +2031,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_planned_for ON tasks(planned_for)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_due_at ON tasks(due_at)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
