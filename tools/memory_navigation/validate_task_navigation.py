@@ -43,6 +43,10 @@ class Finding:
     detail: str
 
 
+class NavigationPermissionError(RuntimeError):
+    pass
+
+
 def parse_frontmatter(text: str) -> dict[str, str]:
     if not text.startswith('---\n'):
         return {}
@@ -88,8 +92,11 @@ def resolve_link(vault: Path, source: Path, raw: str) -> Path | None:
             candidate.resolve().relative_to(vault.resolve())
         except ValueError:
             continue
-        if candidate.is_file():
-            return candidate
+        try:
+            if candidate.is_file():
+                return candidate
+        except PermissionError as exc:
+            raise NavigationPermissionError(str(candidate)) from exc
     return None
 
 
@@ -121,7 +128,11 @@ def validate(vault: Path = DEFAULT_VAULT) -> dict:
 
         for raw in WIKILINK_RE.findall(text):
             checked_links += 1
-            target = resolve_link(vault, path, raw)
+            try:
+                target = resolve_link(vault, path, raw)
+            except NavigationPermissionError as exc:
+                findings.append(Finding('error', 'permission_denied', rel.as_posix(), str(exc)))
+                continue
             if target is None:
                 findings.append(Finding('error', 'broken_link', rel.as_posix(), raw))
 
