@@ -1131,6 +1131,7 @@ async def send_or_update_card(
     state_path: Optional[Path] = None,
     settings: Optional[DailyCardSettings] = None,
     force_send: bool = False,
+    silent: bool = False,
     bot=None,
     chat_id: Optional[str] = None,
     thread_id: Optional[str] = None,
@@ -1223,6 +1224,7 @@ async def send_or_update_card(
                 text=render.text,
                 parse_mode=None,
                 reply_markup=reply_markup,
+                disable_notification=bool(silent),
                 **kwargs,
             )
             message_id = str(message.message_id)
@@ -1458,6 +1460,7 @@ def build_parser() -> argparse.ArgumentParser:
         item = sub.add_parser(name)
         item.add_argument("--date")
         item.add_argument("--force-send", action="store_true")
+        item.add_argument("--silent", action="store_true")
         item.add_argument("--cron", action="store_true")
 
     action = sub.add_parser("action")
@@ -1491,6 +1494,7 @@ async def _run_async(args: argparse.Namespace) -> int:
             _parse_date(args.date, timezone),
             settings=settings,
             force_send=bool(args.force_send),
+            silent=bool(args.silent),
         )
         if args.cron and result.get("status") in {"sent", "shadow", "no_content"}:
             print("[SILENT]")
