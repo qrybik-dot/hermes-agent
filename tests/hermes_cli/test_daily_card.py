@@ -42,6 +42,9 @@ def _insert_task(
     due_at: int | None = None,
     importance: int = 0,
     completed_at: int | None = None,
+    assignee: str | None = "family",
+    created_by: str = "test",
+    created_at: int | None = None,
 ) -> None:
     with kb.connect(path) as conn:
         conn.execute(
@@ -51,13 +54,15 @@ def _insert_task(
                 created_at, completed_at, workspace_kind, consecutive_failures,
                 goal_mode, block_recurrences, planned_for, due_at, importance,
                 carry_count
-            ) VALUES (?, ?, '', 'family', ?, 0, 'test', ?, ?, 'scratch', 0, 0, 0, ?, ?, ?, 0)
+            ) VALUES (?, ?, '', ?, ?, 0, ?, ?, ?, 'scratch', 0, 0, 0, ?, ?, ?, 0)
             """,
             (
                 task_id,
                 title,
+                assignee,
                 status,
-                _epoch("2026-07-01T10:00:00"),
+                created_by,
+                created_at or _epoch("2026-07-01T10:00:00"),
                 completed_at,
                 planned_for,
                 due_at,
@@ -80,7 +85,9 @@ def test_kanban_migration_adds_daily_planning_columns(db_path: Path) -> None:
     }.issubset(columns)
 
 
-def test_selector_includes_only_today_and_important_overdue(db_path: Path) -> None:
+def test_selector_includes_today_important_overdue_and_personal_undated(
+    db_path: Path,
+) -> None:
     _insert_task(db_path, "today", "Сегодня", planned_for="2026-07-07")
     _insert_task(db_path, "due", "Срок сегодня", due_at=_epoch("2026-07-07T18:00:00"))
     _insert_task(db_path, "tomorrow", "Завтра", planned_for="2026-07-08")
@@ -95,8 +102,38 @@ def test_selector_includes_only_today_and_important_overdue(db_path: Path) -> No
     )
 
     selected = dc.select_tasks(db_path, TARGET, TZ)
-    assert [item.id for item in selected] == ["old-important", "due", "today"]
+    assert [item.id for item in selected] == [
+        "old-important",
+        "due",
+        "today",
+        "undated",
+    ]
     assert selected[0].overdue is True
+    assert selected[-1].undated is True
+
+
+def test_selector_caps_undated_personal_tasks_and_excludes_technical(
+    db_path: Path,
+) -> None:
+    for index in range(5):
+        _insert_task(
+            db_path,
+            f"family-{index}",
+            f"Бытовая задача {index}",
+            created_at=_epoch(f"2026-07-0{index + 1}T10:00:00"),
+        )
+    _insert_task(
+        db_path,
+        "technical",
+        "Техническая задача",
+        assignee=None,
+        created_by="system",
+    )
+
+    selected = dc.select_tasks(db_path, TARGET, TZ)
+
+    assert [item.id for item in selected] == ["family-0", "family-1", "family-2"]
+    assert all(item.undated for item in selected)
 
 
 def test_completed_today_stays_visible_without_action_button(db_path: Path, tmp_path: Path) -> None:
