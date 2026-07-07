@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import datetime as dt
 import hashlib
+import html
 import json
 import logging
 import sqlite3
@@ -114,6 +115,7 @@ class ButtonSpec:
 class CardRender:
     text: str
     buttons: tuple[CardButton, ...] = ()
+    parse_mode: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -705,6 +707,14 @@ def _event_line(event: CardEvent) -> str:
     return f"{local:%H:%M}  {event.title}"
 
 
+def _event_line_html(event: CardEvent) -> str:
+    title = html.escape(event.title)
+    if event.all_day:
+        return f"<b>Весь день</b> · {title}"
+    local = _event_local_time(event)
+    return f"<b>{local:%H:%M}</b> · {title}"
+
+
 def _action_lead_minutes(event: CardEvent) -> Optional[int]:
     if event.all_day:
         return None
@@ -817,13 +827,15 @@ def render_morning(
 ) -> CardRender:
     lines = [f"Сегодня, {_date_label(target_date)}"]
     if events:
-        lines.extend(["", "По времени"])
-        for event in events:
-            lines.append(_event_line(event))
+        lines.extend(["", "По времени", ""])
+        for index, event in enumerate(events):
+            lines.append(_event_line_html(event))
             if event.address:
-                lines.append(f"  Адрес: {event.address}")
+                lines.append(f"📍 {html.escape(event.address)}")
             elif event.online_url:
-                lines.append("  Онлайн")
+                lines.append("🔗 Онлайн")
+            if index < len(events) - 1:
+                lines.append("")
 
     overdue = [task for task in tasks if task.overdue]
     current = [task for task in tasks if not task.overdue]
@@ -831,12 +843,12 @@ def render_morning(
         lines.extend(["", "Со вчера"])
         for task in overdue:
             marker = "✅" if task.done else "☐"
-            lines.append(f"{marker} {task.title}")
+            lines.append(f"{marker} {html.escape(task.title)}")
     if current:
         lines.extend(["", "Сделать"])
         for task in current:
             marker = "✅" if task.done else "☐"
-            lines.append(f"{marker} {task.title}")
+            lines.append(f"{marker} {html.escape(task.title)}")
 
     if not events and not tasks:
         lines.extend(["", "Планов на сегодня нет."])
@@ -850,7 +862,11 @@ def render_morning(
         CardButton(label=f"✓ {task.title}"[:48], task_id=task.id)
         for task in open_tasks[:max_buttons]
     )
-    return CardRender(text="\n".join(lines).strip(), buttons=buttons)
+    return CardRender(
+        text="\n".join(lines).strip(),
+        buttons=buttons,
+        parse_mode="HTML",
+    )
 
 
 def event_needs_evening_attention(event: CardEvent) -> bool:
@@ -881,23 +897,29 @@ def render_evening(
         lines.extend(["", "Сегодня", f"✅ Отмечено {completed} из {len(today_tasks)} дел"])
     if open_tasks:
         lines.extend(["", "Не отмечено"])
-        lines.extend(f"• {task.title}" for task in open_tasks)
+        lines.extend(f"• {html.escape(task.title)}" for task in open_tasks)
     if useful_events:
-        lines.extend(["", "На завтра"])
-        for event in useful_events:
-            lines.append(_event_line(event))
+        lines.extend(["", "На завтра", ""])
+        for index, event in enumerate(useful_events):
+            lines.append(_event_line_html(event))
             if event.address:
-                lines.append(f"  Адрес: {event.address}")
+                lines.append(f"📍 {html.escape(event.address)}")
             for item in event.preparation:
-                lines.append(f"  • {item}")
+                lines.append(f"• {html.escape(item)}")
             if event.requires_travel and not event.address:
-                lines.append("  • Проверить адрес и дорогу")
+                lines.append("• Проверить адрес и дорогу")
+            if index < len(useful_events) - 1:
+                lines.append("")
 
     buttons = tuple(
         CardButton(label=f"✓ {task.title}"[:48], task_id=task.id)
         for task in open_tasks[:max_buttons]
     )
-    return CardRender(text="\n".join(lines).strip(), buttons=buttons)
+    return CardRender(
+        text="\n".join(lines).strip(),
+        buttons=buttons,
+        parse_mode="HTML",
+    )
 
 
 def save_card_state(
@@ -1239,7 +1261,7 @@ async def send_or_update_card(
                     chat_id=int(chat_id),
                     message_id=int(current["message_id"]),
                     text=render.text,
-                    parse_mode=None,
+                    parse_mode=render.parse_mode,
                     reply_markup=reply_markup,
                 )
                 message_id = str(current["message_id"])
@@ -1256,7 +1278,7 @@ async def send_or_update_card(
             message = await bot.send_message(
                 chat_id=int(chat_id),
                 text=render.text,
-                parse_mode=None,
+                parse_mode=render.parse_mode,
                 reply_markup=reply_markup,
                 disable_notification=bool(silent),
                 **kwargs,
@@ -1354,7 +1376,7 @@ async def refresh_stored_card(
                 chat_id=int(chat_id),
                 message_id=int(target_message_id),
                 text=render.text,
-                parse_mode=None,
+                parse_mode=render.parse_mode,
                 reply_markup=markup,
             )
         except Exception as exc:
