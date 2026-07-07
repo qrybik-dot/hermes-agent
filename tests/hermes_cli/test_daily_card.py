@@ -437,26 +437,48 @@ def test_google_calendar_sync_applies_configured_title_alias(tmp_path: Path, mon
     assert row["title"] == "Федя — Хирург"
 
 
-def test_google_calendar_sync_replaces_cached_window(tmp_path: Path, monkeypatch) -> None:
+def test_google_calendar_sync_keeps_past_today_and_stales_missing_future(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     conn = dc.connect_state(tmp_path / "daily_cards.db")
     dc.upsert_event(
         conn,
-        title="Старое событие",
+        title="Утренний врач",
         event_at=_epoch("2026-07-07T09:00:00"),
         source_kind="google_calendar",
-        source_id="old",
-        event_id="gcal-old",
+        source_id="past",
+        event_id="gcal-past",
+    )
+    dc.upsert_event(
+        conn,
+        title="Будущая встреча",
+        event_at=_epoch("2026-07-07T15:00:00"),
+        source_kind="google_calendar",
+        source_id="future",
+        event_id="gcal-future",
     )
     monkeypatch.setattr(
         calendar_source,
         "fetch_google_calendar_payloads",
         lambda *args, **kwargs: [],
     )
-    # daily_card imports the function at call time from the source module.
+    monkeypatch.setattr(
+        dc.time,
+        "time",
+        lambda: dt.datetime(2026, 7, 7, 12, 0, tzinfo=TZ).timestamp(),
+    )
+
     result = dc.sync_google_calendar_events(conn, [TARGET], TZ)
+
     assert result["available"] is True
-    row = conn.execute("SELECT status FROM daily_events WHERE id='gcal-old'").fetchone()
-    assert row["status"] == "stale"
+    statuses = {
+        row["id"]: row["status"]
+        for row in conn.execute(
+            "SELECT id, status FROM daily_events WHERE id IN ('gcal-past','gcal-future')"
+        )
+    }
+    assert statuses == {"gcal-past": "active", "gcal-future": "stale"}
 
 
 def test_action_reminder_uses_route_when_known() -> None:

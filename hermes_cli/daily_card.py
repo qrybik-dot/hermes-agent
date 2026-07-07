@@ -655,15 +655,19 @@ def sync_google_calendar_events(
         logger.warning("Google Calendar sync skipped: %s", exc)
         return {"available": False, "count": 0, "error": type(exc).__name__}
 
+    now = int(time.time())
     for target_date in target_dates:
         start, end = _day_bounds(target_date, timezone)
+        stale_from = max(start, now)
+        if stale_from >= end:
+            continue
         conn.execute(
             """
             UPDATE daily_events SET status='stale', updated_at=?
              WHERE source_kind='google_calendar'
                AND event_at>=? AND event_at<?
             """,
-            (int(time.time()), start, end),
+            (now, stale_from, end),
         )
     conn.commit()
     aliases = title_aliases or {}
