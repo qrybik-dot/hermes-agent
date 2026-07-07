@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from gateway import config as gateway_config
 from hermes_cli import kanban_db as kb
 from hermes_cli import daily_card as dc
 from hermes_cli import daily_card_calendar as calendar_source
@@ -185,6 +186,31 @@ def test_state_upsert_keeps_one_card_per_day_kind_and_chat(tmp_path: Path) -> No
     assert len(rows) == 1
     assert rows[0]["message_id"] == "101"
     assert rows[0]["text_hash"] == "b"
+
+
+def test_telegram_destination_falls_back_to_existing_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_ALLOWED_USERS=123,456\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        gateway_config,
+        "load_gateway_config",
+        lambda: SimpleNamespace(
+            platforms={},
+            get_home_channel=lambda platform: None,
+        ),
+    )
+
+    token, chat_id, thread_id = dc._telegram_destination()
+
+    assert token == "test-token"
+    assert chat_id == "123"
+    assert thread_id is None
 
 
 def test_evening_is_silent_without_open_tasks_or_useful_tomorrow_events(db_path: Path) -> None:
