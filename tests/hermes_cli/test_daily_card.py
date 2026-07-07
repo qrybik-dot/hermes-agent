@@ -141,8 +141,33 @@ def test_events_never_receive_completion_buttons(tmp_path: Path) -> None:
     state = dc.connect_state(tmp_path / "daily_cards.db")
     markup = dc.build_markup(state, render, TARGET, "morning")
 
-    assert "10:45  Федя — детский хирург" in render.text
+    assert "<b>10:45</b> · Федя — детский хирург" in render.text
+    assert render.parse_mode == "HTML"
     assert markup == []
+
+
+def test_mobile_event_layout_highlights_time_and_separates_events() -> None:
+    first = dc.CardEvent(
+        id="evt-1",
+        title="Федя <хирург> & врач",
+        event_at=_epoch("2026-07-07T10:45:00"),
+        timezone="Europe/Moscow",
+        address="Поликлиника №2 & корпус <А>",
+    )
+    second = dc.CardEvent(
+        id="evt-2",
+        title="Встречи в Skyeng",
+        event_at=_epoch("2026-07-07T17:30:00"),
+        timezone="Europe/Moscow",
+    )
+
+    render = dc.render_morning(TARGET, [], [first, second], max_buttons=6)
+
+    assert (
+        "<b>10:45</b> · Федя &lt;хирург&gt; &amp; врач\n"
+        "📍 Поликлиника №2 &amp; корпус &lt;А&gt;\n\n"
+        "<b>17:30</b> · Встречи в Skyeng"
+    ) in render.text
 
 
 def test_button_limit_is_six(db_path: Path, tmp_path: Path) -> None:
@@ -525,6 +550,7 @@ async def test_morning_send_is_silent_when_requested_and_pinned(tmp_path: Path) 
     assert result["sent"] is True
     assert result["pinned"] is True
     assert bot.sent[0]["disable_notification"] is True
+    assert bot.sent[0]["parse_mode"] == "HTML"
     assert bot.pinned[0]["disable_notification"] is True
 
 
