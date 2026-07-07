@@ -31,8 +31,10 @@ from hermes_cli import kanban_db as kb
 logger = logging.getLogger(__name__)
 
 ACTIVE_TASK_STATUSES = frozenset({"triage", "todo", "ready", "blocked", "scheduled"})
+UNDATED_CARD_STATUSES = frozenset({"triage", "todo", "ready"})
 DONE_TASK_STATUSES = frozenset({"done", "completed"})
 CARD_KINDS = frozenset({"morning", "evening"})
+MAX_UNDATED_CARD_TASKS = 3
 
 _RU_MONTHS = (
     "",
@@ -71,6 +73,7 @@ class CardTask:
     importance: int
     completed_at: Optional[int]
     overdue: bool = False
+    undated: bool = False
 
     @property
     def done(self) -> bool:
@@ -279,16 +282,18 @@ def select_tasks(
     target_date: dt.date,
     timezone: ZoneInfo,
 ) -> list[CardTask]:
-    """Return tasks relevant to one day, excluding undated backlog noise."""
+    """Return dated tasks plus a small, relevant slice of undated personal work."""
     kb.init_db(db_path)
     start, end = _day_bounds(target_date, timezone)
     target_iso = target_date.isoformat()
     selected: list[CardTask] = []
+    undated_candidates: list[tuple[int, CardTask]] = []
     with kb.connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT id, title, status, planned_for, due_at, importance,
-                   completed_at, canceled_at
+                   completed_at, canceled_at, assignee, created_by,
+                   workspace_kind, created_at
               FROM tasks
              WHERE canceled_at IS NULL
             """
@@ -312,29 +317,54 @@ def select_tasks(
                 or (due_at is not None and due_at < start)
             )
         )
-        if not today and not overdue:
+        undated = not planned_for and due_at is None
+        card_task = CardTask(
+            id=str(row["id"]),
+            title=_safe_title(row["title"]),
+            status=status,
+            planned_for=str(planned_for) if planned_for else None,
+            due_at=due_at,
+            importance=importance,
+            completed_at=(
+                int(row["completed_at"])
+                if row["completed_at"] is not None
+                else None
+            ),
+            overdue=overdue,
+            undated=undated,
+        )
+        if today or overdue:
+            selected.append(card_task)
             continue
-        selected.append(
-            CardTask(
-                id=str(row["id"]),
-                title=_safe_title(row["title"]),
-                status=status,
-                planned_for=str(planned_for) if planned_for else None,
-                due_at=due_at,
-                importance=importance,
-                completed_at=(
-                    int(row["completed_at"])
-                    if row["completed_at"] is not None
-                    else None
-                ),
-                overdue=overdue,
+
+        personal_undated = (
+            undated
+            and status in UNDATED_CARD_STATUSES
+            and (
+                str(row["assignee"] or "") == "family"
+                or str(row["created_by"] or "") == "telegram"
             )
         )
+        if personal_undated:
+            created_at = int(row["created_at"] or 0)
+            undated_candidates.append((created_at, card_task))
+
+    undated_candidates.sort(
+        key=lambda pair: (
+            -pair[1].importance,
+            pair[0],
+            pair[1].title.casefold(),
+        )
+    )
+    selected.extend(
+        task for _, task in undated_candidates[:MAX_UNDATED_CARD_TASKS]
+    )
 
     selected.sort(
         key=lambda item: (
             0 if item.overdue else 1,
             1 if item.done else 0,
+            1 if item.undated else 0,
             -item.importance,
             item.due_at if item.due_at is not None else 2**62,
             item.title.casefold(),
