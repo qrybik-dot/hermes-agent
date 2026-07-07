@@ -45,6 +45,51 @@ class _FakeBot:
 
 
 @pytest.mark.asyncio
+async def test_more_tasks_callback_sends_separate_full_list(monkeypatch):
+    from hermes_cli import daily_card as dc
+    from hermes_cli import kanban_db as kb
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True))
+    adapter._bot = _FakeBot()
+    adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+    monkeypatch.setattr(
+        dc,
+        "load_settings",
+        lambda: SimpleNamespace(timezone="Europe/Moscow"),
+    )
+    monkeypatch.setattr(
+        dc,
+        "render_full_task_list_from_db",
+        lambda *args, **kwargs: dc.CardRender(
+            text="Все активные задачи\n\nБез даты\n☐ Позвонить",
+            parse_mode="HTML",
+        ),
+    )
+    monkeypatch.setattr(kb, "kanban_db_path", lambda board: "/tmp/kanban.db")
+
+    query = SimpleNamespace(
+        from_user=SimpleNamespace(id=1),
+        message=SimpleNamespace(chat_id=123, message_id=3915),
+        answer=AsyncMock(),
+    )
+    await adapter._handle_daily_card_callback(
+        query,
+        "dc:l:20260707",
+        query_chat_id=123,
+        query_chat_type="private",
+        query_thread_id=None,
+        query_user_name="Anton",
+    )
+
+    assert len(adapter._bot.calls) == 1
+    call = adapter._bot.calls[0]
+    assert call["text"].startswith("Все активные задачи")
+    assert call["parse_mode"] == "HTML"
+    assert call["reply_to_message_id"] == 3915
+    query.answer.assert_awaited_once_with(text="Полный список отправлен")
+
+
+@pytest.mark.asyncio
 async def test_legacy_kanban_marker_becomes_buttons_and_is_hidden(monkeypatch):
     import plugins.platforms.telegram.adapter as telegram_adapter
 
