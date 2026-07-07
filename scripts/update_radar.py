@@ -159,15 +159,27 @@ def parse_command_version(command: list[str], pattern: str, timeout: int = 20) -
 
 def current_hermes() -> str:
     # Hermes release tags use a calendar version (v2026.7.1), while the Python
-    # package uses a product version (0.18.0). Compare like with like.
-    code, output = run(["git", "-C", str(REPO), "describe", "--tags", "--match", "v20*", "--abbrev=0"], timeout=15)
+    # package uses a product version (0.18.0). Never fall back to the package
+    # version: comparing 0.18.0 with 2026.7.1 creates a false update alert when
+    # git is temporarily slow on the 1 GB VPS.
+    code, output = run(
+        ["git", "-C", str(REPO), "describe", "--tags", "--match", "v20*", "--abbrev=0"],
+        timeout=30,
+    )
     if code == 0 and output.strip():
         return output.strip().splitlines()[0].lstrip("vV")
+
+    # Production keeps the qualified upstream release in a lock file. This is
+    # a safe same-version fallback when git describe times out during load.
     try:
-        with (REPO / "pyproject.toml").open("rb") as handle:
-            return str(tomllib.load(handle)["project"]["version"])
+        lock = yaml.safe_load((REPO / "ops/production/components.lock.yaml").read_text(encoding="utf-8")) or {}
+        release = str(((lock.get("components") or {}).get("hermes") or {}).get("upstream_release") or "")
+        release = release.lstrip("vV")
+        if re.fullmatch(r"20\d{2}\.\d+\.\d+(?:\.\d+)?", release):
+            return release
     except Exception:
-        return ""
+        pass
+    return ""
 
 
 def current_uv_tool(package: str) -> str:
