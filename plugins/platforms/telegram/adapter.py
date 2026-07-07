@@ -5088,6 +5088,170 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    async def _handle_update_radar_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id=None,
+        query_chat_type=None,
+        query_thread_id=None,
+        query_user_name=None,
+    ) -> None:
+        """Handle selection and confirmation for an Update Radar card.
+
+        No component is changed in the callback itself. After the explicit
+        confirmation, the selection is delivered as a normal authorized Hermes
+        turn, preserving the existing VPS safety, approval, progress, and
+        rollback workflow.
+        """
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ Недостаточно прав.")
+            return
+
+        parts = data.split(":", 4)
+        if len(parts) < 3 or parts[0] != "ur":
+            await query.answer(text="Некорректная кнопка.")
+            return
+        token = parts[1]
+        verb = parts[2]
+        argument = parts[3] if len(parts) > 3 else ""
+
+        try:
+            from hermes_cli import update_radar_actions as _radar_actions
+
+            action = _radar_actions.get_action(token)
+        except Exception as exc:
+            logger.error("[%s] Update Radar state read failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text="Не удалось открыть выбор обновлений.")
+            return
+
+        if not action:
+            await query.answer(text="Карточка устарела. Дождитесь нового радара.")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+        if action.get("status") != "open":
+            await query.answer(text="Это действие уже завершено.")
+            return
+
+        async def refresh(updated, notice: str | None = None) -> None:
+            if notice:
+                await query.answer(text=notice)
+            else:
+                await query.answer()
+            await query.edit_message_text(
+                text=_radar_actions.render_for_stage(updated),
+                reply_markup=_radar_actions.telegram_markup(updated),
+                disable_web_page_preview=True,
+            )
+
+        async def enqueue(mode: str, updated) -> None:
+            prompt = _radar_actions.build_agent_prompt(updated, mode=mode)
+            event = self._build_message_event(query.message, MessageType.TEXT)
+            event.text = prompt
+            event.source.user_id = caller_id
+            event.source.user_name = query_user_name or getattr(query.from_user, "full_name", None)
+            event.source.is_bot = False
+            event.source.message_id = str(getattr(query.message, "message_id", ""))
+            event.message_id = str(getattr(query.message, "message_id", ""))
+            event.reply_to_text = getattr(query.message, "text", None)
+            event.metadata["update_radar_action"] = token
+            event.metadata["update_radar_mode"] = mode
+            task = asyncio.create_task(
+                self.handle_message(event),
+                name=f"update-radar-{mode}-{token}",
+            )
+            def _log_queued_failure(done) -> None:
+                if done.cancelled():
+                    return
+                error = done.exception()
+                if error is not None:
+                    logger.error(
+                        "[%s] Update Radar queued turn failed: %s",
+                        self.name,
+                        error,
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+
+            task.add_done_callback(_log_queued_failure)
+
+        try:
+            if verb == "sec":
+                updated = _radar_actions.set_selection(token, action.get("security") or [], stage="confirm")
+                await refresh(updated, "Выбраны обновления безопасности")
+                return
+            if verb == "rec":
+                updated = _radar_actions.set_selection(token, action.get("recommended") or [], stage="confirm")
+                await refresh(updated, "Выбраны рекомендуемые обновления")
+                return
+            if verb == "manual":
+                updated = _radar_actions.update_action(token, stage="manual")
+                await refresh(updated)
+                return
+            if verb == "toggle":
+                updated = _radar_actions.toggle_selection(token, argument)
+                await refresh(updated)
+                return
+            if verb == "confirm":
+                action = _radar_actions.get_action(token)
+                if not action or not action.get("selected"):
+                    await query.answer(text="Сначала выберите хотя бы один пункт.")
+                    return
+                updated = _radar_actions.update_action(token, stage="confirm")
+                await refresh(updated)
+                return
+            if verb == "home":
+                updated = _radar_actions.update_action(token, stage="home")
+                await refresh(updated)
+                return
+            if verb == "details":
+                updated = _radar_actions.update_action(token, stage="details")
+                await refresh(updated)
+                return
+            if verb == "later":
+                updated = _radar_actions.postpone_until_tomorrow(token)
+                await refresh(updated, "Напомню завтра")
+                return
+            if verb == "cancel":
+                updated = _radar_actions.update_action(token, status="cancelled", stage="cancelled")
+                await query.answer(text="Отменено")
+                await query.edit_message_text(
+                    text="✖️ Действие отменено. Ничего не обновлено",
+                    reply_markup=None,
+                )
+                return
+            if verb == "checks":
+                updated = _radar_actions.mark_queued(token, mode="checks")
+                await refresh(updated, "Проверка запущена")
+                await enqueue("checks", updated)
+                return
+            if verb == "execute":
+                action = _radar_actions.get_action(token)
+                if not action or not action.get("selected"):
+                    await query.answer(text="Нет выбранных обновлений.")
+                    return
+                updated = _radar_actions.mark_queued(token, mode="update")
+                await refresh(updated, "Задача запущена")
+                await enqueue("update", updated)
+                return
+            await query.answer(text="Неизвестное действие.")
+        except Exception as exc:
+            logger.error("[%s] Update Radar callback failed: %s", self.name, exc, exc_info=True)
+            try:
+                await query.answer(text="Не удалось выполнить действие.")
+            except Exception:
+                pass
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -5102,6 +5266,18 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Update Radar callbacks ---
+        if data.startswith("ur:"):
+            await self._handle_update_radar_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
 
         # --- Daily-card and legacy family-task callbacks ---
         if data.startswith("dc:"):

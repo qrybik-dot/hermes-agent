@@ -8,7 +8,7 @@ LOG_DIR="$STATE_DIR/logs"
 mkdir -p "$LOG_DIR"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 ERR_LOG="$LOG_DIR/run-$STAMP.log"
-OUTPUT=$(/home/hermes/hermes-v018-integration/.venv/bin/python /home/hermes/hermes-v018-integration/scripts/update_radar.py 2>"$ERR_LOG") || {
+OUTPUT=$(/home/hermes/hermes-v018-integration/.venv/bin/python /home/hermes/hermes-v018-integration/scripts/update_radar.py --telegram-card 2>"$ERR_LOG") || {
   STATUS=$?
   printf 'Update Radar failed with exit %s. See %s\n' "$STATUS" "$ERR_LOG" >&2
   exit "$STATUS"

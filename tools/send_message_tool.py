@@ -1026,6 +1026,24 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         from telegram import Bot
         from telegram.constants import ParseMode
 
+        update_radar_markup = None
+        marker_match = re.search(r"\[UPDATE_RADAR_ACTIONS:([A-Za-z0-9_-]+)\]", message)
+        if marker_match:
+            try:
+                from hermes_cli.update_radar_actions import get_action, telegram_markup
+
+                update_radar_action = get_action(marker_match.group(1))
+                if update_radar_action:
+                    update_radar_markup = telegram_markup(update_radar_action)
+                    disable_link_previews = True
+            except Exception as marker_error:
+                logger.warning("Update Radar keyboard could not be built: %s", marker_error)
+            message = re.sub(
+                r"\s*\[UPDATE_RADAR_ACTIONS:[A-Za-z0-9_-]+\]\s*",
+                "",
+                message,
+            ).strip()
+
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.
         _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
@@ -1105,6 +1123,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+        if update_radar_markup is not None:
+            text_kwargs["reply_markup"] = update_radar_markup
 
         last_msg = None
         warnings = []

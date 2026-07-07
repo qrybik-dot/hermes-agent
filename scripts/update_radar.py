@@ -495,7 +495,7 @@ def finding_fingerprint(finding: Finding) -> str:
 
 def load_state(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {"schema": 3, "observed": {}, "notified": {}}
 
@@ -573,7 +573,7 @@ def agent_review(findings: list[Finding]) -> str:
 
 
 def observations_from_fixture(path: Path) -> list[Observation]:
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     return [Observation(**item) for item in data.get("observations", data)]
 
 
@@ -586,6 +586,11 @@ def main() -> int:
     parser.add_argument("--no-agent", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--force", action="store_true", help="Ignore notified fingerprints")
+    parser.add_argument(
+        "--telegram-card",
+        action="store_true",
+        help="Print a compact Telegram card with interactive action marker",
+    )
     args = parser.parse_args()
 
     state = load_state(args.state)
@@ -601,12 +606,25 @@ def main() -> int:
 
     if args.baseline:
         new_findings = []
+    elif new_findings:
+        from hermes_cli.update_radar_actions import filter_snoozed
+
+        new_findings = filter_snoozed(new_findings)
 
     report = ""
     if new_findings:
         report = "" if args.no_agent else agent_review(new_findings)
         if not report:
             report = deterministic_report(new_findings)
+
+    delivery_report = report
+    action_ref = ""
+    if args.telegram_card and new_findings:
+        from hermes_cli.update_radar_actions import create_action, marker_for, render_home
+
+        action = create_action(new_findings)
+        action_ref = action["token"]
+        delivery_report = render_home(action) + "\n\n" + marker_for(action)
 
     next_state = {
         "schema": 3,
@@ -631,9 +649,11 @@ def main() -> int:
             "findings": [asdict(item) for item in findings],
             "new_findings": [asdict(item) for item in new_findings],
             "report": report,
+            "delivery_report": delivery_report,
+            "action_ref": action_ref,
         }, ensure_ascii=False, indent=2))
-    elif report:
-        print(report)
+    elif delivery_report:
+        print(delivery_report)
     return 0
 
 

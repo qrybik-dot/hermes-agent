@@ -1192,6 +1192,28 @@ class TestSendTelegramHtmlDetection:
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["disable_web_page_preview"] is True
 
+    def test_update_radar_marker_attaches_keyboard_and_is_hidden(self, monkeypatch):
+        from hermes_cli import update_radar_actions as radar_actions
+
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+        markup = SimpleNamespace(name="radar-keyboard")
+        monkeypatch.setattr(radar_actions, "get_action", lambda value: {"token": value})
+        monkeypatch.setattr(radar_actions, "telegram_markup", lambda action: markup)
+
+        asyncio.run(
+            _send_telegram(
+                "tok",
+                "123",
+                "🛰 Обновления Hermes\n[UPDATE_RADAR_ACTIONS:abc123]",
+            )
+        )
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert "UPDATE_RADAR_ACTIONS" not in kwargs["text"]
+        assert kwargs["reply_markup"] is markup
+        assert kwargs["disable_web_page_preview"] is True
+
     def test_html_with_code_and_pre_tags(self, monkeypatch):
         bot = self._make_bot()
         _install_telegram_mock(monkeypatch, bot)

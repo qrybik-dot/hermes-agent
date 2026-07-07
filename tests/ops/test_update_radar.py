@@ -139,6 +139,38 @@ def test_model_catalog_baseline_is_silent():
     assert radar.evaluate([obs], {"observed": {}}) == []
 
 
+def test_telegram_card_prints_compact_interactive_delivery(monkeypatch, tmp_path, capsys):
+    from hermes_cli import update_radar_actions as actions
+
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps({"observations": [{
+        "key": "cliproxy",
+        "name": "CLIProxyAPI",
+        "kind": "release",
+        "current": "7.2.50",
+        "latest": "7.2.51",
+        "source": "https://example.test/release",
+    }]}))
+    state = tmp_path / "state.json"
+    monkeypatch.setattr(actions, "ACTION_FILE", tmp_path / "actions.json")
+    monkeypatch.setattr(actions, "RADAR_STATE_FILE", state)
+    monkeypatch.setattr(sys, "argv", [
+        "update_radar.py",
+        "--fixture", str(fixture),
+        "--state", str(state),
+        "--telegram-card",
+        "--no-agent",
+        "--dry-run",
+    ])
+
+    assert radar.main() == 0
+    output = capsys.readouterr().out
+    assert "🛰 Обновления Hermes" in output
+    assert "✅ Рекомендуемые обновления" in output
+    assert "UPDATE_RADAR_ACTIONS:" in output
+    assert "https://example.test" not in output
+
+
 def test_model_catalog_report_never_auto_switches():
     finding = radar.Finding(
         key="codex_model_catalog",
