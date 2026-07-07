@@ -4962,6 +4962,46 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="⛔ Недостаточно прав.")
             return
 
+        if data.startswith("dc:l:"):
+            try:
+                from zoneinfo import ZoneInfo
+
+                from hermes_cli import daily_card as _daily_card
+                from hermes_cli import kanban_db as _kanban_db
+
+                parts = data.split(":")
+                if len(parts) != 3:
+                    raise ValueError("invalid task-list callback")
+                target_date = datetime.strptime(parts[2], "%Y%m%d").date()
+                settings = _daily_card.load_settings()
+                render = _daily_card.render_full_task_list_from_db(
+                    _kanban_db.kanban_db_path(board="default"),
+                    target_date,
+                    ZoneInfo(settings.timezone),
+                )
+                kwargs = {}
+                if query_thread_id is not None:
+                    kwargs["message_thread_id"] = int(query_thread_id)
+                await self._bot.send_message(
+                    chat_id=int(query.message.chat_id),
+                    text=render.text,
+                    parse_mode=render.parse_mode,
+                    reply_to_message_id=int(query.message.message_id),
+                    **kwargs,
+                )
+                await query.answer(text="Полный список отправлен")
+            except ValueError:
+                await query.answer(text="Кнопка устарела. Обновите карточку.")
+            except Exception as exc:
+                logger.error(
+                    "[%s] daily-card task list failed: %s",
+                    self.name,
+                    exc,
+                    exc_info=True,
+                )
+                await query.answer(text="Не удалось открыть список задач.")
+            return
+
         try:
             from hermes_cli import daily_card as _daily_card
             from hermes_cli import kanban_db as _kanban_db

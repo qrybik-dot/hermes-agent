@@ -35,6 +35,7 @@ UNDATED_CARD_STATUSES = frozenset({"triage", "todo", "ready"})
 DONE_TASK_STATUSES = frozenset({"done", "completed"})
 CARD_KINDS = frozenset({"morning", "evening"})
 MAX_UNDATED_CARD_TASKS = 3
+MAX_TASKS_IN_PINNED_CARD = 3
 
 _RU_MONTHS = (
     "",
@@ -119,6 +120,7 @@ class CardRender:
     text: str
     buttons: tuple[CardButton, ...] = ()
     parse_mode: Optional[str] = None
+    hidden_tasks_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -367,6 +369,80 @@ def select_tasks(
             1 if item.undated else 0,
             -item.importance,
             item.due_at if item.due_at is not None else 2**62,
+            item.title.casefold(),
+        )
+    )
+    return selected
+
+
+def select_all_active_personal_tasks(
+    db_path: Path,
+    target_date: dt.date,
+    timezone: ZoneInfo,
+) -> list[CardTask]:
+    """Return every active user-facing task, including future and undated work."""
+    kb.init_db(db_path)
+    start, end = _day_bounds(target_date, timezone)
+    target_iso = target_date.isoformat()
+    selected: list[CardTask] = []
+    with kb.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, status, planned_for, due_at, importance,
+                   completed_at, canceled_at, assignee, created_by
+              FROM tasks
+             WHERE canceled_at IS NULL
+            """
+        ).fetchall()
+
+    for row in rows:
+        status = str(row["status"] or "")
+        if status not in ACTIVE_TASK_STATUSES:
+            continue
+        personal = (
+            str(row["assignee"] or "") == "family"
+            or str(row["created_by"] or "") in {"telegram", "daily_card"}
+        )
+        if not personal:
+            continue
+        planned_for = row["planned_for"]
+        due_at = int(row["due_at"]) if row["due_at"] is not None else None
+        importance = int(row["importance"] or 0)
+        overdue = (
+            (bool(planned_for) and str(planned_for) < target_iso)
+            or (due_at is not None and due_at < start)
+        )
+        selected.append(
+            CardTask(
+                id=str(row["id"]),
+                title=_safe_title(row["title"]),
+                status=status,
+                planned_for=str(planned_for) if planned_for else None,
+                due_at=due_at,
+                importance=importance,
+                completed_at=None,
+                overdue=overdue,
+                undated=not planned_for and due_at is None,
+            )
+        )
+
+    def bucket(item: CardTask) -> int:
+        if item.overdue:
+            return 0
+        if item.planned_for == target_iso or (
+            item.due_at is not None and start <= item.due_at < end
+        ):
+            return 1
+        if item.planned_for or item.due_at is not None:
+            return 2
+        return 3
+
+    selected.sort(
+        key=lambda item: (
+            bucket(item),
+            -item.importance,
+            item.due_at if item.due_at is not None else 2**62,
+            item.planned_for or "9999-12-31",
             item.title.casefold(),
         )
     )
@@ -858,7 +934,9 @@ def render_morning(
     events: Sequence[CardEvent],
     *,
     max_buttons: int,
+    all_active_tasks: Optional[Sequence[CardTask]] = None,
 ) -> CardRender:
+    visible_tasks = list(tasks[:MAX_TASKS_IN_PINNED_CARD])
     lines = [f"Сегодня, {_date_label(target_date)}"]
     if events:
         lines.extend(["", "По времени", ""])
@@ -871,8 +949,8 @@ def render_morning(
             if index < len(events) - 1:
                 lines.append("")
 
-    overdue = [task for task in tasks if task.overdue]
-    current = [task for task in tasks if not task.overdue]
+    overdue = [task for task in visible_tasks if task.overdue]
+    current = [task for task in visible_tasks if not task.overdue]
     if overdue:
         lines.extend(["", "Со вчера"])
         for task in overdue:
@@ -891,15 +969,82 @@ def render_morning(
         completed = sum(task.done for task in tasks)
         lines.extend(["", f"Отмечено: {completed} из {len(tasks)}"])
 
-    open_tasks = [task for task in tasks if not task.done]
+    open_tasks = [task for task in visible_tasks if not task.done]
     buttons = tuple(
         CardButton(label=f"✓ {task.title}"[:48], task_id=task.id)
         for task in open_tasks[:max_buttons]
+    )
+    active_source = all_active_tasks if all_active_tasks is not None else tasks
+    visible_ids = {task.id for task in visible_tasks if not task.done}
+    hidden_tasks_count = sum(
+        1 for task in active_source if not task.done and task.id not in visible_ids
     )
     return CardRender(
         text="\n".join(lines).strip(),
         buttons=buttons,
         parse_mode="HTML",
+        hidden_tasks_count=hidden_tasks_count,
+    )
+
+
+def render_full_task_list(
+    target_date: dt.date,
+    tasks: Sequence[CardTask],
+    timezone: ZoneInfo,
+) -> CardRender:
+    """Render every active personal task in a separate, readable message."""
+    start, end = _day_bounds(target_date, timezone)
+    target_iso = target_date.isoformat()
+    groups: list[tuple[str, list[CardTask]]] = [
+        ("Просрочено", []),
+        ("Сегодня", []),
+        ("Запланировано", []),
+        ("Без даты", []),
+    ]
+    for task in tasks:
+        if task.overdue:
+            groups[0][1].append(task)
+        elif task.planned_for == target_iso or (
+            task.due_at is not None and start <= task.due_at < end
+        ):
+            groups[1][1].append(task)
+        elif task.planned_for or task.due_at is not None:
+            groups[2][1].append(task)
+        else:
+            groups[3][1].append(task)
+
+    lines = ["Все активные задачи"]
+    for title, group_tasks in groups:
+        if not group_tasks:
+            continue
+        lines.extend(["", title])
+        for task in group_tasks:
+            prefix = ""
+            if title == "Запланировано":
+                if task.due_at is not None:
+                    local = dt.datetime.fromtimestamp(
+                        task.due_at, tz=dt.timezone.utc
+                    ).astimezone(timezone)
+                    prefix = f"{local.day} {_RU_MONTHS[local.month]}, {local:%H:%M} · "
+                elif task.planned_for:
+                    planned = dt.date.fromisoformat(task.planned_for)
+                    prefix = f"{planned.day} {_RU_MONTHS[planned.month]} · "
+            lines.append(f"☐ {prefix}{html.escape(task.title)}")
+
+    if len(lines) == 1:
+        lines.extend(["", "Активных задач нет."])
+    return CardRender(text="\n".join(lines), parse_mode="HTML")
+
+
+def render_full_task_list_from_db(
+    db_path: Path,
+    target_date: dt.date,
+    timezone: ZoneInfo,
+) -> CardRender:
+    return render_full_task_list(
+        target_date,
+        select_all_active_personal_tasks(db_path, target_date, timezone),
+        timezone,
     )
 
 
@@ -1054,6 +1199,15 @@ def build_markup(
                 )
             ]
         )
+    if render.hidden_tasks_count > 0 and card_kind == "morning":
+        result.append(
+            [
+                ButtonSpec(
+                    label=f"Ещё задачи · {render.hidden_tasks_count}",
+                    callback_data=f"dc:l:{card_date:%Y%m%d}",
+                )
+            ]
+        )
     return result
 
 
@@ -1142,11 +1296,15 @@ def _build_render(
     tasks = select_tasks(db_path, target_date, timezone)
     if kind == "morning":
         events = select_events(state_conn, target_date, timezone)
+        all_active_tasks = select_all_active_personal_tasks(
+            db_path, target_date, timezone
+        )
         return render_morning(
             target_date,
             tasks,
             events,
             max_buttons=settings.max_buttons,
+            all_active_tasks=all_active_tasks,
         )
     if kind == "evening":
         tomorrow = target_date + dt.timedelta(days=1)

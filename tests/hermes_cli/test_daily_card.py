@@ -207,8 +207,11 @@ def test_mobile_event_layout_highlights_time_and_separates_events() -> None:
     ) in render.text
 
 
-def test_button_limit_is_six(db_path: Path, tmp_path: Path) -> None:
-    for index in range(10):
+def test_pinned_card_shows_three_tasks_and_more_button(
+    db_path: Path,
+    tmp_path: Path,
+) -> None:
+    for index in range(7):
         _insert_task(
             db_path,
             f"task-{index}",
@@ -216,10 +219,52 @@ def test_button_limit_is_six(db_path: Path, tmp_path: Path) -> None:
             planned_for="2026-07-07",
             importance=10 - index,
         )
-    render = dc.render_morning(TARGET, dc.select_tasks(db_path, TARGET, TZ), [], max_buttons=6)
+    tasks = dc.select_tasks(db_path, TARGET, TZ)
+    all_active = dc.select_all_active_personal_tasks(db_path, TARGET, TZ)
+    render = dc.render_morning(
+        TARGET,
+        tasks,
+        [],
+        max_buttons=6,
+        all_active_tasks=all_active,
+    )
     state = dc.connect_state(tmp_path / "daily_cards.db")
     markup = dc.build_markup(state, render, TARGET, "morning")
-    assert len(markup) == 6
+
+    assert render.text.count("☐ ") == 3
+    assert render.hidden_tasks_count == 4
+    assert len(markup) == 4
+    assert markup[-1][0].label == "Ещё задачи · 4"
+    assert markup[-1][0].callback_data == "dc:l:20260707"
+
+
+def test_full_task_list_groups_all_active_personal_tasks(db_path: Path) -> None:
+    _insert_task(
+        db_path,
+        "overdue",
+        "Просроченная",
+        planned_for="2026-07-06",
+        importance=2,
+    )
+    _insert_task(db_path, "today", "Сегодня", planned_for="2026-07-07")
+    _insert_task(db_path, "future", "Будущая", planned_for="2026-07-09")
+    _insert_task(db_path, "undated", "Без даты")
+    _insert_task(
+        db_path,
+        "technical",
+        "Техническая",
+        assignee=None,
+        created_by="system",
+    )
+
+    render = dc.render_full_task_list_from_db(db_path, TARGET, TZ)
+
+    assert "Просрочено\n☐ Просроченная" in render.text
+    assert "Сегодня\n☐ Сегодня" in render.text
+    assert "Запланировано\n☐ 9 июля · Будущая" in render.text
+    assert "Без даты\n☐ Без даты" in render.text
+    assert "Техническая" not in render.text
+    assert render.parse_mode == "HTML"
 
 
 def test_mark_done_is_idempotent_and_audited(db_path: Path) -> None:
