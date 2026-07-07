@@ -122,6 +122,11 @@ def _final_delivery_task_id(agent_result: dict[str, Any]) -> str:
     return str(agent_result.get("task_id") or "")
 
 
+def _compact_terminal_task_status(content: str) -> str:
+    """Collapse a finalized live card after the detailed answer is delivered."""
+    return "\n".join(str(content or "").splitlines()[:2]).strip()
+
+
 def _format_background_review_notification(message: str) -> Optional[str]:
     """Render a short Russian notice for successful background learning actions."""
     text = str(message or "").strip()
@@ -19070,7 +19075,8 @@ message_context={
             _task_status_formatter = task_status_state.get("formatter")
             if task_status_state.get("enabled") and isinstance(_task_status_formatter, TelegramTaskStatusState):
                 _task_status_final_key = str(task_status_state.get("key") or "")
-                _task_status_final_content = _task_status_formatter.render(verdict=_final_verdict)
+                _task_status_rendered = _task_status_formatter.render(verdict=_final_verdict)
+                _task_status_final_content = _compact_terminal_task_status(_task_status_rendered)
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
