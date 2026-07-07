@@ -196,7 +196,9 @@ _TRAVEL_RE = re.compile(
 )
 _TRAVEL_CAFE_CURRENT_RE = re.compile(
     r"\b(?:рейтинг|рейтингами|отзыв|отзывам|открыто|закрыто|час(?:ы|ов)\s+работы|"
-    r"актуальн\w*\s+(?:отзыв|час|рейтинг)|сравни\s+кафе)\w*\b",
+    r"актуальн\w*\s+(?:отзыв|час|рейтинг)|сравни\s+кафе|меню|блюд|напитк|"
+    r"кофе|коктейл|что\s+(?:хвалят|попробовать|заказать)|"
+    r"вкусн\w*\s+(?:поесть|покушать))\w*\b",
     re.I,
 )
 _TRAVEL_SOURCE_CAPTURE_RE = re.compile(
@@ -582,6 +584,8 @@ def classify_task(text: str, *, command: str | None = None) -> tuple[str, str]:
         return "research", "NotebookLM intent"
     if is_live_listing_request(value):
         return "research", "live listings intent"
+    if _TRAVEL_CAFE_CURRENT_RE.search(value) and _TRAVEL_PLACE_REFERENCE_RE.search(value):
+        return "research", "linked travel cafe/menu intent"
     if _RESEARCH_RE.search(value):
         return "research", "external research intent"
     if _EXPERT_ANALYSIS_RE.search(value):
@@ -672,7 +676,11 @@ def select_toolsets(
         requested.update({"skills", "terminal"})
         if travel_needs_web_or_browser(text):
             requested.add("web")
-            if not _TRAVEL_PLACE_REFERENCE_RE.search(text or ""):
+            if (
+                _TRAVEL_CAFE_CURRENT_RE.search(text or "")
+                or _TRAVEL_LIVE_TRAFFIC_RE.search(text or "")
+                or not _TRAVEL_PLACE_REFERENCE_RE.search(text or "")
+            ):
                 requested.add("browser")
     if flags["context7"] and role in {"coding", "research", "planning"}:
         requested.discard("no_mcp")

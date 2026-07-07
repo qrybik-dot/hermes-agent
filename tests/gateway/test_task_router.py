@@ -718,3 +718,17 @@ def test_short_reply_action_can_use_explicit_context():
         context_text="Update Radar: Graphify 0.9.6",
     )
     assert route.toolsets != ["clarify"]
+
+
+
+def test_map_cafe_menu_query_routes_research_with_web_and_browser():
+    route = route_turn(
+        "сколько ехать из дома, что там вкусного и что хвалят из напитков? https://yandex.ru/maps/-/CTqSzSiG",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "research"
+    assert {"web", "browser", "terminal", "skills"}.issubset(route.toolsets)
+    assert "no_mcp" not in route.toolsets

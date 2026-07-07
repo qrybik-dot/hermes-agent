@@ -2182,3 +2182,19 @@ def test_english_google_calendar_requires_workspace_evidence():
     )
     assert execution is True
     assert required == ("skills", "terminal")
+
+
+
+def test_different_source_reply_resumes_and_upgrades_saved_travel_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = tmp_path / ".hermes"
+    d.mkdir()
+    store = TaskStateStore(d / "state.db")
+    task = store.create(task_id="travelbudget26", platform="telegram", chat_id="1", session_key="old", title="Cream Soda", original_request="что хвалят из еды и напитков? https://yandex.ru/maps/-/CTqSzSiG", role="simple", toolsets=["skills", "terminal"], required_toolsets=["terminal"], requires_execution=True, status="incomplete", metadata={"budget_exhaustions": 1, "checkpoint": "search loop exhausted"})
+    prepared = prepare_task_turn(message='[Replying to: "лимит шагов"]\n\nдругой источник', platform_key="telegram", chat_id="1", session_key="new", session_id="session-new", request_id="req-alt", user_config={"agent": {}}, platform_toolsets=["browser", "clarify", "file", "memory", "skills", "terminal", "web"])
+    assert prepared.continued is True
+    assert prepared.task.task_id == task.task_id
+    assert prepared.route.role == "research"
+    assert {"web", "browser", "terminal", "skills"}.issubset(prepared.route.toolsets)
+    assert "no_mcp" not in prepared.route.toolsets
+    assert "different source/tool path" in prepared.message

@@ -1860,7 +1860,8 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     if task is not None and _task_is_calendar_write(task) and not _calendar_task_sender_matches(task, msg_ctx):
         task = None
     continued = task is not None
-    if task is not None and int(task.metadata.get("budget_exhaustions", 0) or 0) >= 2:
+    use_other_path = bool(re.search(r"\bдруг(?:ой|им)\s+(?:источник|способ)(?:ом)?\b", original, re.I))
+    if task is not None and int(task.metadata.get("budget_exhaustions", 0) or 0) >= 2 and not use_other_path:
         return PreparedTaskTurn(
             original, None, task,
             early_response(
@@ -1910,6 +1911,8 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             + str(task.metadata.get("checkpoint") or task.metadata.get("final_response") or task.last_error or "not recorded")[:1800]
             + "\n\nContinuation message:\n" + original
         )
+        if use_other_path:
+            message += "\n\nUse a different source/tool path. Do not repeat the failed search loop."
 
     if task is None:
         quick_note = detect_quick_note(current_text, continued=False)
@@ -1985,8 +1988,10 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         allowed = set(platform_toolsets or [])
         restored = [name for name in task.toolsets
                     if name == "no_mcp" or platform_toolsets is None or name in allowed]
+        if use_other_path:
+            restored = sorted((set(restored) | set(route.toolsets)) - {"no_mcp"})
         route = TaskRoute(
-            role=task.role,
+            role=route.role if use_other_path else task.role,
             reason=f"continued task {task.task_id}; {route.reason}",
             toolsets=restored,
             max_iterations=route.max_iterations,
@@ -1996,6 +2001,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 route.operational_context
                 + "\n\nIteration budget policy: the route limit is fixed; do not increase it. "
                 + "Reserve the last 5 iterations for tests, Definition of Done checks, checkpoint persistence, and final delivery."
+                + (" Use another source/tool path and stop after enough evidence." if use_other_path else "")
             ).strip(),
         )
 

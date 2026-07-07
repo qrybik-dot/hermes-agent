@@ -22,6 +22,14 @@ _CONTEXTUAL_CONTINUE_RE = re.compile(
     r"(?:\u044d\u0442\u043e|\u0435\u0433\u043e|\u0435[\u0435\u0451]|\u0442\u0435\u0441\u0442|smoke[- ]?test)\s*[.!?]*$",
     re.I,
 )
+_OPTION_CONTINUE_RE = re.compile(
+    r"(?:^|\n)\s*(?:да[\s,]+)?(?:"
+    r"(?:попробуй\s+)?друг(?:ой|им)\s+(?:источник|способ)(?:ом)?|"
+    r"один\s+(?:подтвержд[её]нный\s+)?результат|"
+    r"сузь\s+(?:задачу|поиск)|сузить\s+(?:задачу|поиск)"
+    r")\s*[.!?]*$",
+    re.I,
+)
 _NUMERIC_CHOICE_RE = re.compile(r"^\s*(\d{1,2})[\s.!?]*$")
 _OPAQUE_INPUT_RE = re.compile(
     r"(?<![A-Za-z0-9])[A-Za-z0-9][A-Za-z0-9_.-]{23,}(?![A-Za-z0-9])"
@@ -232,6 +240,7 @@ class TaskStateStore:
         match = _CONTINUE_RE.search(value)
         prefix_match = _CONTINUE_RE.search(value.splitlines()[0]) if value.splitlines() else None
         contextual = _CONTEXTUAL_CONTINUE_RE.search(value)
+        option_match = _OPTION_CONTINUE_RE.search(value)
         numeric = _NUMERIC_CHOICE_RE.fullmatch(value)
 
         if numeric and not match and not prefix_match:
@@ -265,7 +274,7 @@ class TaskStateStore:
                 return ContinuationDecision("selected", task=task)
             return ContinuationDecision("empty")
 
-        if not match and not prefix_match and not contextual:
+        if not match and not prefix_match and not contextual and not option_match:
             tasks = self.active(platform, str(chat_id))
             implicit_input = bool(_OPAQUE_INPUT_RE.search(value))
             if (

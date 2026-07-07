@@ -2834,6 +2834,14 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
+def _budget_exhausted_response(final_response: object, tool_calls: int) -> str:
+    generic = "Я остановил перебор: лимит шагов закончился до подтверждённого результата. Что важнее дальше: сузить задачу до одного результата, попробовать другой источник/способ или остановить её?"
+    candidate = str(final_response or "").strip()
+    if int(tool_calls or 0) <= 0 or len(candidate) < 220:
+        return generic
+    return "PARTIAL\n" + candidate + "\n\n⚠️ Поиск остановлен по лимиту шагов. Ответ выше сохранён как частичный."
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -18677,11 +18685,7 @@ message_context={
                         )
                     elif _budget_exhausted:
                         _reject_reason = "iteration_budget_exhausted"
-                        final_response = (
-                            "Я остановил перебор: лимит шагов закончился до подтверждённого результата. "
-                            "Что важнее дальше: сузить задачу до одного результата, попробовать другой "
-                            "источник/способ или остановить её?"
-                        )
+                        final_response = _budget_exhausted_response(final_response, _task_tool_calls)
                     else:
                         _reject_reason = "no_tool_calls"
                         final_response = (

@@ -1,7 +1,7 @@
 """Regression tests for Telegram long-task live-status and final delivery."""
 
 import asyncio
-from gateway.run import _final_delivery_task_id
+from gateway.run import _budget_exhausted_response, _final_delivery_task_id
 
 from gateway.platforms.base import SendResult
 from gateway.telegram_task_status import (
@@ -237,3 +237,16 @@ def test_ready_is_rendered_only_as_final_100_percent_state():
     state.start_step("Готовлю итоговый ответ", "deliver")
     assert "100%" not in state.render()
     assert "100%" in state.render(verdict="READY")
+
+
+
+def test_partial_result_survives_hard_cap():
+    useful = "По ссылке находится кофейня Cream Soda. Маршрут занимает около полутора часов. Из еды упоминаются сырники, бенедикт и грушевый пирог. Из напитков отмечают кофе и протеиновые коктейли. Этот текст достаточно длинный, чтобы сохранить уже собранный результат вместо шаблонной ошибки лимита."
+    response = _budget_exhausted_response(useful, 8)
+    assert response.startswith("PARTIAL\n")
+    assert useful in response
+
+
+def test_empty_hard_cap_uses_clarification():
+    response = _budget_exhausted_response("не успел", 0)
+    assert response.startswith("Я остановил перебор: лимит шагов")
