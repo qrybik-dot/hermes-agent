@@ -1110,17 +1110,51 @@ def _shadow_path(kind: str, target_date: dt.date) -> Path:
     return directory / f"{target_date.isoformat()}-{kind}.txt"
 
 
+def _read_local_env_values(names: set[str]) -> dict[str, str]:
+    """Read selected existing runtime values without exporting or logging them."""
+    path = get_hermes_home() / ".env"
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 256 * 1024:
+        return {}
+    result: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in names:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        result[key] = value
+    return result
+
+
 def _telegram_destination() -> tuple[str, str, Optional[str]]:
     from gateway.config import Platform, load_gateway_config
 
     config = load_gateway_config()
     platform_config = config.platforms.get(Platform.TELEGRAM)
     home = config.get_home_channel(Platform.TELEGRAM)
-    if platform_config is None or not platform_config.enabled or not platform_config.token:
-        raise RuntimeError("Telegram platform is not configured")
-    if home is None:
-        raise RuntimeError("Telegram home channel is not configured")
-    return str(platform_config.token), str(home.chat_id), home.thread_id
+
+    token = str(getattr(platform_config, "token", "") or "")
+    chat_id = str(getattr(home, "chat_id", "") or "")
+    thread_id = getattr(home, "thread_id", None)
+
+    if not token or not chat_id:
+        local = _read_local_env_values(
+            {"TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"}
+        )
+        token = token or local.get("TELEGRAM_BOT_TOKEN", "")
+        if not chat_id:
+            chat_id = local.get("TELEGRAM_ALLOWED_USERS", "").split(",", 1)[0].strip()
+
+    if not token:
+        raise RuntimeError("Telegram bot token is not configured")
+    if not chat_id:
+        raise RuntimeError("Telegram home chat is not configured")
+    return token, chat_id, thread_id
 
 
 async def send_or_update_card(
