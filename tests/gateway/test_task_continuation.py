@@ -20,7 +20,7 @@ from gateway.task_runtime import (
     prepare_task_turn,
     task_reported_non_success,
 )
-from gateway.quick_note_capture import detect_quick_note
+from gateway.quick_note_capture import detect_context_save_note, detect_quick_note
 from tools.session_search_tool import (
     _consume_search_budget,
     reset_turn_search_budget,
@@ -1661,6 +1661,55 @@ def test_quick_note_rejects_calendar_mail_vps_links_and_unclear():
     ]
     for text in blocked:
         assert detect_quick_note(text) is None
+
+def test_context_save_detects_reply_article_even_with_typo():
+    reply = (
+        "Я интервью не смотрел, но это наверняка про агента в продукте, "
+        "который доступен пользователям в браузере и помогает с BI. "
+        "https://yandex.cloud/ru/docs/datalens/dashboard/insights#neuroanalyst-2"
+    )
+    note = detect_context_save_note("сохрарни в базу инфо", reply)
+    assert note is not None
+    assert note.payload["knowledge_project"] == "general"
+    assert note.payload["type"] == "research"
+    assert note.payload["sources"] == ["https://yandex.cloud/ru/docs/datalens/dashboard/insights#neuroanalyst-2"]
+    assert "Yandex DataLens" in note.payload["title"]
+
+
+def test_prepare_task_turn_context_save_returns_no_llm(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    saved = []
+    monkeypatch.setattr(
+        "gateway.task_runtime.run_quick_save",
+        lambda note: saved.append(note) or {
+            "status": "saved",
+            "saved": True,
+            "already_exists": False,
+            "title": note.payload["title"],
+            "summary": note.payload["summary"],
+            "readback_count": 1,
+        },
+    )
+    prepared = prepare_task_turn(
+        message="сохрани статью про агента в datalens в дашбордах - инфа по ссылке",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-context-save",
+        user_config={"agent": {}},
+        platform_toolsets=["clarify", "skills", "file", "web", "terminal", "no_mcp"],
+        message_context={
+            "current_text": "сохрани статью про агента в datalens в дашбордах - инфа по ссылке",
+            "reply_text": "https://yandex.cloud/ru/docs/datalens/dashboard/insights#neuroanalyst-2",
+        },
+    )
+    assert saved
+    assert prepared.task is None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["task_level"] == "no_llm"
+    assert prepared.early_response["final_response"].startswith("Сохранено:")
 
 def test_prepare_task_turn_quick_note_returns_no_llm(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))

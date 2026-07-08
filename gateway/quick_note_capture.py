@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 from typing import Any
+from urllib.parse import urlsplit
 
 HELPER_PATH = "/opt/hermes-knowledge-mcp/quick_save_cli.py"
 
@@ -39,6 +40,133 @@ _ADDRESS_HINT_RE = re.compile(
 class QuickNote:
     payload: dict[str, Any]
     idempotency_key: str
+
+
+
+_CONTEXT_SAVE_RE = re.compile(
+    r"^\s*(?:"
+    r"сохр\w*|сохрарни|запиши|зафиксируй|добавь"
+    r")\b(?P<tail>.*?)\s*[.!?]*$",
+    re.I | re.S,
+)
+_CONTEXT_SAVE_HINT_RE = re.compile(
+    r"\b(?:баз[уы]|knowledge|памят[ьи]|инфо|информаци[яюи]|стать[яюи]|ссылк[ауи]|материал|документ|источник|это)\b",
+    re.I,
+)
+_CONTEXT_SAVE_BLOCK_RE = re.compile(
+    r"\b(?:календар|напоминан|reminder|calendar|удали|удалить|delete|remove|drop|trash)\w*",
+    re.I,
+)
+_URL_RE = re.compile(r"https?://[^\s<>)\]}\\\"']+", re.I)
+
+
+def _urls(text: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for match in _URL_RE.finditer(str(text or "")):
+        value = match.group(0).rstrip(".,;:!?)]}>")
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _domain(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    return (parsed.netloc or "").removeprefix("www.").casefold()
+
+
+def _topic_from_save_command(text: str) -> str:
+    clean = _clean(text)
+    patterns = (
+        r"\bпро\s+(.+?)(?:\s+-\s+|$)",
+        r"\b(?:стать[яю]|материал|инфо|информаци[яю]|ссылк[ау])\s+(.+?)(?:\s+-\s+|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, clean, re.I)
+        if match:
+            topic = _clean(match.group(1))
+            topic = re.sub(r"\b(?:инфа|информация)\s+по\s+ссылке\b", "", topic, flags=re.I).strip(" -;,. ")
+            if topic and not _UNCLEAR_RE.fullmatch(topic):
+                return topic[:180]
+    return ""
+
+
+def _title_from_context_save(command_text: str, body: str, urls: list[str]) -> str:
+    topic = _topic_from_save_command(command_text)
+    if topic:
+        return f"Материал: {topic}"[:240]
+    joined = "\n".join([body, " ".join(urls)]).casefold()
+    if "yandex.cloud" in joined and "datalens" in joined and ("neuroanalyst" in joined or "нейроаналит" in joined):
+        return "Yandex DataLens: нейроаналитик в дашбордах"
+    if urls:
+        domain = _domain(urls[0]) or "ссылка"
+        return f"Материал: {domain}"[:240]
+    first = _clean(body).split(".", 1)[0].strip()
+    return ("Материал: " + first[:180])[:240] if first else "Материал из переписки"
+
+
+def detect_context_save_note(
+    command_text: str,
+    *context_texts: str | None,
+    continued: bool = False,
+) -> QuickNote | None:
+    """Capture explicit 'save this/info/link/article to knowledge' over reply/context.
+
+    This fast path prevents simple knowledge saves from falling through to an LLM,
+    where weaker fallback models may invent unavailable tools or try terminal workarounds.
+    """
+    if continued:
+        return None
+    command = str(command_text or "").strip()
+    if not command:
+        return None
+    match = _CONTEXT_SAVE_RE.match(command)
+    if not match:
+        return None
+    if _CONTEXT_SAVE_BLOCK_RE.search(command):
+        return None
+    tail = match.group("tail") or ""
+    command_urls = _urls(command)
+    if not (_CONTEXT_SAVE_HINT_RE.search(tail) or command_urls):
+        return None
+
+    context_parts = [_clean(value or "") for value in context_texts if _clean(value or "")]
+    if command_urls:
+        context_parts.append(_clean(command))
+    body = "\n\n".join(part for part in context_parts if part).strip()
+    if not body or _UNCLEAR_RE.fullmatch(body):
+        return None
+    if len(body) < 8 and not command_urls:
+        return None
+
+    sources = _urls(body)
+    title = _title_from_context_save(command, body, sources)
+    summary_parts = [body]
+    user_note = _clean(command)
+    if user_note and user_note not in body:
+        summary_parts.append("Команда пользователя: " + user_note)
+    summary = "\n\n".join(summary_parts)[:4000]
+    payload = {
+        "knowledge_project": "general",
+        "type": "research" if sources else "note",
+        "title": title,
+        "summary": summary,
+        "accepted_facts": [body[:1000]],
+        "sources": sources,
+        "sensitivity": "internal",
+        "gpt_access": "allowed",
+        "source_system": "hermes",
+        "source_workspace": "telegram",
+    }
+    key_source = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return QuickNote(
+        payload=payload,
+        idempotency_key="context-save:" + hashlib.sha256(key_source.encode("utf-8")).hexdigest(),
+    )
 
 
 def _clean(text: str) -> str:

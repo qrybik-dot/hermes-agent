@@ -30,6 +30,7 @@ from gateway.task_router import (
 from gateway.quick_note_capture import (
     build_location_place_note,
     canonical_place_label,
+    detect_context_save_note,
     detect_quick_note,
     format_quick_save_response,
     run_quick_save,
@@ -1915,7 +1916,12 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             message += "\n\nUse a different source/tool path. Do not repeat the failed search loop."
 
     if task is None:
-        quick_note = detect_quick_note(current_text, continued=False)
+        quick_note = detect_context_save_note(
+            current_text,
+            msg_ctx.reply_text,
+            msg_ctx.reply_caption,
+            continued=False,
+        ) or detect_quick_note(current_text, continued=False)
         if quick_note is not None:
             try:
                 quick_result = run_quick_save(quick_note)
@@ -1928,7 +1934,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                     response,
                     status=status,
                     role="no_llm",
-                    reason="deterministic quick note capture",
+                    reason="deterministic knowledge quick save",
                 ),
                 False,
             )
