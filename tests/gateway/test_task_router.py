@@ -2,7 +2,7 @@ from pathlib import Path
 
 from gateway.task_router import (
     adaptive_planning_policy, classify_task, route_turn, select_toolsets,
-    should_generate_html_report,
+    should_generate_html_report, skills_facts_operational_context,
 )
 
 
@@ -24,6 +24,12 @@ ALL_ALLOWED = [
     "tutu",
     "web",
 ]
+
+
+def test_skills_facts_policy_prefers_partial_over_empty_blocked_response():
+    policy = skills_facts_operational_context()
+    assert "верни PARTIAL" in policy
+    assert "BLOCKED используй только" in policy
 
 
 def test_role_selection_matrix():
