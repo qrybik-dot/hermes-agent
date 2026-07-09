@@ -73,6 +73,7 @@ _RESEARCH_RE = re.compile(
     r"найди\s+(?:свеж|актуаль)|поиск\s+в\s+интернете|проверь\s+по\s+источникам|"
     r"сравни\s+источники|последние\s+новости|актуальные\s+(?:цены|правила|данные)|"
     r"самостоятельно\s+найди|найди\s+(?:источник|источники|материалы|статьи|видео)|"
+    r"проведи\s+(?:подробн\w*\s+|полн\w*\s+)?исследован\w*|"
     r"не\s+менее\s+\d+\s+источник\w*|"
     r"не\s+старше(?:\s*,?\s*чем)?\s+\d+\s+(?:дн(?:я|ей)|недел[ьиь]|месяц(?:а|ев))|"
     r"\b(?:latest|web research)\b",
@@ -147,6 +148,7 @@ _EXPLICIT_HTML_REPORT_RE = re.compile(
 _DEEP_ANALYSIS_RE = re.compile(
     r"\b(?:глубок\w*|подробн\w*|полн\w*|комплексн\w*|системн\w*)\s+"
     r"(?:исследован|анализ|аудит|сравнен)|\b(?:исследование|аналитическ\w*\s+отч[её]т)\b|"
+    r"\bпроведи\s+(?:подробн\w*\s+|полн\w*\s+)?исследован\w*\b|"
     r"не\s+менее\s+\d+\s+источник\w*",
     re.I,
 )
@@ -970,6 +972,8 @@ def route_turn(
             "Сигнал обучения: это может быть устойчивое предпочтение, коррекция поведения или успешный способ работы. "
             "Сохраняй только действительно повторно полезное правило; не создавай дубль и после записи сделай read-back.").strip()
     max_iterations = max_turns_for_role(role, agent_cfg)
+    if role == "research" and _DEEP_ANALYSIS_RE.search(text or ""):
+        max_iterations = max(max_iterations, 16)
     if flags["reminder"] and not flags["calendar"] and not clarify_only:
         operational_context = (operational_context + "\n\n" + reminder_operational_context()).strip()
         max_iterations = min(max_iterations, 8)

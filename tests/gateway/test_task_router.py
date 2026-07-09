@@ -49,6 +49,19 @@ def test_role_selection_matrix():
         assert role == expected
 
 
+def test_explicit_russian_research_with_plan_is_not_downgraded_to_simple():
+    route = route_turn(
+        "Проведи исследование и подготовь подробный план с рисками и источниками.",
+        command=None,
+        platform_key="telegram",
+        user_config={"agent": {}},
+        platform_toolsets=ALL_ALLOWED,
+    )
+    assert route.role == "research"
+    assert "web" in route.toolsets
+    assert route.max_iterations >= 16
+
+
 def test_memory_continuation_gets_memory_and_session_search():
     for text in (
         "Что ты помнишь о моём поиске работы?",
