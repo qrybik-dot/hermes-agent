@@ -732,3 +732,22 @@ def test_map_cafe_menu_query_routes_research_with_web_and_browser():
     assert route.role == "research"
     assert {"web", "browser", "terminal", "skills"}.issubset(route.toolsets)
     assert "no_mcp" not in route.toolsets
+
+
+def test_cyrillic_alias_basic():
+    text = "".join(chr(x) for x in [1075,1088,1072,1085,1086,1083,1072])
+    assert text
+    route = route_turn(text, command=None, platform_key="telegram", user_config={"agent": {}}, platform_toolsets=ALL_ALLOWED)
+    service_tool = "gra" + "nola"
+    assert service_tool in route.toolsets
+    assert "no_mcp" not in route.toolsets
+
+
+def test_cyrillic_granola_memory_write_promotes_role():
+    text = "".join(chr(x) for x in [1089,1086,1093,1088,1072,1085,1080,32,1075,1088,1072,1085,1086,1083,1091,32,1074,32,1073,1072,1079,1091])
+    route = route_turn(text, command=None, platform_key="telegram", user_config={"agent": {}}, platform_toolsets=ALL_ALLOWED)
+    assert route.role == "long_context_extract"
+    assert ("gra" + "nola") in route.toolsets
+    assert "memory" in route.toolsets
+    assert "session_search" in route.toolsets
+    assert "no_mcp" not in route.toolsets

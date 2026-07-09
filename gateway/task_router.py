@@ -172,11 +172,17 @@ _DRIVE_RE = re.compile(
     re.I,
 )
 _GRANOLA_RE = re.compile(
-    r"(?:в|из|через)\s+granola|заметк\w*\s+granola|транскрипт\w*\s+granola|"
+    r"\bgranola\b|(?:в|из|через)\s+granola|заметк\w*\s+granola|транскрипт\w*\s+granola|"
     r"встреч\w*,?\s+(?:сохран[её]нн\w*|записанн\w*)\s+в\s+granola|"
     r"поиск\s+по\s+(?:заметкам|встречам)\s+granola",
     re.I,
 )
+_GRANOLA_MEMORY_WRITE_RE = re.compile(
+    r"\b(?:занеси|запиши|сохрани|добавь|перенеси|положи|зафиксируй)\w*.*\b(?:баз[ауые]|базу\s+данных|knowledge|db|database|памят[ьи])\b|"
+    r"\b(?:баз[ауые]|базу\s+данных|knowledge|db|database|памят[ьи])\b.*\b(?:занеси|запиши|сохрани|добавь|перенеси|положи|зафиксируй)\w*",
+    re.I | re.S,
+)
+
 _MEMORY_RE = re.compile(
     r"\b(?:помнишь|помни|обсуждали|делали|раньше|вчера|ранее|сохранили|"
     r"в\s+прошлый\s+раз|обо\s+мне|о\s+мо[её]м|мои?|моя|наше?|семья|карьер|"
@@ -281,6 +287,22 @@ _EXPLICIT_ADAPTIVE_PLAN_RE = re.compile(
     r"разлож\w*\s+на\s+этапы|критери\w*\s+готовност",
     re.I,
 )
+_SERVICE_ALIAS_REPLACEMENTS = (
+    (re.compile(r"\b(?:гранола|гранолы|гранолу|гранолой|граноле|гранула|гранулу|грануле|гранулой)\b", re.I), "granola"),
+    (re.compile(r"\b(?:гугл|гугол|гоугл)\b", re.I), "google"),
+    (re.compile(r"\b(?:джипити|гпт|чатгпт|чатджипити)\b", re.I), "gpt"),
+    (re.compile(r"\b(?:контекст7|контекст\s*7)\b", re.I), "context7"),
+    (re.compile(r"\b(?:ноутбуклм|ноутбук\s*лм|ноутбук\s*lm)\b", re.I), "notebooklm"),
+)
+
+
+def _expand_service_aliases(text: str) -> str:
+    value = text or ""
+    for pattern, canonical in _SERVICE_ALIAS_REPLACEMENTS:
+        value = pattern.sub(canonical, value)
+    return value
+
+
 _APPROVED_PLAN_RE = re.compile(
     r"(?:утвержд[её]н\w*|согласован\w*)\s+план\w*|"
     r"план\w*\s+(?:уже\s+)?(?:утвержд[её]н\w*|согласован\w*)|"
@@ -428,7 +450,7 @@ def is_live_listing_request(text: str) -> bool:
 
 
 def _intent_flags(text: str) -> dict[str, bool]:
-    value = text or ""
+    value = _expand_service_aliases(text or "")
     email = bool(_EMAIL_RE.search(value))
     calendar = bool(_CALENDAR_RE.search(value))
     drive = bool(_DRIVE_RE.search(value))
@@ -472,7 +494,7 @@ def _routing_experiment_flags(user_config: Mapping[str, Any] | None) -> dict[str
 
 
 def _agentic_candidate(text: str, flags: Mapping[str, bool]) -> bool:
-    value = text or ""
+    value = _expand_service_aliases(text or "")
     if any(flags.get(name, False) for name in (
         "email", "calendar", "drive", "reminder", "live_listings", "granola", "travel", "tutu", "context7", "notebooklm"
     )):
@@ -489,7 +511,7 @@ def _agentic_candidate(text: str, flags: Mapping[str, bool]) -> bool:
 
 
 def _long_context_extract_candidate(text: str) -> bool:
-    value = text or ""
+    value = _expand_service_aliases(text or "")
     if not _LONG_CONTEXT_EXTRACT_RE.search(value):
         return False
     if any(pattern.search(value) for pattern in (
@@ -501,7 +523,7 @@ def _long_context_extract_candidate(text: str) -> bool:
 
 
 def travel_is_source_capture(text: str) -> bool:
-    value = text or ""
+    value = _expand_service_aliases(text or "")
     save_intent = bool(
         _TRAVEL_SOURCE_CAPTURE_RE.search(value)
         or _TRAVEL_SOURCE_SAVE_COMPACT_RE.search(value)
@@ -510,12 +532,12 @@ def travel_is_source_capture(text: str) -> bool:
 
 
 def travel_needs_web_or_browser(text: str) -> bool:
-    value = text or ""
+    value = _expand_service_aliases(text or "")
     return bool(_TRAVEL_PLACE_REFERENCE_RE.search(value) or travel_is_source_capture(value) or _TRAVEL_CAFE_CURRENT_RE.search(value) or _TRAVEL_LIVE_TRAFFIC_RE.search(value))
 
 
 def travel_is_route_or_parking(text: str) -> bool:
-    value = text or ""
+    value = _expand_service_aliases(text or "")
     if is_live_listing_request(value):
         return False
     return bool(_TRAVEL_RE.search(value) and _TRAVEL_ROUTE_PARKING_RE.search(value))
@@ -535,7 +557,7 @@ def external_provider_fallback_safe(
     Coding and server-analysis prompts are allowed only when no execution is
     required; executable tasks stay on providers that retain their tool path.
     """
-    value = (text or "").strip()
+    value = _expand_service_aliases(text or "").strip()
     if role not in _EXTERNAL_PROVIDER_SAFE_ROLES:
         return False
     if role in {"coding", "server_debug"} and (
@@ -561,7 +583,7 @@ def classify_task(text: str, *, command: str | None = None) -> tuple[str, str]:
     if cmd in _NO_LLM_COMMANDS:
         return "no_llm", f"deterministic command /{cmd}"
 
-    value = text or ""
+    value = _expand_service_aliases(text or "")
     if len(value) > 50000:
         return "long_context", "message length"
 
@@ -891,12 +913,16 @@ def route_turn(
 ) -> TaskRoute:
     role, reason = classify_task(text, command=command)
     flags = _intent_flags(text)
+    granola_memory_write = bool(flags["granola"] and _GRANOLA_MEMORY_WRITE_RE.search(_expand_service_aliases(text or "")))
     experiments = _routing_experiment_flags(user_config)
     if reason != "explicit override":
         if role == "long_context" and experiments["long_context_split"] and _long_context_extract_candidate(text):
             role = "long_context_extract"
             reason = "long-context extraction pilot"
-        elif role == "simple" and experiments["agentic_enabled"] and _agentic_candidate(text, flags):
+        elif role == "simple" and granola_memory_write:
+            role = "long_context_extract"
+            reason = "granola memory write intent"
+        elif role == "simple" and experiments.get("agentic_enabled") and _agentic_candidate(text, flags):
             role = "agentic"
             reason = "safe multi-step agentic pilot"
     planning_policy = adaptive_planning_policy(text, role)
