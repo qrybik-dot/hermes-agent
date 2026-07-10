@@ -1711,6 +1711,128 @@ def test_prepare_task_turn_context_save_returns_no_llm(tmp_path, monkeypatch):
     assert prepared.early_response["task_level"] == "no_llm"
     assert prepared.early_response["final_response"].startswith("Сохранено:")
 
+
+def test_save_intent_reply_context_runs_before_uncertainty(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    saved = []
+    monkeypatch.setattr(
+        "gateway.task_runtime.run_quick_save",
+        lambda note: saved.append(note) or {
+            "status": "saved",
+            "saved": True,
+            "already_exists": False,
+            "title": note.payload["title"],
+            "summary": note.payload["summary"],
+            "readback_count": 1,
+        },
+    )
+    prepared = prepare_task_turn(
+        message="сохрани это",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-save-intent-reply",
+        user_config={"agent": {}},
+        platform_toolsets=["clarify", "skills", "file", "web", "terminal"],
+        message_context={
+            "current_text": "сохрани это",
+            "reply_text": "Полезная статья о deterministic agent routing https://example.com/routing",
+        },
+    )
+    assert len(saved) == 1
+    assert prepared.task is None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["tools"] == []
+    assert prepared.early_response["diagnostics"]["save_intent_route"] == "save_knowledge"
+    assert prepared.early_response["diagnostics"]["save_intent_gate"] == "pre_model"
+    assert prepared.early_response["diagnostics"]["terminal_allowed"] is False
+    assert prepared.early_response["diagnostics"]["llm_allowed"] is False
+
+
+def test_save_intent_bare_remember_clarifies_without_model_or_terminal(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    prepared = prepare_task_turn(
+        message="запомни",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-save-intent-bare",
+        user_config={"agent": {}},
+        platform_toolsets=["clarify", "skills", "file", "web", "terminal"],
+    )
+    assert prepared.task is None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["tools"] == []
+    assert prepared.early_response["diagnostics"]["save_intent_route"] == "ask_clarification"
+    assert prepared.early_response["diagnostics"]["clarification_required"] is True
+    assert prepared.early_response["diagnostics"]["tool_call_count"] == 0
+
+
+def test_save_intent_does_not_capture_explicit_reminder(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "gateway.task_runtime.run_quick_save",
+        lambda note: (_ for _ in ()).throw(AssertionError("reminder must not use Knowledge")),
+    )
+    prepared = prepare_task_turn(
+        message="запиши напоминание разобраться со штрафами",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-save-intent-reminder",
+        user_config={"agent": {}},
+        platform_toolsets=["clarify", "skills", "terminal", "cronjob"],
+    )
+    assert prepared.early_response is not None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["diagnostics"]["clarification_kind"] == "missing_reminder_date_time"
+    assert "save_intent_route" not in prepared.early_response["diagnostics"]
+
+
+def test_save_intent_does_not_capture_ambiguous_save_with_active_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    store.create(
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="Active knowledge cleanup",
+        original_request="Проверь и исправь Knowledge routing",
+        role="server_debug",
+        toolsets=["terminal", "file"],
+        required_toolsets=["terminal"],
+        requires_execution=True,
+        status="incomplete",
+        metadata={"checkpoint": "diff reviewed"},
+    )
+    monkeypatch.setattr(
+        "gateway.task_runtime.run_quick_save",
+        lambda note: (_ for _ in ()).throw(AssertionError("active task save must stay ambiguous")),
+    )
+    prepared = prepare_task_turn(
+        message="сохрани это",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-save-intent-active",
+        user_config={"agent": {}},
+        platform_toolsets=["clarify", "file", "skills", "terminal"],
+    )
+    assert prepared.continued is False
+    assert prepared.task is None
+    assert prepared.early_response is not None
+    assert prepared.early_response["diagnostics"]["clarification_kind"] == "ambiguous_save"
+    assert "save_intent_route" not in prepared.early_response["diagnostics"]
+
 def test_prepare_task_turn_quick_note_returns_no_llm(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()

@@ -23,6 +23,7 @@ from gateway.task_continuation import (
     should_track_task,
 )
 from gateway.intent_uncertainty import clarification_question, detect_uncertain_intent
+from gateway.save_intent_router import detect_save_intent
 from gateway.task_router import (
     TaskRoute, route_turn, should_generate_html_report,
     travel_is_route_or_parking, travel_is_source_capture, travel_needs_web_or_browser,
@@ -576,6 +577,64 @@ def early_response(text: str, *, status: str = "success", task_id: str | None = 
         "context_length": 0,
         "task_id": task_id,
     }
+
+
+def _save_intent_clarification_kind(reason: str) -> str:
+    value = str(reason or "").casefold()
+    if "task wording" in value or "action-like" in value:
+        return "ambiguous_destination"
+    return "ambiguous_save"
+
+
+def _deterministic_save_intent_response(
+    command_text: str,
+    *context_texts: str | None,
+) -> dict | None:
+    """Resolve save-like commands before uncertainty, model, or tool routing."""
+    decision = detect_save_intent(command_text, *context_texts)
+    if not decision.matched or decision.route in {"ignore", "delegate_action"}:
+        return None
+
+    diagnostics = {
+        "save_intent_route": decision.route,
+        "save_intent_reason": decision.reason,
+        "terminal_allowed": decision.terminal_allowed,
+        "llm_allowed": decision.llm_allowed,
+        "tool_call_count": 0,
+        "save_intent_gate": "pre_model",
+        "uncertainty_gate": "pre_model",
+    }
+    if decision.route == "save_knowledge":
+        note = detect_context_save_note(
+            command_text,
+            *context_texts,
+            continued=False,
+        ) or detect_quick_note(command_text, continued=False)
+        if note is not None:
+            try:
+                quick_result = run_quick_save(note)
+            except Exception as exc:
+                quick_result = {"status": "error", "saved": False, "message": str(exc)}
+            response, status = format_quick_save_response(quick_result)
+            return early_response(
+                response,
+                status=status,
+                role="no_llm",
+                reason="deterministic save intent knowledge quick save",
+                diagnostics=diagnostics,
+            )
+
+    kind = _save_intent_clarification_kind(decision.reason)
+    diagnostics.update({
+        "clarification_required": True,
+        "clarification_kind": kind,
+    })
+    return early_response(
+        decision.question or "Что именно сохранить?",
+        role="no_llm",
+        reason="deterministic save intent clarification",
+        diagnostics=diagnostics,
+    )
 
 
 _TRAVEL_TO_FROM_RE = re.compile(
@@ -1774,6 +1833,20 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     )
     if location_response is not None:
         return PreparedTaskTurn(original, initial_route, None, location_response, False)
+
+    if (
+        not store.active(platform_key, str(chat_id))
+        and not travel_is_source_capture(current_text)
+    ):
+        save_intent_response = _deterministic_save_intent_response(
+            current_text,
+            msg_ctx.reply_text,
+            msg_ctx.reply_caption,
+        )
+        if save_intent_response is not None:
+            return PreparedTaskTurn(
+                original, initial_route, None, save_intent_response, False,
+            )
 
     pre_continuation_uncertainty = detect_uncertain_intent(current_text, context_text=uncertainty_context)
     if pre_continuation_uncertainty is not None and not store.active(platform_key, str(chat_id)):
