@@ -60,3 +60,24 @@ def test_activate_and_rollback_swap_atomic_links(tmp_path, monkeypatch):
     manager.rollback()
     assert os.readlink(manager.current) == f"releases/{first.name}"
     assert os.readlink(manager.previous) == f"releases/{second.name}"
+
+
+def test_prune_keeps_current_and_previous(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    monkeypatch.setattr(manager, "validate", lambda release: None)
+    first = manager.stage("HEAD")
+    manager.activate(first)
+
+    for label in ("second", "third"):
+        (manager.repo / f"{label}.txt").write_text(label, encoding="utf-8")
+        subprocess.run(["git", "-C", str(manager.repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(manager.repo), "commit", "-qm", label], check=True)
+        release = manager.stage("HEAD")
+        manager.activate(release)
+
+    current = Path(os.readlink(manager.current)).name
+    previous = Path(os.readlink(manager.previous)).name
+    removed = manager.prune(keep=2)
+
+    assert set(path.name for path in manager.releases.iterdir()) == {current, previous}
+    assert first.name in removed
