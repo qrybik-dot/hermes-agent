@@ -4,7 +4,12 @@ Use this standard for complex technical, audit, migration, comparative, infrastr
 
 Canonical example:
 
-- `ops/production/HERMES_V018_HUMAN_REPORT_20260704.html`
+- `ops/reporting/Hermes_Model_Routing_Guide_2026-07-09.html`
+
+The canonical example was explicitly selected by the user on 2026-07-11.
+Match its dark navy palette, compact status hero, metric row, linked contents,
+dense numbered sections, status-colored cards, acceptance matrix, and
+collapsible technical appendix. Do not substitute a light paper-style report.
 
 ## Core principle
 
@@ -43,13 +48,15 @@ Do not replace explanation with logs, filenames, commits, raw tables, or jargon.
 ## Visual rules
 
 - Self-contained HTML only.
-- Light and dark theme support.
+- Dark navy presentation matching the canonical example; high contrast text.
 - Mobile responsive.
 - No external CDN, scripts, fonts, or analytics.
 - Prefer CSS-only navigation and `<details>` blocks.
 - Use metric cards only for verified numbers.
 - Use tables for comparisons and routing matrices.
 - Use color consistently: green verified, amber pending/fallback, red blocker/risk, blue informational.
+- Keep the main narrative non-technical; place paths, commands, hashes and raw
+  evidence in lower tables or a collapsible appendix.
 
 ## Model-routing reports
 

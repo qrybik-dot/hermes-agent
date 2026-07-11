@@ -1,0 +1,15 @@
+[Unit]
+Description=Hermes disk usage and growth guard
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/hermes-disk-guard.py --notify --json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=hermes-disk-guard
+ReadWritePaths=/var/lib/hermes-disk-guard
+MemoryMax=64M
+CPUQuota=20%

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "agent_root": "/home/hermes/hermes-runtime",
+    "knowledge_root": "/opt/hermes-knowledge-runtime",
+    "mutable_home": "/home/hermes/.hermes",
+    "personal_memory_root": "/srv/hermes-memory/vault"
+  },
+  "required_services": [
+    "hermes-gateway.service",
+    "hermes-dashboard.service",
+    "hermes-knowledge-mcp.service",
+    "hermes-vps-admin-mcp.service",
+    "cli-proxy-api.service"
+  ],
+  "required_timers": [
+    "hermes-report-finalizer.timer",
+    "hermes-restic-backup.timer",
+    "hermes-restic-check.timer",
+    "hermes-restic-retention-dry-run.timer",
+    "hermes-disk-guard.timer",
+    "hermes-backup-inventory.timer"
+  ],
+  "required_enabled_services": [
+    "hermes-gateway.service",
+    "hermes-startup-notify.service"
+  ],
+  "health_endpoints": {
+    "knowledge": "http://127.0.0.1:2092/health"
+  },
+  "forbidden_runtime_fragments": [
+    "/home/hermes/hermes-v018-integration",
+    "/home/hermes/.hermes/hermes-agent"
+  ],
+  "secret_names_only": [
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID"
+  ]
+}

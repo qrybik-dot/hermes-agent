@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Hermes disk guard
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=10m
+Persistent=true
+Unit=hermes-disk-guard.service
+
+[Install]
+WantedBy=timers.target

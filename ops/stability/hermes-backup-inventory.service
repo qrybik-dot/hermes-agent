@@ -1,0 +1,13 @@
+[Unit]
+Description=Hermes local backup retention inventory (read-only)
+
+[Service]
+Type=oneshot
+User=hermes
+ExecStart=/usr/bin/python3 /usr/local/lib/hermes-backup-inventory.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+MemoryMax=96M
+CPUQuota=20%
