@@ -54,6 +54,7 @@ class ReleaseManager:
         self.repo = repo
         self.releases = root / "releases"
         self.shared_venv = root / "shared" / "venv"
+        self.shared_web_dist = root / "shared" / "web_dist"
         self.current = root / "current"
         self.previous = root / "previous"
 
@@ -90,6 +91,11 @@ class ReleaseManager:
             with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
                 archive.extractall(staging, members=_safe_members(archive, staging))
             os.symlink("../../shared/venv", staging / ".venv")
+            if self.shared_web_dist.is_dir() and (staging / "hermes_cli").is_dir():
+                os.symlink(
+                    "../../../shared/web_dist",
+                    staging / "hermes_cli" / "web_dist",
+                )
             manifest = {
                 "schema": 1,
                 "commit": commit,

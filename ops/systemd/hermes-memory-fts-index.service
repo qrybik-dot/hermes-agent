@@ -1,0 +1,12 @@
+[Unit]
+Description=Hermes memory FTS incremental index
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes/hermes-runtime/current
+ExecStart=/home/hermes/hermes-runtime/shared/venv/bin/python -m hermes_cli.memory_search --reindex --json
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOCK_FILE=/home/hermes/.hermes/locks/git-sync-nightly.lock
+HERMES_CLI=/home/hermes/hermes-runtime/shared/venv/bin/python
+HERMES_MAIN=hermes_cli.main
+NOTIFY_TARGET=${HERMES_GIT_SYNC_NOTIFY_TARGET:-}
+MODE=${1:-run}
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+problems=()
+actions=()
+
+notify_problem() {
+  if [[ -z "$NOTIFY_TARGET" || ${#problems[@]} -eq 0 ]]; then
+    return 0
+  fi
+  local body
+  body=$(printf 'Git sync ночью остановлен безопасно\n\n%s\n' "$(printf '• %s\n' "${problems[@]}")")
+  "$HERMES_CLI" -m "$HERMES_MAIN" send --to "$NOTIFY_TARGET" "$body" >/dev/null 2>&1 || true
+}
+
+check_repo() {
+  local name=$1 path=$2 local_branch=$3 remote_branch=$4
+  if ! git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+    problems+=("$name: каталог не является Git-репозиторием")
+    return
+  fi
+  if ! git -C "$path" fetch origin --prune --quiet; then
+    problems+=("$name: не удалось выполнить git fetch origin")
+    return
+  fi
+
+  local branch dirty ahead behind
+  branch=$(git -C "$path" branch --show-current)
+  if [[ "$branch" != "$local_branch" ]]; then
+    problems+=("$name: активна ветка $branch, ожидалась $local_branch")
+    return
+  fi
+  dirty=$(git -C "$path" status --porcelain)
+  if [[ -n "$dirty" ]]; then
+    problems+=("$name: есть незакоммиченные изменения, автоматический commit запрещён")
+    return
+  fi
+  if ! git -C "$path" show-ref --verify --quiet "refs/remotes/origin/$remote_branch"; then
+    problems+=("$name: отсутствует origin/$remote_branch")
+    return
+  fi
+
+  ahead=$(git -C "$path" rev-list --count "origin/$remote_branch..HEAD")
+  behind=$(git -C "$path" rev-list --count "HEAD..origin/$remote_branch")
+  if (( behind > 0 )); then
+    problems+=("$name: локальная ветка отстаёт от origin/$remote_branch на $behind commit; автоматический merge запрещён")
+    return
+  fi
+  if (( ahead > 0 )); then
+    if [[ "$MODE" == "check" ]]; then
+      actions+=("$name: нужно отправить $ahead commit в origin/$remote_branch")
+    else
+      git -C "$path" push origin "HEAD:$remote_branch" --quiet
+      actions+=("$name: отправлено $ahead commit в origin/$remote_branch")
+    fi
+  else
+    actions+=("$name: синхронизирован")
+  fi
+}
+
+check_repo "Hermes Agent" /home/hermes/hermes-prod-rollout-20260710 rollout/prod-v018-20260710 prod/hermes-vps
+check_repo "Hermes Homelander" /home/hermes/hermes-homelander main main
+
+if (( ${#problems[@]} > 0 )); then
+  printf '%s\n' "${problems[@]}" >&2
+  notify_problem
+  exit 2
+fi
+printf '%s\n' "${actions[@]}"

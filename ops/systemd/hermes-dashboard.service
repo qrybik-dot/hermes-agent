@@ -1,0 +1,20 @@
+[Unit]
+Description=Hermes Agent Dashboard - local-only UI backend
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes/hermes-runtime/current
+EnvironmentFile=/etc/hermes-vps-dashboard/env
+Environment=TERMINAL_CWD=/home/hermes
+ExecStart=/home/hermes/hermes-runtime/shared/venv/bin/python -m hermes_cli.main dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
