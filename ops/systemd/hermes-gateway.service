@@ -18,6 +18,7 @@ Environment="PATH=/home/hermes/hermes-runtime/shared/venv/bin:/home/hermes/.herm
 Environment="VIRTUAL_ENV=/home/hermes/hermes-runtime/shared/venv"
 Environment="HERMES_HOME=/home/hermes/.hermes"
 Environment="HERMES_RUNTIME_ROOT=/home/hermes/hermes-runtime/current"
+Environment="HERMES_GATEWAY_MAX_CONCURRENT_TURNS=1"
 Restart=always
 RestartSec=5
 RestartMaxDelaySec=300

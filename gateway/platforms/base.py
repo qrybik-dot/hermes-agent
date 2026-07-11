@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import uuid
+import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
@@ -34,6 +35,27 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_GATEWAY_TURN_GATES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def gateway_turn_limit() -> int:
+    """Return the process-wide heavy-turn cap, clamped to a safe range."""
+    raw = os.environ.get("HERMES_GATEWAY_MAX_CONCURRENT_TURNS", "2").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 2
+    return max(1, min(value, 8))
+
+
+def gateway_turn_gate() -> asyncio.Semaphore:
+    """One shared gate per event loop across every messaging adapter."""
+    loop = asyncio.get_running_loop()
+    gate = _GATEWAY_TURN_GATES.get(loop)
+    if gate is None:
+        gate = asyncio.Semaphore(gateway_turn_limit())
+        _GATEWAY_TURN_GATES[loop] = gate
+    return gate
 
 
 def _platform_name(platform) -> str:
@@ -4808,6 +4830,23 @@ class BasePlatformAdapter(ABC):
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
+        """Apply process-wide backpressure before starting a heavy agent turn."""
+        gate = gateway_turn_gate()
+        queued_at = time.monotonic()
+        async with gate:
+            waited = time.monotonic() - queued_at
+            if waited >= 0.1:
+                logger.info(
+                    "[%s] Gateway turn admitted after %.2fs backpressure wait "
+                    "(session=%s limit=%d)",
+                    self.name,
+                    waited,
+                    session_key,
+                    gateway_turn_limit(),
+                )
+            await self._process_message_background_admitted(event, session_key)
+
+    async def _process_message_background_admitted(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
