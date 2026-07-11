@@ -220,7 +220,7 @@ def _service_healthy(service: str) -> bool:
     return True
 
 
-def restart_and_check(timeout: int = 45, stabilization_seconds: int = 5) -> None:
+def restart_and_check(timeout: int = 120, stabilization_seconds: int = 5) -> None:
     companions = [service for service in COMPANION_SERVICES if _service_active(service)]
     run("systemctl", "restart", SERVICE, timeout=240)
     for service in companions:
