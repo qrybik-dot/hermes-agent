@@ -11,6 +11,7 @@ from gateway.telegram_task_status import (
     should_surface_telegram_interim,
     status_action_for_tool,
     status_steps_from_request,
+    text_delivery_confirmed,
     verdict_from_text,
 )
 
@@ -250,3 +251,28 @@ def test_partial_result_survives_hard_cap():
 def test_empty_hard_cap_uses_clarification():
     response = _budget_exhausted_response("не успел", 0)
     assert response.startswith("Я остановил перебор: лимит шагов")
+
+
+def test_queued_text_delivery_is_not_treated_as_delivered():
+    queued = {
+        "verdict": "READY",
+        "generation": "gateway-runtime-v1",
+        "queued_at": "2026-07-11T10:00:00Z",
+        "success": False,
+    }
+    assert not text_delivery_confirmed(
+        queued, verdict="READY", generation="gateway-runtime-v1"
+    )
+
+
+def test_confirmed_text_delivery_requires_message_id_and_timestamp():
+    delivered = {
+        "verdict": "READY",
+        "generation": "gateway-runtime-v1",
+        "message_id": "4230",
+        "delivered_at": "2026-07-11T10:01:00Z",
+        "success": True,
+    }
+    assert text_delivery_confirmed(
+        delivered, verdict="READY", generation="gateway-runtime-v1"
+    )

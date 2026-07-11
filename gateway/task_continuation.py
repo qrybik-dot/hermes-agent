@@ -174,6 +174,40 @@ class TaskStateStore:
             ).fetchone()
         return self._record(row) if row else None
 
+    @staticmethod
+    def _normalized_request(value: str) -> str:
+        return " ".join(str(value or "").split())
+
+    def recent_matching_request(
+        self,
+        platform: str,
+        chat_id: str,
+        original_request: str,
+        *,
+        statuses: Iterable[str] = ("awaiting_delivery", "delivery_failed"),
+        max_age_seconds: float = 86400.0,
+        limit: int = 30,
+    ) -> Optional[TaskRecord]:
+        """Return recent reusable work for the same normalized request."""
+        wanted = self._normalized_request(original_request)
+        status_values = tuple(str(item) for item in statuses if item)
+        if not wanted or not status_values:
+            return None
+        placeholders = ",".join("?" for _ in status_values)
+        params = [platform, str(chat_id), *status_values, time.time() - float(max_age_seconds), int(limit)]
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM gateway_tasks WHERE platform=? AND chat_id=? "
+                f"AND status IN ({placeholders}) AND updated_at>=? "
+                f"ORDER BY updated_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        for row in rows:
+            task = self._record(row)
+            if self._normalized_request(task.original_request) == wanted:
+                return task
+        return None
+
     def create(self, *, platform: str, chat_id: str, session_key: str, title: str,
                original_request: str, role: str, toolsets: Iterable[str],
                required_toolsets: Iterable[str] = (), requires_execution: bool = False,

@@ -2369,3 +2369,80 @@ def test_different_source_reply_resumes_and_upgrades_saved_travel_task(tmp_path,
     assert {"web", "browser", "terminal", "skills"}.issubset(prepared.route.toolsets)
     assert "no_mcp" not in prepared.route.toolsets
     assert "different source/tool path" in prepared.message
+
+
+def test_recent_matching_request_replays_verified_result(tmp_path):
+    store = _store(tmp_path)
+    request = "https://www.instagram.com/reel/DaAdD5-K9Fr/\n\nСохрани локацию"
+    task = store.create(
+        platform="telegram", chat_id="1", session_key="s", title="Save place",
+        original_request=request, role="simple", toolsets=["terminal"],
+        required_toolsets=["terminal"], requires_execution=True,
+        status="delivery_failed",
+        metadata={"final_response": "Локация сохранена", "tool_call_count": 3},
+    )
+    matched = store.recent_matching_request(
+        "telegram", "1",
+        "  https://www.instagram.com/reel/DaAdD5-K9Fr/  Сохрани локацию  ",
+    )
+    assert matched is not None
+    assert matched.task_id == task.task_id
+
+
+def test_repeated_verified_execution_replays_before_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    request = "https://www.instagram.com/reel/DaAdD5-K9Fr/\n\nСохрани локацию"
+    store = TaskStateStore(state_dir / "state.db")
+    task = store.create(
+        platform="telegram", chat_id="1", session_key="old", title="Save place",
+        original_request=request, role="simple", toolsets=["terminal", "web"],
+        required_toolsets=["terminal"], requires_execution=True,
+        status="delivery_failed",
+        metadata={"final_response": "Локация сохранена", "tool_call_count": 4},
+    )
+    prepared = prepare_task_turn(
+        message=request, platform_key="telegram", chat_id="1",
+        session_key="new", session_id="session-new", request_id="new-request",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "web", "skills"],
+        message_context={"current_text": request, "current_message_id": "200"},
+    )
+    assert prepared.early_response is not None
+    assert prepared.task.task_id == task.task_id
+    assert prepared.early_response["diagnostics"]["replayed_tool_call_count"] == 4
+    assert "Повторно инструменты не запускал" in prepared.early_response["final_response"]
+    assert store.get(task.task_id).status == "awaiting_delivery"
+
+
+def test_task_source_identity_uses_platform_message_not_process_generation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    common = dict(
+        platform_key="telegram", chat_id="1", session_key="same-session",
+        session_id="same-session-id", user_config={"agent": {}},
+        platform_toolsets=["terminal", "web", "skills"],
+    )
+    first = prepare_task_turn(
+        message="Проверь VPS и исправь ошибку",
+        request_id="process-generation-1",
+        message_context={
+            "current_text": "Проверь VPS и исправь ошибку",
+            "current_message_id": "100",
+        },
+        **common,
+    )
+    second = prepare_task_turn(
+        message="Проверь VPS и исправь другую ошибку",
+        request_id="process-generation-1",
+        message_context={
+            "current_text": "Проверь VPS и исправь другую ошибку",
+            "current_message_id": "101",
+        },
+        **common,
+    )
+    assert first.task is not None and second.task is not None
+    assert first.task.task_id != second.task.task_id
+    assert first.task.source_request_id.endswith(":100:task")
+    assert second.task.source_request_id.endswith(":101:task")

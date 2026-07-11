@@ -65,6 +65,7 @@ from gateway.telegram_task_status import (
     status_action_for_tool,
     status_plan_from_tool_args,
     status_steps_from_request,
+    text_delivery_confirmed,
     verdict_from_text,
 )
 
@@ -11809,16 +11810,30 @@ message_context={
                 )
                 _delivery_meta = (_task_delivery_record.metadata if _task_delivery_record is not None else {}) or {}
                 _text_delivery = _delivery_meta.get("final_text_delivery") if isinstance(_delivery_meta, dict) else None
-                _text_already_delivered = bool(
-                    isinstance(_text_delivery, dict)
-                    and _text_delivery.get("verdict") == _final_verdict
-                    and _text_delivery.get("generation") == _delivery_generation
+                _is_telegram_delivery = str(
+                    getattr(source.platform, "value", source.platform)
+                ).lower() == "telegram"
+                _text_already_delivered = (
+                    text_delivery_confirmed(
+                        _text_delivery,
+                        verdict=_final_verdict,
+                        generation=_delivery_generation,
+                    )
+                    if _is_telegram_delivery
+                    else bool(
+                        isinstance(_text_delivery, dict)
+                        and _text_delivery.get("verdict") == _final_verdict
+                        and _text_delivery.get("generation") == _delivery_generation
+                    )
+                )
+                _delivery_attempt_generation = (
+                    f"{_delivery_generation}:run:{run_generation}"
                 )
                 if _text_already_delivered or not _FINAL_DELIVERY_DEDUPER.mark_once(
                     task_id=_final_task_id,
                     verdict=_final_verdict,
                     delivery_type="text",
-                    generation=_delivery_generation,
+                    generation=_delivery_attempt_generation,
                 ):
                     logger.warning(
                         "Suppressing duplicate final text delivery: task_id=%s verdict=%s generation=%s",
@@ -11833,9 +11848,91 @@ message_context={
                         final_text_delivery={
                             "verdict": _final_verdict,
                             "generation": _delivery_generation,
+                            "attempt_generation": _delivery_attempt_generation,
                             "queued_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                            "success": False,
                         },
                     )
+
+                    _text_adapter = self.adapters.get(source.platform)
+                    if (
+                        _is_telegram_delivery
+                        and _text_adapter is not None
+                        and session_key
+                        and not agent_result.get("already_sent")
+                        and getattr(
+                            type(_text_adapter),
+                            "register_post_delivery_callback",
+                            None,
+                        ) is not None
+                    ):
+                        async def _confirm_task_text_delivery() -> None:
+                            _active_event = getattr(
+                                _text_adapter, "_active_sessions", {}
+                            ).get(session_key)
+                            _message_id = getattr(
+                                _active_event,
+                                "_hermes_last_delivery_message_id",
+                                None,
+                            )
+                            _latest_task = _task_delivery_store.get(_final_task_id)
+                            if _latest_task is None:
+                                return
+                            _latest_delivery = (
+                                (_latest_task.metadata or {}).get("final_text_delivery")
+                            )
+                            if not isinstance(_latest_delivery, dict):
+                                return
+                            if (
+                                _latest_delivery.get("attempt_generation")
+                                != _delivery_attempt_generation
+                            ):
+                                return
+                            _now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+                            if _message_id:
+                                _task_delivery_store.merge_metadata(
+                                    _final_task_id,
+                                    final_text_delivery={
+                                        "verdict": _final_verdict,
+                                        "generation": _delivery_generation,
+                                        "attempt_generation": _delivery_attempt_generation,
+                                        "message_id": str(_message_id),
+                                        "queued_at": _latest_delivery.get("queued_at"),
+                                        "delivered_at": _now,
+                                        "success": True,
+                                    },
+                                )
+                                if _latest_task.status in {
+                                    "awaiting_delivery",
+                                    "delivery_failed",
+                                }:
+                                    _task_delivery_store.update(
+                                        _final_task_id,
+                                        status="completed",
+                                        last_error=None,
+                                    )
+                            else:
+                                _task_delivery_store.merge_metadata(
+                                    _final_task_id,
+                                    final_text_delivery={
+                                        **_latest_delivery,
+                                        "failed_at": _now,
+                                        "success": False,
+                                        "error": "final text delivery not confirmed",
+                                    },
+                                )
+                                if _latest_task.status == "awaiting_delivery":
+                                    _task_delivery_store.update(
+                                        _final_task_id,
+                                        status="delivery_failed",
+                                        last_error="final text delivery not confirmed",
+                                    )
+
+                        _text_adapter.register_post_delivery_callback(
+                            session_key,
+                            _confirm_task_text_delivery,
+                            generation=run_generation,
+                        )
 
                 _html_report_path = str(agent_result.get("html_report_path") or "")
                 _document_generation = str(agent_result.get("document_delivery_generation") or "task-report-html-v1")
@@ -17624,9 +17721,9 @@ message_context={
                     except Exception:
                         pass
 
-            _task_request_id = (
-                (session_id or session_key or "task") + ":" + str(run_generation)
-            )
+            # The process-local generation resets after a gateway restart.
+            # Use the unique inbound request identity instead.
+            _task_request_id = _request_id
             _prepared_task = prepare_task_turn(
                 message=str(message or ""),
                 platform_key=platform_key,

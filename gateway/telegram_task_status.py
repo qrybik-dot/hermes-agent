@@ -355,6 +355,23 @@ def verdict_from_text(text: str, *, failed: bool = False, partial: bool = False)
     return "READY"
 
 
+def text_delivery_confirmed(
+    delivery: object,
+    *,
+    verdict: str,
+    generation: str,
+) -> bool:
+    """Queued metadata alone is not proof of a delivered Telegram message."""
+    return bool(
+        isinstance(delivery, Mapping)
+        and delivery.get("verdict") == str(verdict or "").upper()
+        and delivery.get("generation") == str(generation or "")
+        and delivery.get("success") is True
+        and delivery.get("message_id")
+        and delivery.get("delivered_at")
+    )
+
+
 class FinalDeliveryDeduper:
     """In-process idempotency ledger for user-visible final text/documents."""
 

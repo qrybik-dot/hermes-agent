@@ -312,6 +312,14 @@ def _select_calendar_pending_task(store: TaskStateStore, platform_key: str, chat
     return matches[0] if len(matches) == 1 else None
 
 
+def _task_source_request_id(platform_key: str, chat_id: str, ctx: MessageContext, fallback: str) -> str:
+    """Build a durable idempotency key for one inbound platform message."""
+    marker = ctx.update_id or ctx.current_message_id
+    if marker:
+        return f"{platform_key}:{chat_id}:{ctx.sender_id or ''}:{marker}:task"
+    return str(fallback or "")
+
+
 def _calendar_source_request_id(platform_key: str, chat_id: str, ctx: MessageContext, fallback: str) -> str:
     marker = ctx.update_id or ctx.current_message_id or fallback
     return f"{platform_key}:{chat_id}:{ctx.sender_id or ''}:{marker}:calendar_write"
@@ -1794,6 +1802,32 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     original = str(message or "")
     msg_ctx = _normalize_message_context(message_context, fallback_text=original, chat_id=str(chat_id))
     current_text = msg_ctx.current_text or original
+
+    replay_task = store.recent_matching_request(platform_key, str(chat_id), current_text)
+    if replay_task is not None:
+        replay_text = str(replay_task.metadata.get("final_response") or "").strip()
+        replay_tool_calls = int(replay_task.metadata.get("tool_call_count", 0) or 0)
+        replay_is_failure = bool(re.match(r"^(?:INCOMPLETE|PARTIAL|BLOCKED)\b", replay_text, re.I))
+        if replay_text and not replay_is_failure and (not replay_task.requires_execution or replay_tool_calls > 0):
+            store.update(replay_task.task_id, status="awaiting_delivery", last_error=None)
+            return PreparedTaskTurn(
+                original,
+                None,
+                replay_task,
+                early_response(
+                    "Задача уже выполнена. Повторно инструменты не запускал.\n\n" + replay_text,
+                    task_id=replay_task.task_id,
+                    role=replay_task.role,
+                    reason="verified repeated request replay",
+                    diagnostics={
+                        "tool_call_count": 0,
+                        "replayed_task_id": replay_task.task_id,
+                        "replayed_tool_call_count": replay_tool_calls,
+                    },
+                ),
+                True,
+            )
+
     uncertainty_context = "\n".join(
         part.strip()
         for part in (msg_ctx.reply_text or "", msg_ctx.reply_caption or "")
@@ -2261,7 +2295,9 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         title_source = calendar_request or original
         title = " ".join(title_source.split())[:120] or "Задача Hermes"
         task_metadata = dict(delivery_policy)
-        source_request_id = request_id
+        source_request_id = _task_source_request_id(
+            platform_key, str(chat_id), msg_ctx, request_id
+        )
         if calendar_request and calendar_request_draft is not None:
             source_request_id = _calendar_source_request_id(platform_key, str(chat_id), msg_ctx, request_id)
             task_metadata.update({
