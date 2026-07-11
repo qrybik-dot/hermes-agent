@@ -1,0 +1,17 @@
+[Unit]
+Description=Hermes nightly GitHub synchronization guard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes
+ExecStart=/home/hermes/.hermes/bin/hermes-git-sync-nightly
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/hermes/hermes-prod-rollout-20260710 /home/hermes/hermes-homelander /home/hermes/.hermes/locks /home/hermes/.ssh /home/hermes/.hermes/sessions /home/hermes/.hermes/state.db /home/hermes/.hermes/logs

@@ -28,6 +28,9 @@ def _manager(tmp_path: Path) -> ReleaseManager:
     python.parent.mkdir(parents=True)
     python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     python.chmod(0o755)
+    web_dist = root / "shared" / "web_dist"
+    web_dist.mkdir(parents=True)
+    (web_dist / "index.html").write_text("ok", encoding="utf-8")
     return ReleaseManager(root, repo)
 
 
@@ -37,6 +40,7 @@ def test_stage_creates_manifest_and_shared_venv_link(tmp_path):
     manifest = json.loads((release / MANIFEST).read_text())
     assert manifest["commit"] == release.name
     assert os.readlink(release / ".venv") == "../../shared/venv"
+    assert os.readlink(release / "hermes_cli" / "web_dist") == "../../../shared/web_dist"
 
 
 def test_activate_and_rollback_swap_atomic_links(tmp_path, monkeypatch):
