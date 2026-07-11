@@ -23,6 +23,7 @@ from gateway.task_continuation import (
     should_track_task,
 )
 from gateway.intent_uncertainty import clarification_question, detect_uncertain_intent
+from gateway.pre_model_pipeline import PreModelStage, run_pre_model_pipeline
 from gateway.save_intent_router import detect_save_intent
 from gateway.task_router import (
     TaskRoute, route_turn, should_generate_html_report,
@@ -1798,10 +1799,10 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         for part in (msg_ctx.reply_text or "", msg_ctx.reply_caption or "")
         if part and part.strip()
     )
+    active_tasks = store.active(platform_key, str(chat_id))
     if re.fullmatch(r"\s*(?:почему|из-за\s+чего|в\s+ч[её]м\s+причина)\s+(?:эта\s+)?(?:ошибка|blocked|блокировка)[\s.!?]*", original, re.I):
-        active = store.active(platform_key, str(chat_id))
-        if len(active) == 1:
-            current = active[0]
+        if len(active_tasks) == 1:
+            current = active_tasks[0]
             reason = current.last_error or "причина не сохранена"
             if reason == "router did not assign execution toolset":
                 reason = "короткое сообщение было ошибочно обработано как новая simple-задача, поэтому инструменты активной задачи не унаследовались"
@@ -1823,86 +1824,73 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     initial_route = route_turn(current_text, command=None, platform_key=platform_key,
                                user_config=user_config, platform_toolsets=platform_toolsets,
                                context_text=uncertainty_context)
-    location_response = _deterministic_location_place_flow(
-        text=current_text,
-        route=initial_route,
-        platform_key=platform_key,
-        chat_id=str(chat_id),
-        session_key=session_key,
-        msg_ctx=msg_ctx,
+    pre_continuation_uncertainty = detect_uncertain_intent(
+        current_text, context_text=uncertainty_context
     )
-    if location_response is not None:
-        return PreparedTaskTurn(original, initial_route, None, location_response, False)
 
-    if (
-        not store.active(platform_key, str(chat_id))
-        and not travel_is_source_capture(current_text)
-    ):
-        save_intent_response = _deterministic_save_intent_response(
-            current_text,
-            msg_ctx.reply_text,
-            msg_ctx.reply_caption,
-        )
-        if save_intent_response is not None:
-            return PreparedTaskTurn(
-                original, initial_route, None, save_intent_response, False,
-            )
-
-    pre_continuation_uncertainty = detect_uncertain_intent(current_text, context_text=uncertainty_context)
-    if pre_continuation_uncertainty is not None and not store.active(platform_key, str(chat_id)):
-        return PreparedTaskTurn(
-            original, initial_route, None,
-            early_response(
-                clarification_question(current_text, pre_continuation_uncertainty),
-                role="no_llm", reason="deterministic uncertainty gate before tools",
-                diagnostics={
-                    "clarification_required": True,
-                    "clarification_kind": pre_continuation_uncertainty,
-                    "tool_call_count": 0,
-                    "uncertainty_gate": "pre_model",
-                },
-            ),
-            False,
+    def uncertainty_response():
+        if pre_continuation_uncertainty is None:
+            return None
+        return early_response(
+            clarification_question(current_text, pre_continuation_uncertainty),
+            role="no_llm",
+            reason="deterministic uncertainty gate before continuation",
+            diagnostics={
+                "clarification_required": True,
+                "clarification_kind": pre_continuation_uncertainty,
+                "tool_call_count": 0,
+                "uncertainty_gate": "pre_model",
+            },
         )
 
-    place_lookup_response = _deterministic_place_lookup(
-        text=current_text,
-        route=initial_route,
-        platform_key=platform_key,
-        chat_id=str(chat_id),
-        msg_ctx=msg_ctx,
-    )
-    if place_lookup_response is not None:
-        return PreparedTaskTurn(original, initial_route, None, place_lookup_response, False)
-
-    travel_followup_response = _deterministic_city_travel_followup(
-        text=current_text,
-        route=initial_route,
-        platform_key=platform_key,
-        chat_id=str(chat_id),
-        session_key=session_key,
-    )
-    if travel_followup_response is not None:
-        return PreparedTaskTurn(original, initial_route, None, travel_followup_response, False)
-
-    pre_continuation_uncertainty = detect_uncertain_intent(current_text, context_text=uncertainty_context)
-    if pre_continuation_uncertainty is not None and not store.active(platform_key, str(chat_id)):
-        return PreparedTaskTurn(
-            original,
-            initial_route,
-            None,
-            early_response(
-                clarification_question(current_text, pre_continuation_uncertainty),
-                role="no_llm",
-                reason="deterministic uncertainty gate before continuation",
-                diagnostics={
-                    "clarification_required": True,
-                    "clarification_kind": pre_continuation_uncertainty,
-                    "tool_call_count": 0,
-                    "uncertainty_gate": "pre_model",
-                },
+    pre_model = run_pre_model_pipeline([
+        PreModelStage(
+            "location_place",
+            lambda: _deterministic_location_place_flow(
+                text=current_text,
+                route=initial_route,
+                platform_key=platform_key,
+                chat_id=str(chat_id),
+                session_key=session_key,
+                msg_ctx=msg_ctx,
             ),
-            False,
+        ),
+        PreModelStage(
+            "save_intent",
+            lambda: _deterministic_save_intent_response(
+                current_text, msg_ctx.reply_text, msg_ctx.reply_caption
+            ),
+            enabled=not active_tasks and not travel_is_source_capture(current_text),
+        ),
+        PreModelStage(
+            "uncertainty",
+            uncertainty_response,
+            enabled=not active_tasks,
+        ),
+        PreModelStage(
+            "place_lookup",
+            lambda: _deterministic_place_lookup(
+                text=current_text,
+                route=initial_route,
+                platform_key=platform_key,
+                chat_id=str(chat_id),
+                msg_ctx=msg_ctx,
+            ),
+        ),
+        PreModelStage(
+            "city_travel_followup",
+            lambda: _deterministic_city_travel_followup(
+                text=current_text,
+                route=initial_route,
+                platform_key=platform_key,
+                chat_id=str(chat_id),
+                session_key=session_key,
+            ),
+        ),
+    ])
+    if pre_model is not None:
+        return PreparedTaskTurn(
+            original, initial_route, None, pre_model.response, False,
         )
 
     decision = store.resolve(original, platform_key, str(chat_id))
