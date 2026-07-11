@@ -2259,6 +2259,22 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         full_content = "".join(content_parts) or None
         mock_tool_calls = None
         has_truncated_tool_args = False
+
+        # Some OpenAI-compatible proxies emit only a terminal SSE chunk when
+        # the upstream content event is lost. Repeating the same stream route
+        # can exhaust the provider chain even though non-streaming is healthy.
+        if (
+            finish_reason is not None
+            and not content_parts
+            and not reasoning_parts
+            and not tool_calls_acc
+        ):
+            logger.warning(
+                "Stream completed with finish_reason=%s but no content, "
+                "reasoning, or tool calls; switching to non-streaming retry.",
+                finish_reason,
+            )
+            agent._disable_streaming = True
         if tool_calls_acc:
             mock_tool_calls = []
             for idx in sorted(tool_calls_acc):

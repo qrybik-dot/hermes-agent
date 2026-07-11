@@ -406,6 +406,39 @@ class TestStreamingCallbacks:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_terminal_empty_stream_disables_streaming_for_retry(
+        self, mock_close, mock_create
+    ):
+        """A terminal-only SSE response makes the next retry non-streaming."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(finish_reason="stop"),
+        ])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://example.test/v1",
+            provider="custom",
+            model="gemini-3.5-flash-low",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content is None
+        assert response.choices[0].message.tool_calls is None
+        assert agent._disable_streaming is True
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_on_first_delta_fires_once(self, mock_close, mock_create):
         """on_first_delta callback fires exactly once."""
         from run_agent import AIAgent
