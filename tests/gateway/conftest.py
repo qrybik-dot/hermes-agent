@@ -32,6 +32,7 @@ incident.
 """
 
 import ast
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -417,7 +418,10 @@ def pytest_configure(config):
         return
 
     fp = _fingerprint_gateway_tests()
-    cache_dir = Path.cwd() / ".pytest-cache"
+    cache_dir = Path(
+        os.environ.get("HERMES_PYTEST_CACHE_DIR", "").strip()
+        or Path.cwd() / ".pytest-cache"
+    )
     cache_file = cache_dir / f"gw-adapter-guard-{fp}"
     lock_file = cache_dir / f".gw-adapter-guard-{fp}.lock"
 
@@ -471,4 +475,3 @@ def pytest_configure(config):
             raise pytest.UsageError(msg)
         else:
             cache_file.write_text("clean", encoding="utf-8")
-

@@ -7,5 +7,6 @@ PYTEST_CACHE_DIR=${HERMES_PYTEST_CACHE_DIR:-/home/hermes/.hermes/test-cache/pyte
 
 cd "$RUNTIME_ROOT"
 mkdir -p "$PYTEST_CACHE_DIR"
+export HERMES_PYTEST_CACHE_DIR="$PYTEST_CACHE_DIR"
 export PYTHONPATH="$RUNTIME_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 exec "$TEST_PYTHON" -m pytest -o "cache_dir=$PYTEST_CACHE_DIR" "$@"
