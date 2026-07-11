@@ -8,15 +8,16 @@ StartLimitIntervalSec=0
 Type=simple
 User=hermes
 Group=hermes
-ExecStart=/home/hermes/hermes-v018-integration/.venv/bin/python -m hermes_cli.main gateway run --replace
-ExecStop=/home/hermes/hermes-v018-integration/.venv/bin/python /home/hermes/hermes-v018-integration/ops/systemd/hermes_gateway_planned_stop.py $MAINPID
-WorkingDirectory=/home/hermes/hermes-v018-integration
+ExecStart=/home/hermes/hermes-runtime/shared/venv/bin/python -m hermes_cli.main gateway run --replace
+ExecStop=/home/hermes/hermes-runtime/shared/venv/bin/python /home/hermes/hermes-runtime/current/ops/systemd/hermes_gateway_planned_stop.py $MAINPID
+WorkingDirectory=/home/hermes/hermes-runtime/current
 Environment="HOME=/home/hermes"
 Environment="USER=hermes"
 Environment="LOGNAME=hermes"
-Environment="PATH=/home/hermes/hermes-v018-integration/.venv/bin:/home/hermes/.hermes/node/bin:/home/hermes/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="VIRTUAL_ENV=/home/hermes/hermes-v018-integration/.venv"
+Environment="PATH=/home/hermes/hermes-runtime/shared/venv/bin:/home/hermes/.hermes/node/bin:/home/hermes/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="VIRTUAL_ENV=/home/hermes/hermes-runtime/shared/venv"
 Environment="HERMES_HOME=/home/hermes/.hermes"
+Environment="HERMES_RUNTIME_ROOT=/home/hermes/hermes-runtime/current"
 Restart=always
 RestartSec=5
 RestartMaxDelaySec=300

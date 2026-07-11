@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RELEASE_MANIFEST = ".hermes-release.json"
 
 
 def _git(root: Path, *args: str) -> str | None:
@@ -31,10 +32,25 @@ def _git(root: Path, *args: str) -> str | None:
 
 
 def git_identity(root: Path) -> dict[str, Any]:
+    head = _git(root, "rev-parse", "HEAD")
+    if head is None:
+        manifest_path = root / RELEASE_MANIFEST
+        try:
+            release = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            release = {}
+        if release.get("commit"):
+            return {
+                "root": str(root),
+                "branch": "release",
+                "head": release["commit"],
+                "tree": release.get("tree"),
+                "dirty": False,
+            }
     return {
         "root": str(root),
         "branch": _git(root, "branch", "--show-current"),
-        "head": _git(root, "rev-parse", "HEAD"),
+        "head": head,
         "dirty": bool(_git(root, "status", "--porcelain")),
     }
 
