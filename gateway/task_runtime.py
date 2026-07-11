@@ -30,6 +30,7 @@ from gateway.task_router import (
 from gateway.quick_note_capture import (
     build_location_place_note,
     canonical_place_label,
+    detect_context_save_note,
     detect_quick_note,
     format_quick_save_response,
     run_quick_save,
@@ -108,7 +109,9 @@ _DATE_RE = re.compile(
     re.I,
 )
 _TIME_RE = re.compile(
-    r"\b(?:[01]?\d|2[0-3])[:.]\d{2}\b|\b(?:в|на)\s+(?:[01]?\d|2[0-3])\b",
+    r"\b(?:[01]?\d|2[0-3])[:.]\d{2}\b|"
+    r"\b(?:в|на)\s+(?:[01]?\d|2[0-3])\b|"
+    r"\b(?:[01]?\d|2[0-3])\s*(?:час(?:ов|а)?|ч)\b",
     re.I,
 )
 _PURPOSE_RE = re.compile(
@@ -299,14 +302,51 @@ def _task_is_calendar_write(task: TaskRecord) -> bool:
     )
 
 
+def _calendar_missing_inputs_from_task(task: TaskRecord) -> tuple[str, ...]:
+    saved = task.metadata.get("calendar_missing_inputs")
+    if isinstance(saved, (list, tuple)):
+        return tuple(str(item) for item in saved if item)
+    last_error = str(task.last_error or "")
+    marker = "missing inputs:"
+    if marker in last_error:
+        return tuple(item.strip() for item in last_error.split(marker, 1)[1].split(",") if item.strip())
+    return ()
+
+
+def _calendar_followup_supplies_missing(task: TaskRecord, text: str) -> bool:
+    value = " ".join(str(text or "").strip().split())
+    if not value or len(value) > 160 or _is_calendar_write_request(value):
+        return False
+    missing = _calendar_missing_inputs_from_task(task)
+    has_date = bool(_DATE_RE.search(value))
+    has_time = bool(_TIME_RE.search(value))
+    has_purpose = bool(_PURPOSE_RE.search(value))
+    if "конкретное время события" in missing and has_time:
+        return True
+    if "конкретная дата события" in missing and has_date:
+        return True
+    if "назначение события" in missing and has_purpose:
+        return True
+    # Backward-compatible recovery for older blocked calendar tasks that did not
+    # persist the exact missing-input list.
+    return not missing and has_time and (has_date or bool(re.search(r"\b(?:мск|москв|час(?:ов|а)?)\b", value, re.I)))
+
+
 def _select_calendar_pending_task(store: TaskStateStore, platform_key: str, chat_id: str, ctx: MessageContext) -> TaskRecord | None:
-    if not _is_calendar_write_request(ctx.current_text):
-        return None
+    explicit_calendar_action = _is_calendar_write_request(ctx.current_text)
     matches = [
         task for task in store.active(platform_key, str(chat_id))
         if _task_is_calendar_write(task) and _calendar_task_sender_matches(task, ctx)
     ]
-    return matches[0] if len(matches) == 1 else None
+    if explicit_calendar_action:
+        return matches[0] if len(matches) == 1 else None
+    followup_matches = [
+        task for task in matches
+        if task.status in {"blocked", "incomplete", "paused"}
+        and time.time() - task.updated_at <= 6 * 3600
+        and _calendar_followup_supplies_missing(task, ctx.current_text)
+    ]
+    return followup_matches[0] if len(followup_matches) == 1 else None
 
 
 def _calendar_source_request_id(platform_key: str, chat_id: str, ctx: MessageContext, fallback: str) -> str:
@@ -1857,9 +1897,18 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     # same inbound update is handled later by source_request_id.
     pending_calendar_draft_task = pending_calendar
     task = decision.task if decision.kind == "selected" else None
+    if task is None and pending_calendar is not None and not _is_calendar_write_request(current_text):
+        task = pending_calendar
     if task is not None and _task_is_calendar_write(task) and not _calendar_task_sender_matches(task, msg_ctx):
         task = None
     continued = task is not None
+    calendar_continuation_request = None
+    if task is not None and _task_is_calendar_write(task) and _calendar_followup_supplies_missing(task, original):
+        calendar_continuation_request = (
+            str(task.original_request or "").strip()
+            + "\n\nУточнение пользователя: "
+            + str(original or "").strip()
+        ).strip()
     if task is not None and int(task.metadata.get("budget_exhaustions", 0) or 0) >= 2:
         return PreparedTaskTurn(
             original, None, task,
@@ -1905,14 +1954,19 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             "tools, safety mode and completion contract. Do not repeat completed audit or discovery; "
             "continue from metadata/checkpoint and spend the last 5 iterations only on tests, DoD, checkpoint, and final delivery. "
             "Do not interpret the short continuation phrase as a new task.]\n\nSaved task:\n"
-            + task.original_request
+            + (calendar_continuation_request or task.original_request)
             + "\n\nSaved checkpoint:\n"
             + str(task.metadata.get("checkpoint") or task.metadata.get("final_response") or task.last_error or "not recorded")[:1800]
             + "\n\nContinuation message:\n" + original
         )
 
     if task is None:
-        quick_note = detect_quick_note(current_text, continued=False)
+        quick_note = detect_context_save_note(
+            current_text,
+            msg_ctx.reply_text,
+            msg_ctx.reply_caption,
+            continued=False,
+        ) or detect_quick_note(current_text, continued=False)
         if quick_note is not None:
             try:
                 quick_result = run_quick_save(quick_note)
@@ -1925,7 +1979,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                     response,
                     status=status,
                     role="no_llm",
-                    reason="deterministic quick note capture",
+                    reason="deterministic knowledge quick save",
                 ),
                 False,
             )
@@ -1962,7 +2016,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             if task is None:
                 message = calendar_request
 
-    base_text = task.original_request if task else str(calendar_request or message or "")
+    base_text = calendar_continuation_request or (task.original_request if task else str(calendar_request or message or ""))
     route = route_turn(base_text, command=None, platform_key=platform_key,
                        user_config=user_config, platform_toolsets=platform_toolsets,
                        context_text=uncertainty_context)
@@ -2045,6 +2099,34 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         missing_inputs, preflight_reason = preflight
         if task is not None:
             store.update(task.task_id, status="blocked", last_error="missing inputs: " + ",".join(missing_inputs))
+            store.merge_metadata(task.task_id, calendar_missing_inputs=missing_inputs)
+        elif _is_calendar_write_request(base_text) and _route_has_calendar_capability(route.toolsets, route.skill_names):
+            _requires_execution, required_toolsets = infer_execution_contract(base_text, route.role, route.toolsets)
+            task = store.create(
+                platform=platform_key,
+                chat_id=str(chat_id),
+                session_key=session_key,
+                title=" ".join(str(base_text or original).split())[:120] or "Задача календаря",
+                original_request=str(base_text or original),
+                role=route.role,
+                toolsets=route.toolsets,
+                required_toolsets=required_toolsets,
+                requires_execution=True,
+                source_request_id=_calendar_source_request_id(platform_key, str(chat_id), msg_ctx, request_id),
+                source_session_id=session_id,
+                status="blocked",
+                metadata={
+                    "intent": "calendar_write",
+                    "sender_id": msg_ctx.sender_id,
+                    "current_message_id": msg_ctx.current_message_id,
+                    "platform_update_id": msg_ctx.update_id,
+                    "reply_message_id": msg_ctx.reply_message_id,
+                    "reply_sender_id": msg_ctx.reply_sender_id,
+                    "calendar_missing_inputs": missing_inputs,
+                    "execution_contract": {"type": "calendar_write"},
+                },
+            )
+            store.update(task.task_id, last_error="missing inputs: " + ",".join(missing_inputs))
         return PreparedTaskTurn(
             str(message or ""), route, task,
             early_response(

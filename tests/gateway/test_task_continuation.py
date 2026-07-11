@@ -20,7 +20,7 @@ from gateway.task_runtime import (
     prepare_task_turn,
     task_reported_non_success,
 )
-from gateway.quick_note_capture import detect_quick_note
+from gateway.quick_note_capture import detect_context_save_note, detect_quick_note
 from tools.session_search_tool import (
     _consume_search_budget,
     reset_turn_search_budget,
@@ -1077,6 +1077,78 @@ def test_calendar_missing_reply_data_blocks_before_model(tmp_path, monkeypatch):
     assert "конкретное время" in prepared.early_response["final_response"]
     assert "назначение события" in prepared.early_response["final_response"]
 
+
+def test_calendar_missing_time_preflight_persists_followup_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+
+    prepared = prepare_task_turn(
+        message="поставь сегодня встречу в календарь, вложение и ссылку добавь",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-calendar-missing-time",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "поставь сегодня встречу в календарь, вложение и ссылку добавь",
+            "sender_id": "u1",
+            "update_id": 5101,
+        },
+    )
+
+    assert prepared.early_response is not None
+    assert prepared.task is not None
+    assert prepared.task.status == "blocked"
+    assert prepared.task.metadata["intent"] == "calendar_write"
+    assert prepared.task.metadata["calendar_missing_inputs"] == ["конкретное время события"]
+
+
+def test_calendar_time_only_followup_resumes_missing_time_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setattr(
+        "agent.skill_commands.build_preloaded_skills_prompt",
+        lambda names, task_id=None: ("GOOGLE WORKSPACE SKILL", list(names), []),
+    )
+
+    first = prepare_task_turn(
+        message="поставь сегодня встречу в календарь, вложение и ссылку добавь",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-calendar-missing-time-2",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": "поставь сегодня встречу в календарь, вложение и ссылку добавь",
+            "sender_id": "u1",
+            "update_id": 5102,
+        },
+    )
+    assert first.task is not None
+
+    second = prepare_task_turn(
+        message="17 часов сегодня",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-calendar-followup-time",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={"current_text": "17 часов сегодня", "sender_id": "u1", "update_id": 5103},
+    )
+
+    assert second.continued is True
+    assert second.task.task_id == first.task.task_id
+    assert second.early_response is None
+    assert "Уточнение пользователя: 17 часов сегодня" in second.message
+    assert "google-workspace" in second.route.skill_names
+
+
 def test_calendar_pending_continuation_requires_calendar_action_and_same_user(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     state_dir = tmp_path / ".hermes"
@@ -1661,6 +1733,55 @@ def test_quick_note_rejects_calendar_mail_vps_links_and_unclear():
     ]
     for text in blocked:
         assert detect_quick_note(text) is None
+
+def test_context_save_detects_reply_article_even_with_typo():
+    reply = (
+        "Я интервью не смотрел, но это наверняка про агента в продукте, "
+        "который доступен пользователям в браузере и помогает с BI. "
+        "https://yandex.cloud/ru/docs/datalens/dashboard/insights#neuroanalyst-2"
+    )
+    note = detect_context_save_note("сохрарни в базу инфо", reply)
+    assert note is not None
+    assert note.payload["knowledge_project"] == "general"
+    assert note.payload["type"] == "research"
+    assert note.payload["sources"] == ["https://yandex.cloud/ru/docs/datalens/dashboard/insights#neuroanalyst-2"]
+    assert "Yandex DataLens" in note.payload["title"]
+
+
+def test_prepare_task_turn_context_save_returns_no_llm(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".hermes").mkdir()
+    saved = []
+    monkeypatch.setattr(
+        "gateway.task_runtime.run_quick_save",
+        lambda note: saved.append(note) or {
+            "status": "saved",
+            "saved": True,
+            "already_exists": False,
+            "title": note.payload["title"],
+            "summary": note.payload["summary"],
+            "readback_count": 1,
+        },
+    )
+    prepared = prepare_task_turn(
+        message="сохрани статью про агента в datalens в дашбордах - инфа по ссылке",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-context-save",
+        user_config={"agent": {}},
+        platform_toolsets=["clarify", "skills", "file", "web", "terminal", "no_mcp"],
+        message_context={
+            "current_text": "сохрани статью про агента в datalens в дашбордах - инфа по ссылке",
+            "reply_text": "https://yandex.cloud/ru/docs/datalens/dashboard/insights#neuroanalyst-2",
+        },
+    )
+    assert saved
+    assert prepared.task is None
+    assert prepared.early_response["api_calls"] == 0
+    assert prepared.early_response["task_level"] == "no_llm"
+    assert prepared.early_response["final_response"].startswith("Сохранено:")
 
 def test_prepare_task_turn_quick_note_returns_no_llm(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
