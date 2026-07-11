@@ -19,6 +19,7 @@ from pathlib import Path
 DEFAULT_ROOT = Path("/home/hermes/hermes-runtime")
 DEFAULT_REPO = Path("/home/hermes/hermes-prod-rollout-20260710")
 SERVICE = "hermes-gateway.service"
+COMPANION_SERVICES = ("hermes-dashboard.service",)
 MANIFEST = ".hermes-release.json"
 
 
@@ -166,16 +167,28 @@ class ReleaseManager:
                 "previous": describe(self.previous)}
 
 
-def restart_and_check(timeout: int = 45) -> None:
+def _service_active(service: str) -> bool:
+    return subprocess.run(
+        ["systemctl", "is-active", "--quiet", service], check=False
+    ).returncode == 0
+
+
+def restart_and_check(timeout: int = 45, stabilization_seconds: int = 5) -> None:
+    companions = [service for service in COMPANION_SERVICES if _service_active(service)]
     run("systemctl", "restart", SERVICE, timeout=240)
+    for service in companions:
+        run("systemctl", "restart", service, timeout=120)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        active = subprocess.run(
-            ["systemctl", "is-active", "--quiet", SERVICE], check=False
-        ).returncode == 0
+        active = _service_active(SERVICE)
         pid = run("systemctl", "show", SERVICE, "-p", "MainPID", "--value")
-        if active and pid.isdigit() and int(pid) > 0:
-            return
+        companions_healthy = all(_service_active(service) for service in companions)
+        if active and pid.isdigit() and int(pid) > 0 and companions_healthy:
+            time.sleep(stabilization_seconds)
+            if _service_active(SERVICE) and all(
+                _service_active(service) for service in companions
+            ):
+                return
         time.sleep(1)
     raise RuntimeError(f"{SERVICE} did not become healthy")
 
