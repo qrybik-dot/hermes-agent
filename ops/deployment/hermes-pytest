@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RUNTIME_ROOT=${HERMES_RUNTIME_ROOT:-/home/hermes/hermes-runtime/current}
+TEST_PYTHON=${HERMES_TEST_PYTHON:-/home/hermes/hermes-runtime/shared/test-venv/bin/python}
+PYTEST_CACHE_DIR=${HERMES_PYTEST_CACHE_DIR:-/home/hermes/.hermes/test-cache/pytest}
+
+cd "$RUNTIME_ROOT"
+mkdir -p "$PYTEST_CACHE_DIR"
+export PYTHONPATH="$RUNTIME_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$TEST_PYTHON" -m pytest -o "cache_dir=$PYTEST_CACHE_DIR" "$@"
