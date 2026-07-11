@@ -167,6 +167,40 @@ class ReleaseManager:
         return {"root": str(self.root), "current": describe(self.current),
                 "previous": describe(self.previous)}
 
+    def prune(self, keep: int = 2) -> list[str]:
+        """Remove old reproducible releases while protecting active rollback."""
+        keep = max(2, keep)
+        protected = {
+            Path(target).name
+            for target in (
+                self._link_target(self.current),
+                self._link_target(self.previous),
+            )
+            if target
+        }
+        candidates = []
+        for release in self.releases.iterdir():
+            if not release.is_dir() or release.name.startswith(".staging-"):
+                continue
+            try:
+                created_at = str(self.read_manifest(release).get("created_at") or "")
+            except (OSError, ValueError, TypeError):
+                continue
+            candidates.append((created_at, release))
+        candidates.sort(reverse=True)
+        retained = set(protected)
+        for _, release in candidates:
+            if len(retained) >= keep:
+                break
+            retained.add(release.name)
+        removed = []
+        for _, release in candidates:
+            if release.name in retained:
+                continue
+            shutil.rmtree(release)
+            removed.append(release.name)
+        return removed
+
 
 def _service_active(service: str) -> bool:
     return subprocess.run(
@@ -220,12 +254,18 @@ def main() -> int:
         command = sub.add_parser(name)
         command.add_argument("revision")
     sub.add_parser("rollback")
+    prune = sub.add_parser("prune")
+    prune.add_argument("--keep", type=int, default=2)
     sub.add_parser("status")
     args = parser.parse_args()
 
     manager = ReleaseManager(args.root, args.repo)
     if args.command == "status":
         print(json.dumps(manager.status(), sort_keys=True))
+        return 0
+    if args.command == "prune":
+        require_root()
+        print(json.dumps({"removed": manager.prune(args.keep)}, sort_keys=True))
         return 0
     if args.command == "stage":
         release = manager.stage(args.revision)
