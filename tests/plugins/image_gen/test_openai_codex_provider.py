@@ -185,7 +185,7 @@ class TestGenerate:
         assert image_input["detail"] == "high"
         assert image_input["image_url"].startswith("data:image/png;base64,")
         assert captured["tools"][0]["action"] == "edit"
-        assert captured["tools"][0]["input_fidelity"] == "high"
+        assert "input_fidelity" not in captured["tools"][0]
 
     def test_rejects_more_than_four_input_images(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")

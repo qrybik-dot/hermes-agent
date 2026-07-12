@@ -191,7 +191,7 @@ def _build_responses_payload(
         "partial_images": 1,
     }
     if image_urls:
-        image_tool.update({"action": "edit", "input_fidelity": "high"})
+        image_tool["action"] = "edit"
     return {
         "model": _CODEX_CHAT_MODEL,
         "store": False,
