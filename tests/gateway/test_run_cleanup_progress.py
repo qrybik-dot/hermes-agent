@@ -234,6 +234,40 @@ async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_telegram_run_agent_propagates_inbound_request_id(monkeypatch, tmp_path):
+    """A normal Telegram turn must reach task preparation without a scope error."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    import gateway.task_runtime as task_runtime
+
+    captured = {}
+    original_prepare = task_runtime.prepare_task_turn
+
+    def capture_prepare_task_turn(**kwargs):
+        captured["request_id"] = kwargs.get("request_id")
+        return original_prepare(**kwargs)
+
+    monkeypatch.setattr(task_runtime, "prepare_task_turn", capture_prepare_task_turn)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-request-id",
+        session_key="agent:main:telegram:group:-1001",
+        request_id="telegram-request-123",
+    )
+
+    assert result["final_response"] == "done"
+    assert captured["request_id"] == "telegram-request-123"
+
+
+@pytest.mark.asyncio
 async def test_cleanup_registers_callback_and_deletes_on_success(monkeypatch, tmp_path):
     """With the flag on, the cleanup callback deletes the progress bubble."""
     adapter = CleanupCaptureAdapter()

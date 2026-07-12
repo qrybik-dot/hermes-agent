@@ -11226,6 +11226,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 run_generation=run_generation,
+                request_id=_request_id,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
@@ -16455,6 +16456,7 @@ message_context={
         session_id: str,
         session_key: str = None,
         run_generation: Optional[int] = None,
+        request_id: Optional[str] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
@@ -16476,6 +16478,7 @@ message_context={
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
+                request_id=request_id,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
@@ -16488,6 +16491,7 @@ message_context={
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
+                request_id=request_id,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
@@ -16519,6 +16523,7 @@ message_context={
         session_id: str,
         session_key: str = None,
         run_generation: Optional[int] = None,
+        request_id: Optional[str] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
@@ -17721,9 +17726,12 @@ message_context={
                     except Exception:
                         pass
 
-            # The process-local generation resets after a gateway restart.
-            # Use the unique inbound request identity instead.
-            _task_request_id = _request_id
+            # The gateway handler supplies a unique identity for the inbound
+            # request. Keep a deterministic fallback for internal recursion and
+            # direct callers that do not originate from a platform event.
+            _task_request_id = request_id or (
+                (session_id or session_key or "task") + ":" + str(run_generation)
+            )
             _prepared_task = prepare_task_turn(
                 message=str(message or ""),
                 platform_key=platform_key,
