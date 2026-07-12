@@ -13039,6 +13039,14 @@ message_context={
                             metadata=_thread_meta,
                         )
                     else:
+                        from gateway.artifact_capture import archive_outbound_document
+                        await archive_outbound_document(
+                            media_path,
+                            platform=event.source.platform.value,
+                            chat_id=event.source.chat_id,
+                            source_workspace=event.source.chat_name or event.source.platform.value,
+                            metadata={"delivery_path": "post_stream_media"},
+                        )
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
@@ -13057,6 +13065,14 @@ message_context={
                             metadata=_thread_meta,
                         )
                     else:
+                        from gateway.artifact_capture import archive_outbound_document
+                        await archive_outbound_document(
+                            file_path,
+                            platform=event.source.platform.value,
+                            chat_id=event.source.chat_id,
+                            source_workspace=event.source.chat_name or event.source.platform.value,
+                            metadata={"delivery_path": "post_stream_local_file"},
+                        )
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
@@ -13263,6 +13279,14 @@ message_context={
                                 metadata=_thread_metadata,
                             )
                         else:
+                            from gateway.artifact_capture import archive_outbound_document
+                            await archive_outbound_document(
+                                media_path,
+                                platform=source.platform.value,
+                                chat_id=source.chat_id,
+                                source_workspace=source.chat_name or source.platform.value,
+                                metadata={"delivery_path": "background_task"},
+                            )
                             await adapter.send_document(
                                 chat_id=source.chat_id,
                                 file_path=media_path,

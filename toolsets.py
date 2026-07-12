@@ -59,6 +59,8 @@ _HERMES_CORE_TOOLS = [
     # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
+    # Durable user-facing artifact registry (DOCX/PDF/XLSX/Markdown; images excluded)
+    "artifact_store",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -221,6 +223,12 @@ TOOLSETS = {
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
+        "includes": []
+    },
+
+    "artifact": {
+        "description": "Durable user-facing artifact storage, cross-session search, versions, quota, and resend",
+        "tools": ["artifact_store"],
         "includes": []
     },
 
