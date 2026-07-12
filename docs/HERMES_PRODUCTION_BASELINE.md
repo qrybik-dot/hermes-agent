@@ -35,10 +35,10 @@
 | simple | custom | gemini-3.5-flash-low |
 | parser | custom | gemini-3.5-flash-low |
 | research | custom | gemini-3.1-pro-low |
-| planning | openai-codex | gpt-5.5 |
-| coding | openai-codex | gpt-5.5 |
-| long_context | openai-codex | gpt-5.5 |
-| server_debug | openai-codex | gpt-5.5 |
+| planning | openai-codex | gpt-5.6-sol |
+| coding | openai-codex | gpt-5.6-terra |
+| long_context | custom | gemini-3.1-pro-low |
+| server_debug | openai-codex | gpt-5.6-sol |
 | no_llm | gateway | deterministic |
 
 Правила:
@@ -48,6 +48,10 @@
 - метрики обязаны различать выбранную и фактическую модель;
 - fallback фиксируется только при фактическом использовании;
 - Git/VPS/systemd аудит получает `server_debug + terminal`.
+- `coding` использует `gpt-5.6-terra`; `planning` и `server_debug` используют `gpt-5.6-sol`;
+- `gpt-5.5` не участвует в активном роутинге и сохраняется только как ручной rollback-кандидат;
+- делегирование остаётся последовательным и плоским: один дочерний агент, без вложенного orchestrator и без автоодобрения;
+- в production запрещены неприбитые алиасы `gpt-5.6`, `latest` и `auto-latest`.
 
 ## 3. Продолжение задач
 
