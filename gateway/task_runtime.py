@@ -2164,9 +2164,15 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 "Execute the workflow in this agent: do not delegate or start background tasks. "
                 "Call avito_worker_health, avito_search and avito_get_listing directly; call "
                 "image_generate directly for exactly one honest cover and never use ComfyUI. "
+                "Call health once before search. If the Mac worker is unavailable, do not retry, "
+                "wait, delegate, or use another search source: continue immediately with photo "
+                "analysis, the draft, form fields, a VPS-side cover attempt, and 2-3 ready-to-copy "
+                "manual Avito search queries. Explain the limitation in one plain sentence without "
+                "error codes, endpoints, transport details or stack traces. "
                 "Do not invent prices, links, features, condition, brand or model. If a required "
                 "result is unavailable, label the outcome PARTIAL and name the missing result; "
-                "never report 100% completion. Prepare a draft and one honest cover only."
+                "never report 100% completion. Keep Telegram progress to one compact editable status "
+                "and one final message. Prepare a draft and one honest cover only."
             ).strip(),
         )
     if calendar_request is not None and "google-workspace" not in route.skill_names:

@@ -77,6 +77,9 @@ def test_short_avito_caption_survives_large_vision_enrichment(tmp_path, monkeypa
     assert set(prepared.route.toolsets) == {"avito", "clarify", "image_gen", "no_mcp", "vision"}
     assert "do not delegate" in prepared.route.operational_context
     assert "image_generate directly" in prepared.route.operational_context
+    assert "If the Mac worker is unavailable, do not retry" in prepared.route.operational_context
+    assert "manual Avito search queries" in prepared.route.operational_context
+    assert "one compact editable status" in prepared.route.operational_context
 
 
 def test_photo_without_intent_clarifies_before_tools(tmp_path, monkeypatch):
