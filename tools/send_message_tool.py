@@ -1194,6 +1194,18 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
             ext = os.path.splitext(media_path)[1].lower()
             try:
+                if ext not in _VIDEO_EXTS and ext not in _VOICE_EXTS and ext not in _TELEGRAM_SEND_AUDIO_EXTS:
+                    from hermes_cli.artifact_store import capture_outbound_artifact
+                    archive_result = await asyncio.to_thread(
+                        capture_outbound_artifact,
+                        media_path,
+                        source_system="hermes-send-message-telegram",
+                        source_workspace="telegram",
+                        source_chat=str(chat_id),
+                        metadata={"delivery_path": "send_message_tool"},
+                    )
+                    if archive_result.get("status") == "error":
+                        logger.warning("Artifact capture before Telegram send failed: %s", archive_result.get("error"))
                 with open(media_path, "rb") as f:
                     media_kwargs = dict(thread_kwargs)
                     try:

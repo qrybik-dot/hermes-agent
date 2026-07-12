@@ -5149,6 +5149,14 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                         else:
+                            from gateway.artifact_capture import archive_outbound_document
+                            await archive_outbound_document(
+                                media_path,
+                                platform=self.platform.value,
+                                chat_id=event.source.chat_id,
+                                source_workspace=event.source.chat_name or self.platform.value,
+                                metadata={"delivery_path": "response_media"},
+                            )
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
@@ -5173,6 +5181,14 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                         else:
+                            from gateway.artifact_capture import archive_outbound_document
+                            await archive_outbound_document(
+                                file_path,
+                                platform=self.platform.value,
+                                chat_id=event.source.chat_id,
+                                source_workspace=event.source.chat_name or self.platform.value,
+                                metadata={"delivery_path": "response_local_file"},
+                            )
                             await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,

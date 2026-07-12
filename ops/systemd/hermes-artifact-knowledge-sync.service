@@ -1,0 +1,46 @@
+[Unit]
+Description=Index Hermes Artifact Store files in Hermes Knowledge
+After=network-online.target hermes-knowledge-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hermes-knowledge
+Group=hermes-artifacts
+WorkingDirectory=/opt/hermes-artifact-runtime/current
+EnvironmentFile=-/etc/hermes-knowledge-mcp.env
+Environment="HERMES_ARTIFACT_STORE_ENABLED=1"
+Environment="HERMES_ARTIFACT_ROOT=/srv/hermes-artifacts"
+Environment="HERMES_KNOWLEDGE_LOCAL_URL=http://127.0.0.1:2092"
+Environment="PYTHONDONTWRITEBYTECODE=1"
+ExecStart=/usr/bin/python3 /opt/hermes-artifact-runtime/current/ops/artifacts/sync_knowledge.py --limit 50
+UMask=0007
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/hermes-artifacts
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=160M
+CPUQuota=35%

@@ -1,0 +1,44 @@
+[Unit]
+Description=Hermes artifact storage reconciliation, retention and quota alerts
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes-artifacts
+WorkingDirectory=/home/hermes/hermes-runtime/current
+Environment="HOME=/home/hermes"
+Environment="HERMES_HOME=/home/hermes/.hermes"
+Environment="HERMES_ARTIFACT_STORE_ENABLED=1"
+Environment="HERMES_ARTIFACT_ROOT=/srv/hermes-artifacts"
+Environment="PYTHONDONTWRITEBYTECODE=1"
+ExecStart=/home/hermes/hermes-runtime/shared/venv/bin/python /home/hermes/hermes-runtime/current/ops/artifacts/maintenance.py --apply-cleanup
+UMask=0007
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/hermes-artifacts
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=192M
+CPUQuota=40%

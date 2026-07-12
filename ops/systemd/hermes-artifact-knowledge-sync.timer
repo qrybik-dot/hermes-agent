@@ -1,0 +1,13 @@
+[Unit]
+Description=Synchronize pending Artifact Store cards to Hermes Knowledge
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=20s
+Persistent=true
+Unit=hermes-artifact-knowledge-sync.service
+
+[Install]
+WantedBy=timers.target
