@@ -57,6 +57,28 @@ def test_explicit_avito_routes_to_skill_and_exact_tool_boundary(tmp_path, monkey
     assert {"web", "browser", "memory", "terminal", "skills"}.isdisjoint(prepared.route.toolsets)
 
 
+def test_short_avito_caption_survives_large_vision_enrichment(tmp_path, monkeypatch):
+    vision = "\n".join(
+        f"Фото {index}: подробное описание детского самоката, ракурса и видимых следов использования"
+        for index in range(180)
+    )
+    prepared = _prepare(
+        tmp_path,
+        monkeypatch,
+        vision + "\n\nАвито",
+        current_text="Авито",
+        request_id="avito-large-vision",
+    )
+
+    assert prepared.early_response is None
+    assert prepared.task is not None
+    assert prepared.task.metadata["intent"] == "avito_sale"
+    assert prepared.route.skill_names == ("avito-seller",)
+    assert set(prepared.route.toolsets) == {"avito", "clarify", "image_gen", "no_mcp", "vision"}
+    assert "do not delegate" in prepared.route.operational_context
+    assert "image_generate directly" in prepared.route.operational_context
+
+
 def test_photo_without_intent_clarifies_before_tools(tmp_path, monkeypatch):
     prepared = _prepare(
         tmp_path,

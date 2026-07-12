@@ -2161,7 +2161,12 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 + "\n\nAvito mode contract: use only the local Avito Worker for listing data; "
                 "never use web or browser fallback, never publish a listing, never contact sellers, "
                 "never save the item to Knowledge, and never expand geography without user approval. "
-                "Prepare a draft and one honest cover only."
+                "Execute the workflow in this agent: do not delegate or start background tasks. "
+                "Call avito_worker_health, avito_search and avito_get_listing directly; call "
+                "image_generate directly for exactly one honest cover and never use ComfyUI. "
+                "Do not invent prices, links, features, condition, brand or model. If a required "
+                "result is unavailable, label the outcome PARTIAL and name the missing result; "
+                "never report 100% completion. Prepare a draft and one honest cover only."
             ).strip(),
         )
     if calendar_request is not None and "google-workspace" not in route.skill_names:
