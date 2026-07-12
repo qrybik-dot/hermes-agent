@@ -1510,6 +1510,18 @@ def _maybe_route_managed_krea(
     return json.dumps(result)
 
 
+def _is_avito_image_task(task_id: Optional[str]) -> bool:
+    if not task_id:
+        return False
+    try:
+        from gateway.task_continuation import TaskStateStore
+
+        task = TaskStateStore().get(str(task_id))
+        return bool(task and (task.metadata or {}).get("intent") == "avito_sale")
+    except Exception:
+        return False
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -1518,6 +1530,18 @@ def _handle_image_generate(args, **kw):
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
     task_id = kw.get("task_id")
+
+    if _is_avito_image_task(task_id) and not (
+        (isinstance(image_url, str) and image_url.strip())
+        or (isinstance(reference_image_urls, list) and any(
+            isinstance(value, str) and value.strip()
+            for value in reference_image_urls
+        ))
+    ):
+        return tool_error(
+            "Avito covers must edit at least one original product photo; "
+            "text-to-image is not allowed for listing fidelity"
+        )
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this
