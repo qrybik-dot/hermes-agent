@@ -16769,6 +16769,7 @@ message_context={
             "enabled": False,
             "key": "",
             "title": "",
+            "mode_label": None,
             "formatter": None,
         }
         runtime_calendar_evidence = [None]
@@ -16791,7 +16792,10 @@ message_context={
                 phase = "deliver" if "ответ" in str(phase).lower() else "work"
             formatter = task_status_state.get("formatter")
             if not isinstance(formatter, TelegramTaskStatusState):
-                formatter = TelegramTaskStatusState(task_status_state.get("title") or "задача Hermes")
+                formatter = TelegramTaskStatusState(
+                    task_status_state.get("title") or "задача Hermes",
+                    mode_label=task_status_state.get("mode_label"),
+                )
                 task_status_state["formatter"] = formatter
             if completed:
                 formatter.complete_current()
@@ -17933,12 +17937,21 @@ message_context={
                     if _active_task is not None
                     else f"task:{session_key}:{run_generation}"
                 )
-                _formatter = TelegramTaskStatusState(_title or "задача Hermes")
+                _mode_label = (
+                    _active_task.metadata.get("mode_label")
+                    if _active_task is not None and isinstance(_active_task.metadata, dict)
+                    else None
+                )
+                _formatter = TelegramTaskStatusState(
+                    _title or "задача Hermes",
+                    mode_label=_mode_label,
+                )
                 _formatter.set_plan(status_steps_from_request(str(message or "")))
                 task_status_state.update({
                     "enabled": True,
                     "key": _status_key,
                     "title": _title or "задача Hermes",
+                    "mode_label": _mode_label,
                     "formatter": _formatter,
                 })
                 # For long Telegram tasks the gateway-owned live status is the

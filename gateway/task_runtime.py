@@ -23,6 +23,15 @@ from gateway.task_continuation import (
     should_track_task,
 )
 from gateway.intent_uncertainty import clarification_question, detect_uncertain_intent
+from gateway.avito_intent import (
+    AVITO_INTENT,
+    AVITO_MODE_LABEL,
+    AVITO_TOOLSETS,
+    avito_clarification_question,
+    detect_avito_intent,
+    is_avito_followup,
+    is_avito_task_metadata,
+)
 from gateway.pre_model_pipeline import PreModelStage, run_pre_model_pipeline
 from gateway.save_intent_router import detect_save_intent
 from gateway.task_router import (
@@ -300,6 +309,29 @@ def _task_is_calendar_write(task: TaskRecord) -> bool:
         or _metadata_requests_calendar_write(task.metadata)
         or _is_calendar_write_request(task.original_request)
     )
+
+
+def _select_avito_pending_task(
+    store: TaskStateStore,
+    platform_key: str,
+    chat_id: str,
+    ctx: MessageContext,
+    *,
+    context_text: str = "",
+) -> TaskRecord | None:
+    if not is_avito_followup(ctx.current_text, context_text=context_text):
+        return None
+    matches = [
+        task
+        for task in store.active(platform_key, str(chat_id))
+        if is_avito_task_metadata(task.metadata)
+        and not (
+            task.metadata.get("sender_id")
+            and ctx.sender_id
+            and str(task.metadata.get("sender_id")) != str(ctx.sender_id)
+        )
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _select_calendar_pending_task(store: TaskStateStore, platform_key: str, chat_id: str, ctx: MessageContext) -> TaskRecord | None:
@@ -1834,6 +1866,10 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         if part and part.strip()
     )
     active_tasks = store.active(platform_key, str(chat_id))
+    avito_intent = detect_avito_intent(
+        original,
+        context_text="\n".join(part for part in (current_text, uncertainty_context) if part),
+    )
     if re.fullmatch(r"\s*(?:почему|из-за\s+чего|в\s+ч[её]м\s+причина)\s+(?:эта\s+)?(?:ошибка|blocked|блокировка)[\s.!?]*", original, re.I):
         if len(active_tasks) == 1:
             current = active_tasks[0]
@@ -1877,6 +1913,21 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             },
         )
 
+    def avito_intent_response():
+        if avito_intent.kind != "clarify":
+            return None
+        return early_response(
+            avito_clarification_question(avito_intent),
+            role="no_llm",
+            reason="deterministic Avito intent guard",
+            diagnostics={
+                "clarification_required": True,
+                "clarification_kind": "avito_intent",
+                "tool_call_count": 0,
+                "uncertainty_gate": "pre_model",
+            },
+        )
+
     pre_model = run_pre_model_pipeline([
         PreModelStage(
             "location_place",
@@ -1897,9 +1948,14 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             enabled=not active_tasks and not travel_is_source_capture(current_text),
         ),
         PreModelStage(
+            "avito_intent",
+            avito_intent_response,
+            enabled=platform_key == "telegram" and not active_tasks,
+        ),
+        PreModelStage(
             "uncertainty",
             uncertainty_response,
-            enabled=not active_tasks,
+            enabled=not active_tasks and avito_intent.kind == "other",
         ),
         PreModelStage(
             "place_lookup",
@@ -1928,8 +1984,17 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         )
 
     decision = store.resolve(original, platform_key, str(chat_id))
+    pending_avito = None
+    if decision.kind == "none" and platform_key == "telegram":
+        pending_avito = _select_avito_pending_task(
+            store,
+            platform_key,
+            str(chat_id),
+            msg_ctx,
+            context_text="\n".join(part for part in (original, uncertainty_context) if part),
+        )
     pending_calendar = None
-    if decision.kind == "none":
+    if decision.kind == "none" and pending_avito is None:
         pending_calendar = _select_calendar_pending_task(store, platform_key, str(chat_id), msg_ctx)
     if decision.kind == "choice":
         return PreparedTaskTurn(
@@ -1952,7 +2017,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     # execution task for a new Telegram update/message.  Idempotency for the
     # same inbound update is handled later by source_request_id.
     pending_calendar_draft_task = pending_calendar
-    task = decision.task if decision.kind == "selected" else None
+    task = decision.task if decision.kind == "selected" else pending_avito
     if task is not None and _task_is_calendar_write(task) and not _calendar_task_sender_matches(task, msg_ctx):
         task = None
     continued = task is not None
@@ -2070,6 +2135,35 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     route = route_turn(base_text, command=None, platform_key=platform_key,
                        user_config=user_config, platform_toolsets=platform_toolsets,
                        context_text=uncertainty_context)
+    avito_mode = bool(
+        platform_key == "telegram"
+        and (
+            avito_intent.kind == "avito"
+            or (task is not None and is_avito_task_metadata(task.metadata))
+        )
+    )
+    if avito_mode:
+        allowed = set(platform_toolsets or AVITO_TOOLSETS)
+        avito_toolsets = [
+            name
+            for name in AVITO_TOOLSETS
+            if name == "no_mcp" or platform_toolsets is None or name in allowed
+        ]
+        route = TaskRoute(
+            role="agentic",
+            reason=route.reason + "; deterministic_avito_mode",
+            toolsets=sorted(set(avito_toolsets)),
+            max_iterations=max(route.max_iterations, 20),
+            skill_names=("avito-seller",),
+            skip_context_files=True,
+            operational_context=(
+                route.operational_context
+                + "\n\nAvito mode contract: use only the local Avito Worker for listing data; "
+                "never use web or browser fallback, never publish a listing, never contact sellers, "
+                "never save the item to Knowledge, and never expand geography without user approval. "
+                "Prepare a draft and one honest cover only."
+            ).strip(),
+        )
     if calendar_request is not None and "google-workspace" not in route.skill_names:
         allowed = set(platform_toolsets or [])
         extra_toolsets = [
@@ -2202,6 +2296,9 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     if "city-travel-concierge" in route.skill_names:
         requires_execution = True
         required = tuple(sorted(set(required) | {"terminal"}))
+    if avito_mode:
+        requires_execution = True
+        required = ("avito", "image_gen", "vision")
 
     html_report_requested = should_generate_html_report(
         base_text, route.role, requires_execution=requires_execution,
@@ -2298,6 +2395,14 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         source_request_id = _task_source_request_id(
             platform_key, str(chat_id), msg_ctx, request_id
         )
+        if avito_mode:
+            task_metadata.update({
+                "intent": AVITO_INTENT,
+                "mode_label": AVITO_MODE_LABEL,
+                "sender_id": msg_ctx.sender_id,
+                "current_message_id": msg_ctx.current_message_id,
+                "platform_update_id": msg_ctx.update_id,
+            })
         if calendar_request and calendar_request_draft is not None:
             source_request_id = _calendar_source_request_id(platform_key, str(chat_id), msg_ctx, request_id)
             task_metadata.update({

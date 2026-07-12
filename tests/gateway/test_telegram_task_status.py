@@ -194,6 +194,18 @@ def test_adaptive_progress_uses_telegram_safe_emoji_bar():
     assert "Задача: исправить код" in rendered
 
 
+def test_avito_mode_reuses_compact_status_without_duplicate_task_title():
+    state = TelegramTaskStatusState(
+        "Подготовить объявление по фотографиям",
+        mode_label="Продажа на Avito",
+    )
+    rendered = state.render(action="Проверяю аналоги", phase="work")
+
+    assert "🎯 Продажа на Avito" in rendered
+    assert "Проверяю аналоги" in rendered
+    assert "Задача:" not in rendered
+
+
 def test_detective_and_runner_finish_with_semantic_icons():
     detective = TelegramTaskStatusState("провести исследование")
     runner = TelegramTaskStatusState("подготовить документ")

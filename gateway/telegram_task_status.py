@@ -198,6 +198,7 @@ class TelegramTaskStatusState:
     """One editable Telegram status whose checklist is built from real actions."""
 
     title: str
+    mode_label: str | None = None
     stages: list[str] = field(default_factory=list)
     started: float = field(default_factory=time.monotonic)
     current_stage: str = "Разбираю запрос"
@@ -320,7 +321,10 @@ class TelegramTaskStatusState:
             f"{stage_name} · {elapsed_text}",
         ]
         compact_title = _safe_fragment(self.title, limit=76)
-        if compact_title and compact_title.lower() != stage_name.lower():
+        compact_mode = _safe_fragment(self.mode_label, limit=48)
+        if compact_mode:
+            lines.append(f"🎯 {compact_mode}")
+        elif compact_title and compact_title.lower() != stage_name.lower():
             lines.append(f"Задача: {compact_title}")
 
         visible = self.stages[-6:]
