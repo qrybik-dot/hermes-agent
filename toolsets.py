@@ -334,6 +334,12 @@ TOOLSETS = {
 
 
     # Scenario-specific toolsets
+
+    "avito": {
+        "description": "Read-only local Avito Worker tools for seller draft preparation",
+        "tools": ["avito_worker_health", "avito_search", "avito_get_listing"],
+        "includes": [],
+    },
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",

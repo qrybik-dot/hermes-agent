@@ -122,6 +122,14 @@ class TestValidateToolset:
     def test_valid(self):
         assert validate_toolset("web") is True
         assert validate_toolset("terminal") is True
+        assert validate_toolset("avito") is True
+
+    def test_avito_toolset_is_narrow_and_read_only(self):
+        assert set(resolve_toolset("avito")) == {
+            "avito_worker_health",
+            "avito_search",
+            "avito_get_listing",
+        }
 
     def test_all_alias_valid(self):
         assert validate_toolset("all") is True
