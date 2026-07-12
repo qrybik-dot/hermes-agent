@@ -316,6 +316,70 @@ class TestPluginDispatchImageToImage:
         assert out["error_type"] == "modality_unsupported"
 
 
+class TestAvitoCoverGuard:
+    def test_avito_task_rejects_text_to_image_before_dispatch(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+
+        monkeypatch.setattr(image_tool, "_is_avito_image_task", lambda task_id: task_id == "avito-task")
+        dispatched = {"called": False}
+        monkeypatch.setattr(
+            image_tool,
+            "_dispatch_to_plugin_provider",
+            lambda *a, **k: dispatched.__setitem__("called", True),
+        )
+
+        out = json.loads(image_tool._handle_image_generate(
+            {"prompt": "perfect product photo", "aspect_ratio": "square"},
+            task_id="avito-task",
+        ))
+
+        assert "original product photo" in out["error"]
+        assert dispatched["called"] is False
+
+    def test_avito_task_accepts_original_image(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+
+        monkeypatch.setattr(image_tool, "_is_avito_image_task", lambda task_id: task_id == "avito-task")
+        monkeypatch.setattr(
+            image_tool,
+            "_dispatch_to_plugin_provider",
+            lambda *a, **k: json.dumps({"success": True, "image": "/tmp/cover.png"}),
+        )
+        monkeypatch.setattr(
+            image_tool,
+            "_postprocess_image_generate_result",
+            lambda value, task_id=None: value,
+        )
+
+        out = json.loads(image_tool._handle_image_generate(
+            {"prompt": "clean background", "image_url": "/tmp/original.jpg"},
+            task_id="avito-task",
+        ))
+
+        assert out["success"] is True
+
+    def test_non_avito_task_keeps_text_to_image(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+
+        monkeypatch.setattr(image_tool, "_is_avito_image_task", lambda task_id: False)
+        monkeypatch.setattr(
+            image_tool,
+            "_dispatch_to_plugin_provider",
+            lambda *a, **k: json.dumps({"success": True, "image": "/tmp/art.png"}),
+        )
+        monkeypatch.setattr(
+            image_tool,
+            "_postprocess_image_generate_result",
+            lambda value, task_id=None: value,
+        )
+
+        out = json.loads(image_tool._handle_image_generate(
+            {"prompt": "a new illustration"}, task_id="other-task",
+        ))
+
+        assert out["success"] is True
+
+
 # ---------------------------------------------------------------------------
 # Dynamic schema reflects active capabilities
 # ---------------------------------------------------------------------------
