@@ -2,7 +2,7 @@
 from argparse import Namespace
 from unittest.mock import patch
 
-from hermes_cli.tools_config import tools_disable_enable_command
+from hermes_cli.tools_config import _get_platform_tools, tools_disable_enable_command
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────
@@ -58,6 +58,20 @@ class TestToolsEnableBuiltin:
             tools_disable_enable_command(Namespace(tools_action="enable", names=["web"], platform="cli"))
         saved = mock_save.call_args[0][0]
         assert saved["platform_toolsets"]["cli"].count("web") == 1
+
+    def test_enable_avito_only_for_telegram(self):
+        config = {"platform_toolsets": {"telegram": ["web", "vision", "image_gen"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["avito"], platform="telegram")
+            )
+        saved = mock_save.call_args[0][0]
+        enabled = set(saved["platform_toolsets"]["telegram"])
+        assert {"avito", "web", "vision", "image_gen"}.issubset(enabled)
+
+    def test_avito_is_default_off(self):
+        assert "avito" not in _get_platform_tools({}, "telegram")
 
 
 # ── MCP tool disable ────────────────────────────────────────────────────────
@@ -200,6 +214,17 @@ class TestToolsValidation:
             )
         out = capsys.readouterr().out
         assert "Unknown toolset 'nonexistent_toolset'" in out
+
+    def test_avito_rejected_outside_telegram(self, capsys):
+        config = {"platform_toolsets": {"cli": ["web"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["avito"], platform="cli")
+            )
+        assert "not available on platform 'cli'" in capsys.readouterr().out
+        mock_save.assert_called_once()
+        assert "avito" not in mock_save.call_args[0][0]["platform_toolsets"]["cli"]
 
     def test_unknown_toolset_does_not_corrupt_config(self):
         config = {"platform_toolsets": {"cli": ["web", "memory"]}}
