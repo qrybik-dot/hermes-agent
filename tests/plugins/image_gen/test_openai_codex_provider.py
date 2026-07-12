@@ -67,6 +67,9 @@ class TestMetadata:
         assert schema["env_vars"] == []
         assert schema["badge"] == "free"
 
+    def test_capabilities_include_image_editing(self, provider):
+        assert provider.capabilities() == {"modalities": ["text", "image"], "max_reference_images": 4}
+
 
 # ── Availability ────────────────────────────────────────────────────────────
 
@@ -129,11 +132,12 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality):
+        def _collect(token, *, prompt, size, quality, image_urls=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
                 quality=quality,
+                image_urls=image_urls,
             ))
             return _b64_png()
 
@@ -159,6 +163,35 @@ class TestGenerate:
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
+
+    def test_local_image_is_sent_as_high_fidelity_edit(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, image_urls=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt, size=size, quality=quality, image_urls=image_urls,
+            ))
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+        result = provider.generate("keep the real item", image_url=str(source))
+
+        assert result["success"] is True
+        image_input = captured["input"][0]["content"][1]
+        assert image_input["type"] == "input_image"
+        assert image_input["detail"] == "high"
+        assert image_input["image_url"].startswith("data:image/png;base64,")
+        assert captured["tools"][0]["action"] == "edit"
+        assert captured["tools"][0]["input_fidelity"] == "high"
+
+    def test_rejects_more_than_four_input_images(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.generate("edit", reference_image_urls=["https://example.com/a.png"] * 5)
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
 
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""
