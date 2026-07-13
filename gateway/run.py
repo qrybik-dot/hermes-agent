@@ -1925,6 +1925,26 @@ def _gateway_final_status(agent_result: Dict[str, Any]) -> str:
     return "success"
 
 
+_LIVE_STATUS_ROLES = frozenset({
+    "agentic", "research", "expert_analysis", "planning", "coding",
+    "long_context_extract", "long_context", "server_debug",
+})
+
+
+def _should_use_live_task_status(role: str, active_task, message: str) -> bool:
+    from gateway.task_runtime import execution_intent_text
+
+    value = str(message or "")
+    bare_skill = bool(
+        value.startswith("[IMPORTANT: The user has invoked the ")
+        and not execution_intent_text(value).strip()
+    )
+    return bool(
+        (role in _LIVE_STATUS_ROLES and not bare_skill)
+        or (active_task is not None and getattr(active_task, "requires_execution", False))
+    )
+
+
 def _should_attach_tool_progress_callback(needs_progress_queue: bool, active_task) -> bool:
     return bool(
         needs_progress_queue
@@ -17850,7 +17870,6 @@ message_context={
                 turn_route.get("routing_reason"), turn_route.get("fallback_used"), routed_toolsets, max_iterations,
             )
 
-            _live_status_roles = {"agentic", "research", "expert_analysis", "planning", "coding", "long_context_extract", "long_context", "server_debug"}
             _selected_provider = turn_route["runtime"].get("provider")
             _selected_model = turn_route.get("model")
             _quality_locked_roles = {"expert_analysis", "planning", "coding", "long_context", "server_debug"}
@@ -17932,9 +17951,8 @@ message_context={
                 if isinstance(_turn_fallback_model, list) else bool(_turn_fallback_model),
             )
             _empty_retry_limit = 1
-            _needs_task_status = bool(
-                _task_route.role in _live_status_roles
-                or (_active_task is not None and _active_task.requires_execution)
+            _needs_task_status = _should_use_live_task_status(
+                _task_route.role, _active_task, message,
             )
             if platform_key == "telegram" and _needs_task_status:
                 _title = (_active_task.title if _active_task is not None else None)
