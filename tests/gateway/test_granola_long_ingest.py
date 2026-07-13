@@ -238,3 +238,23 @@ def test_transcript_artifact_is_idempotent_and_prompt_is_compact(tmp_path):
     assert is_staged_prompt(prompt.replace(str(tmp_path), "/srv/hermes-artifacts/transcripts/test"))
     assert len(prompt) < 1200
     assert text[:200] not in prompt
+
+
+def test_granola_knowledge_summary_cleans_empty_transcript_link_and_bank_wording():
+    share = GranolaShare(
+        source_url=GRANOLA_URL,
+        title="Interview",
+        description="",
+        summary=(
+            "Рекрутер не сравнивает с банковской СБ: структура другая\n"
+            "Chat with meeting transcript:"
+        ),
+        document_id="61b71bf0-5790-408a-96da-223a362f39c7",
+        created_at="2026-07-13T08:01:32.036Z",
+        conferencing_url="",
+        content_hash="a" * 64,
+    )
+    value = share.knowledge_summary()
+    assert "СБ банка и структура Ростеха — принципиально разные контуры" in value
+    assert "корпоративной СБ" not in value
+    assert "Chat with meeting transcript" not in value

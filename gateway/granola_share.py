@@ -121,13 +121,32 @@ def _summary_from_chunks(chunks: list[str]) -> str:
     return max(candidates, key=len) if candidates else ""
 
 
-def _knowledge_safe_text(value: str) -> str:
+def _semantic_hash_text(value: str) -> str:
+    """Stable legacy normalization used only for Granola idempotency."""
     text = _ANY_URL_RE.sub("", str(value or ""))
     text = _PHONE_RE.sub("", text)
     text = re.sub(r"(?i)\b(?:код доступа|пароль|password|passcode)\b[^\n]*", "", text)
     text = re.sub(r"(?i)банковск\w*\s+СБ", "корпоративной СБ", text)
     lines = [re.sub(r"\s+", " ", line).strip(" •") for line in text.splitlines()]
     return "\n".join(line for line in lines if line).strip()
+
+
+def _knowledge_safe_text(value: str) -> str:
+    text = _ANY_URL_RE.sub("", str(value or ""))
+    text = _PHONE_RE.sub("", text)
+    text = re.sub(r"(?i)\b(?:код доступа|пароль|password|passcode)\b[^\n]*", "", text)
+    text = re.sub(
+        r"(?i)Рекрутер не сравнивает с банковск\w*\s+СБ:\s*структура(?: Ростеха)?(?: принципиально)? другая",
+        "Рекрутер пояснила, что СБ банка и структура Ростеха — принципиально разные контуры",
+        text,
+    )
+    text = re.sub(r"(?i)банковск\w*\s+СБ", "СБ банка", text)
+    lines = [re.sub(r"\s+", " ", line).strip(" •") for line in text.splitlines()]
+    return "\n".join(
+        line
+        for line in lines
+        if line and not re.fullmatch(r"(?i)chat with meeting transcript:?", line)
+    ).strip()
 
 
 @dataclass(frozen=True)
@@ -172,7 +191,7 @@ def parse_granola_share_html(source_url: str, page_html: str) -> GranolaShare:
         {
             "source_url": url,
             "title": title[:240],
-            "summary": _knowledge_safe_text(summary or description),
+            "summary": _semantic_hash_text(summary or description),
             "document_id": document_id,
             "created_at": created_at,
         },
