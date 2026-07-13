@@ -136,7 +136,9 @@ def test_selector_caps_undated_personal_tasks_and_excludes_technical(
     assert all(item.undated for item in selected)
 
 
-def test_completed_today_stays_visible_without_action_button(db_path: Path, tmp_path: Path) -> None:
+def test_completed_today_stays_visible_without_action_button(
+    db_path: Path, tmp_path: Path
+) -> None:
     _insert_task(
         db_path,
         "done",
@@ -276,7 +278,9 @@ def test_mark_done_is_idempotent_and_audited(db_path: Path) -> None:
     assert first == "completed"
     assert second == "already_done"
     with kb.connect(db_path) as conn:
-        row = conn.execute("SELECT status, completed_at FROM tasks WHERE id='open'").fetchone()
+        row = conn.execute(
+            "SELECT status, completed_at FROM tasks WHERE id='open'"
+        ).fetchone()
         events = conn.execute(
             "SELECT kind FROM task_events WHERE task_id='open' ORDER BY id"
         ).fetchall()
@@ -287,8 +291,12 @@ def test_mark_done_is_idempotent_and_audited(db_path: Path) -> None:
 
 def test_state_upsert_keeps_one_card_per_day_kind_and_chat(tmp_path: Path) -> None:
     conn = dc.connect_state(tmp_path / "daily_cards.db")
-    dc.save_card_state(conn, "2026-07-07", "morning", "telegram", "123", "100", True, "a")
-    dc.save_card_state(conn, "2026-07-07", "morning", "telegram", "123", "101", True, "b")
+    dc.save_card_state(
+        conn, "2026-07-07", "morning", "telegram", "123", "100", True, "a"
+    )
+    dc.save_card_state(
+        conn, "2026-07-07", "morning", "telegram", "123", "101", True, "b"
+    )
     rows = conn.execute("SELECT * FROM daily_cards").fetchall()
     assert len(rows) == 1
     assert rows[0]["message_id"] == "101"
@@ -320,12 +328,16 @@ def test_telegram_destination_falls_back_to_existing_env(
     assert thread_id is None
 
 
-def test_evening_is_silent_without_open_tasks_or_useful_tomorrow_events(db_path: Path) -> None:
+def test_evening_is_silent_without_open_tasks_or_useful_tomorrow_events(
+    db_path: Path,
+) -> None:
     render = dc.render_evening(TARGET, [], [], max_buttons=6)
     assert render is None
 
 
-def test_evening_includes_travel_preparation_but_not_ordinary_tomorrow_task(db_path: Path) -> None:
+def test_evening_includes_travel_preparation_but_not_ordinary_tomorrow_task(
+    db_path: Path,
+) -> None:
     _insert_task(db_path, "ordinary", "Позвонить", planned_for="2026-07-08")
     useful = dc.CardEvent(
         id="evt-2",
@@ -356,7 +368,9 @@ def test_callback_token_roundtrip(tmp_path: Path) -> None:
     assert parsed.card_kind == "morning"
 
 
-def test_task_payload_file_creates_dated_task_without_duplicates(tmp_path: Path) -> None:
+def test_task_payload_file_creates_dated_task_without_duplicates(
+    tmp_path: Path,
+) -> None:
     payload_path = tmp_path / "daily-task.json"
     payload = {
         "title": "Позвонить в страховую",
@@ -418,13 +432,11 @@ def test_event_payload_file_is_validated_and_upserted(tmp_path: Path) -> None:
 def test_event_payload_rejects_unknown_fields(tmp_path: Path) -> None:
     payload_path = tmp_path / "daily-event.json"
     payload_path.write_text(
-        json.dumps(
-            {
-                "title": "Событие",
-                "event_at": "2026-07-07T10:45:00+03:00",
-                "unexpected": "no",
-            }
-        ),
+        json.dumps({
+            "title": "Событие",
+            "event_at": "2026-07-07T10:45:00+03:00",
+            "unexpected": "no",
+        }),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="unsupported fields"):
@@ -493,7 +505,9 @@ def test_google_calendar_source_filters_dates_and_redacts_description(
     assert "123456789" not in json.dumps(events[0], ensure_ascii=False)
 
 
-def test_google_calendar_sync_applies_configured_title_alias(tmp_path: Path, monkeypatch) -> None:
+def test_google_calendar_sync_applies_configured_title_alias(
+    tmp_path: Path, monkeypatch
+) -> None:
     conn = dc.connect_state(tmp_path / "daily_cards.db")
     monkeypatch.setattr(
         calendar_source,
@@ -515,7 +529,9 @@ def test_google_calendar_sync_applies_configured_title_alias(tmp_path: Path, mon
         TZ,
         title_aliases={"Младший:": "Федя —"},
     )
-    row = conn.execute("SELECT title FROM daily_events WHERE id='gcal-doctor'").fetchone()
+    row = conn.execute(
+        "SELECT title FROM daily_events WHERE id='gcal-doctor'"
+    ).fetchone()
     assert row["title"] == "Федя — Хирург"
 
 
@@ -709,3 +725,68 @@ async def test_action_watcher_sends_once(tmp_path: Path) -> None:
     assert second["sent"] == 0
     assert len(bot.calls) == 1
     assert bot.calls[0]["text"].startswith("Через час")
+
+
+def test_google_calendar_source_prefers_shared_runtime_python(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / ".hermes"
+    script = home / "skills/productivity/google-workspace/scripts/google_api.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# fake", encoding="utf-8")
+    runtime_python = tmp_path / "hermes-runtime/shared/venv/bin/python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_text("", encoding="utf-8")
+    called: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        called["args"] = args
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(calendar_source.subprocess, "run", fake_run)
+    calendar_source.fetch_google_calendar_payloads([TARGET], TZ, hermes_home=home)
+
+    assert Path(called["args"][0]) == runtime_python
+
+
+def test_google_calendar_source_marks_zoom_as_online(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "skills/productivity/google-workspace/scripts/google_api.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# fake", encoding="utf-8")
+    python = tmp_path / "hermes-agent/venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text("", encoding="utf-8")
+    payload = [
+        {
+            "id": "interview-online",
+            "summary": "Собеседование",
+            "start": "2026-07-07T11:00:00+03:00",
+            "location": "Zoom",
+            "htmlLink": "https://calendar.example/event",
+            "status": "confirmed",
+        }
+    ]
+    monkeypatch.setattr(
+        calendar_source.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(payload, ensure_ascii=False),
+            stderr="",
+        ),
+    )
+
+    events = calendar_source.fetch_google_calendar_payloads(
+        [TARGET],
+        TZ,
+        hermes_home=tmp_path,
+    )
+
+    assert len(events) == 1
+    assert events[0]["requires_travel"] is False
+    assert events[0]["address"] == ""
+    assert events[0]["online_url"] == "https://calendar.example/event"

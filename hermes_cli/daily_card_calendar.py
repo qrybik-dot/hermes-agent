@@ -40,6 +40,21 @@ def _preparation_hints(description: str) -> list[str]:
     return hints
 
 
+def _is_online_location(value: str) -> bool:
+    text = str(value or "").casefold()
+    markers = (
+        "zoom",
+        "google meet",
+        "meet.google",
+        "teams",
+        "telemost",
+        "телемост",
+        "онлайн",
+        "online",
+    )
+    return any(marker in text for marker in markers)
+
+
 def fetch_google_calendar_payloads(
     target_dates: Iterable[dt.date],
     timezone: ZoneInfo,
@@ -56,6 +71,7 @@ def fetch_google_calendar_payloads(
     home = hermes_home or get_hermes_home()
     script = home / "skills/productivity/google-workspace/scripts/google_api.py"
     candidates = [
+        home.parent / "hermes-runtime/shared/venv/bin/python",
         home / "hermes-agent/venv/bin/python",
         Path(sys.executable),
     ]
@@ -85,7 +101,9 @@ def fetch_google_calendar_payloads(
         if not isinstance(item, dict) or item.get("status") == "cancelled":
             continue
         try:
-            event_at, local_date, all_day = _parse_start(item.get("start", ""), timezone)
+            event_at, local_date, all_day = _parse_start(
+                item.get("start", ""), timezone
+            )
         except (TypeError, ValueError):
             continue
         if local_date not in wanted:
@@ -93,22 +111,27 @@ def fetch_google_calendar_payloads(
         event_id = str(item.get("id") or "").strip()
         title = " ".join(str(item.get("summary") or "Без названия").split())[:180]
         location = " ".join(str(item.get("location") or "").split())[:300]
+        online = _is_online_location(location)
+        online_url = (
+            str(item.get("hangoutLink") or item.get("htmlLink") or "").strip()
+            if online
+            else ""
+        )
         if not event_id or not title:
             continue
-        payloads.append(
-            {
-                "title": title,
-                "event_at": event_at,
-                "timezone": str(timezone.key),
-                "location": location,
-                "address": location,
-                "requires_travel": bool(location),
-                "preparation": _preparation_hints(item.get("description", "")),
-                "importance": 1,
-                "source_kind": "google_calendar",
-                "source_id": event_id,
-                "event_id": "gcal-" + event_id,
-                "all_day": all_day,
-            }
-        )
+        payloads.append({
+            "title": title,
+            "event_at": event_at,
+            "timezone": str(timezone.key),
+            "location": location,
+            "address": "" if online else location,
+            "online_url": online_url,
+            "requires_travel": bool(location) and not online,
+            "preparation": _preparation_hints(item.get("description", "")),
+            "importance": 1,
+            "source_kind": "google_calendar",
+            "source_id": event_id,
+            "event_id": "gcal-" + event_id,
+            "all_day": all_day,
+        })
     return payloads
