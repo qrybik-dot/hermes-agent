@@ -31,6 +31,25 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
+
+def _reexec_in_hermes_runtime() -> None:
+    """Use the gateway-provided interpreter instead of implicitly installing deps."""
+    target = os.environ.get("HERMES_RUNTIME_PYTHON", "").strip()
+    if not target:
+        return
+    try:
+        # Keep the venv path intact: resolving symlinks loses pyvenv.cfg.
+        target_path = Path(target).absolute()
+        current_path = Path(sys.executable).absolute()
+    except OSError:
+        return
+    if target_path == current_path or not target_path.is_file() or not os.access(target_path, os.X_OK):
+        return
+    os.execv(str(target_path), [str(target_path), __file__, *sys.argv[1:]])
+
+
+_reexec_in_hermes_runtime()
+
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
@@ -540,6 +559,68 @@ def _calendar_get_event(calendar_id, event_id):
 def calendar_get(args):
     event = _calendar_get_event(args.calendar, args.event_id)
     print(json.dumps(_calendar_evidence(args.calendar, event, read_back=True), indent=2, ensure_ascii=False))
+
+
+def _calendar_patch_event(calendar_id, event_id, body):
+    if _gws_binary():
+        return _run_gws(
+            ["calendar", "events", "patch"],
+            params={"calendarId": calendar_id, "eventId": event_id},
+            body=body,
+        )
+    service = build_service("calendar", "v3")
+    return service.events().patch(
+        calendarId=calendar_id,
+        eventId=event_id,
+        body=body,
+    ).execute()
+
+
+def calendar_update(args):
+    current = _calendar_get_event(args.calendar, args.event_id)
+    body = {}
+    if args.summary is not None:
+        body["summary"] = args.summary
+    if args.start is not None:
+        body["start"] = {"dateTime": args.start}
+    if args.end is not None:
+        body["end"] = {"dateTime": args.end}
+    if args.location is not None:
+        body["location"] = args.location
+    if args.description is not None:
+        body["description"] = args.description
+    if args.attendees is not None:
+        body["attendees"] = [
+            {"email": email.strip()}
+            for email in args.attendees.split(",")
+            if email.strip()
+        ]
+
+    append_blocks = [value.strip() for value in args.append_description if value.strip()]
+    if append_blocks:
+        description = str(body.get("description", current.get("description", "")) or "").strip()
+        changed = False
+        for block in append_blocks:
+            if block not in description:
+                description = (description + "\n\n" + block).strip()
+                changed = True
+        if changed or "description" in body:
+            body["description"] = description
+
+    if body:
+        _calendar_patch_event(args.calendar, args.event_id, body)
+
+    read_back = _calendar_get_event(args.calendar, args.event_id)
+    evidence = _calendar_evidence(args.calendar, read_back, read_back=True)
+    evidence.update({
+        "status": "updated" if body else "unchanged",
+        "updated_fields": sorted(body),
+        "description_verified": all(
+            block in str(read_back.get("description", "") or "")
+            for block in append_blocks
+        ),
+    })
+    print(json.dumps(evidence, indent=2, ensure_ascii=False))
 
 
 def calendar_create(args):
@@ -1149,6 +1230,18 @@ def main():
     p.add_argument("event_id")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_get)
+
+    p = cal_sub.add_parser("update")
+    p.add_argument("event_id")
+    p.add_argument("--summary")
+    p.add_argument("--start")
+    p.add_argument("--end")
+    p.add_argument("--location")
+    p.add_argument("--description")
+    p.add_argument("--append-description", action="append", default=[])
+    p.add_argument("--attendees")
+    p.add_argument("--calendar", default="primary")
+    p.set_defaults(func=calendar_update)
 
     p = cal_sub.add_parser("delete")
     p.add_argument("event_id")

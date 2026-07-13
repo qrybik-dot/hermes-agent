@@ -211,6 +211,9 @@ $GAPI calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-
 $GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
 $GAPI calendar get EVENT_ID --calendar primary
 
+# Update an existing event without recreating it. Repeated append is idempotent.
+$GAPI calendar update EVENT_ID --append-description "Zoom: https://example.invalid/meeting" --calendar primary
+
 # Delete event
 $GAPI calendar delete EVENT_ID
 ```
@@ -296,6 +299,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", calendar_id, event_id, summary, start, end, event_link, read_back: true}`
+- **Calendar update**: `{status: "updated" | "unchanged", calendar_id, event_id, summary, start, end, event_link, read_back: true, description_verified: true}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
 - **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`
 - **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`
@@ -315,7 +319,9 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
 4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
-5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+5. **For existing events, use `calendar get` then `calendar update`** — never create an ad-hoc patch script or call `gws` directly. Preserve existing fields and append description content with `--append-description`.
+6. **Read back every calendar write** and verify the requested fields before reporting success.
+7. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
 
 ## Troubleshooting
 

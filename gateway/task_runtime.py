@@ -101,6 +101,17 @@ _CALENDAR_CREATE_RE = re.compile(
     r"\b(?:calendar\s+event|google\s+calendar|meeting|call|reminder)\b",
     re.I,
 )
+_CALENDAR_UPDATE_RE = re.compile(
+    r"\b(?:обнов(?:и|ить)|измени(?:ть)?|добав(?:ь|ить)|встав(?:ь|ить)|прикреп(?:и|ить))\w*\b"
+    r"[^\n.!?;]{0,180}\b(?:описан|ссылк|zoom|ваканс|встреч|событи|calendar)\w*\b|"
+    r"\b(?:в\s+существующ\w*\s+(?:встреч|событи)|в\s+(?:эту|это)\s+(?:встреч|событи))\w*\b",
+    re.I | re.S,
+)
+_CALENDAR_LINK_ONLY_RE = re.compile(r"^\s*(?:https?://\S+\s*)+$", re.I)
+_CALENDAR_LINK_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:(?:вот|ещ[её]|и|также)\s+)?(?:ссылк\w*\s*)?(?:https?://\S+\s*)+$",
+    re.I,
+)
 _TECHNICAL_EVENT_CONTEXT_RE = re.compile(
     r"\b(?:live-status|progress\s+events?|status\s+events?|runtime\s+events?|delivery\s+events?|"
     r"intermediate\s+events?|промежуточн\w*\s+событи\w*|обработчик\w*\s+событи\w*|"
@@ -185,7 +196,17 @@ def _is_calendar_write_request(text: str) -> bool:
     value = text or ""
     if not value or _TECHNICAL_EVENT_CONTEXT_RE.search(value):
         return False
-    return bool(_CALENDAR_CREATE_RE.search(value))
+    return bool(_CALENDAR_CREATE_RE.search(value) or _CALENDAR_UPDATE_RE.search(value))
+
+
+def _is_calendar_followup_payload(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    return bool(
+        _CALENDAR_LINK_ONLY_RE.fullmatch(value)
+        or _CALENDAR_LINK_FOLLOWUP_RE.fullmatch(value)
+    )
 
 
 _WRAPPER_LINE_RE = re.compile(
@@ -335,7 +356,10 @@ def _select_avito_pending_task(
 
 
 def _select_calendar_pending_task(store: TaskStateStore, platform_key: str, chat_id: str, ctx: MessageContext) -> TaskRecord | None:
-    if not _is_calendar_write_request(ctx.current_text):
+    if not (
+        _is_calendar_write_request(ctx.current_text)
+        or _is_calendar_followup_payload(ctx.current_text)
+    ):
         return None
     matches = [
         task for task in store.active(platform_key, str(chat_id))
@@ -2012,12 +2036,20 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             False,
         )
 
-    # Explicit calendar create commands are new actions.  A previous incomplete
-    # calendar task may contribute its saved draft, but must not become the
-    # execution task for a new Telegram update/message.  Idempotency for the
-    # same inbound update is handled later by source_request_id.
+    # Explicit calendar create commands are new actions. A link-only follow-up,
+    # however, belongs to the single unfinished calendar task from the same
+    # sender and must retain its Google Workspace tools.
     pending_calendar_draft_task = pending_calendar
-    task = decision.task if decision.kind == "selected" else pending_avito
+    calendar_continuation = (
+        pending_calendar
+        if pending_calendar is not None and _is_calendar_followup_payload(current_text)
+        else None
+    )
+    task = (
+        decision.task
+        if decision.kind == "selected"
+        else pending_avito or calendar_continuation
+    )
     if task is not None and _task_is_calendar_write(task) and not _calendar_task_sender_matches(task, msg_ctx):
         task = None
     continued = task is not None
@@ -2288,8 +2320,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     if "google-workspace" in route.skill_names:
         contract = (
             "For calendar writes, create exactly one event, or update only when explicitly requested; "
-            "use the structured calendar event if present. Then read it back and report calendar ID, "
-            "summary, start, end, event ID or official link, and read-back confirmation. Otherwise return INCOMPLETE."
+            "use the structured calendar event if present. For an existing-event update, use the bundled "
+            "google_api.py calendar get/update commands; never create a temporary patch script and never call "
+            "gws directly. Preserve existing fields, append description content idempotently, then read the "
+            "event back. Report calendar ID, summary, start, end, event ID or official link, and read-back "
+            "confirmation. Otherwise return INCOMPLETE."
         )
         route = TaskRoute(
             role=route.role,

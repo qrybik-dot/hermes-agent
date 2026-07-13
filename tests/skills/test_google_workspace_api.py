@@ -601,3 +601,91 @@ def test_api_calendar_create_error_skips_readback(api_module):
     with pytest.raises(RuntimeError):
         api_module.calendar_create(args)
     assert calls == [["calendar", "events", "insert"]]
+
+
+
+def test_api_calendar_update_appends_description_and_reads_back(api_module, capsys):
+    calls = []
+    current = {
+        "id": "evt-update",
+        "summary": "Interview",
+        "start": {"dateTime": "2026-07-13T11:00:00+03:00"},
+        "end": {"dateTime": "2026-07-13T11:40:00+03:00"},
+        "description": "Vacancy: existing-link",
+        "htmlLink": "https://calendar.google.com/event?evt-update",
+    }
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append((parts, params, body))
+        if parts == ["calendar", "events", "get"]:
+            return dict(current)
+        if parts == ["calendar", "events", "patch"]:
+            current.update(body)
+            return dict(current)
+        raise AssertionError(parts)
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        event_id="evt-update",
+        summary=None,
+        start=None,
+        end=None,
+        location=None,
+        description=None,
+        append_description=["Zoom: meeting-link"],
+        attendees=None,
+        calendar="primary",
+    )
+
+    api_module.calendar_update(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert [call[0] for call in calls] == [
+        ["calendar", "events", "get"],
+        ["calendar", "events", "patch"],
+        ["calendar", "events", "get"],
+    ]
+    assert calls[1][2]["description"] == "Vacancy: existing-link\n\nZoom: meeting-link"
+    assert out["status"] == "updated"
+    assert out["description_verified"] is True
+    assert out["read_back"] is True
+
+
+def test_api_calendar_update_is_idempotent_for_existing_description(api_module, capsys):
+    calls = []
+    current = {
+        "id": "evt-update",
+        "summary": "Interview",
+        "start": {"dateTime": "2026-07-13T11:00:00+03:00"},
+        "end": {"dateTime": "2026-07-13T11:40:00+03:00"},
+        "description": "Vacancy: existing-link",
+        "htmlLink": "https://calendar.google.com/event?evt-update",
+    }
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append((parts, params, body))
+        assert parts == ["calendar", "events", "get"]
+        return dict(current)
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        event_id="evt-update",
+        summary=None,
+        start=None,
+        end=None,
+        location=None,
+        description=None,
+        append_description=["Vacancy: existing-link"],
+        attendees=None,
+        calendar="primary",
+    )
+
+    api_module.calendar_update(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert [call[0] for call in calls] == [
+        ["calendar", "events", "get"],
+        ["calendar", "events", "get"],
+    ]
+    assert out["status"] == "unchanged"
+    assert out["description_verified"] is True

@@ -2446,3 +2446,50 @@ def test_task_source_identity_uses_platform_message_not_process_generation(tmp_p
     assert first.task.task_id != second.task.task_id
     assert first.task.source_request_id.endswith(":100:task")
     assert second.task.source_request_id.endswith(":101:task")
+
+
+
+def test_calendar_link_followup_resumes_single_unfinished_calendar_task(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(state_dir))
+    state_dir.mkdir()
+    store = TaskStateStore(state_dir / "state.db")
+    task = store.create(
+        platform="telegram",
+        chat_id="1",
+        session_key="old",
+        title="Update interview event",
+        original_request="Добавь ссылку в описание существующей встречи в календаре",
+        role="simple",
+        toolsets=["file", "skills", "terminal", "no_mcp"],
+        required_toolsets=["terminal"],
+        requires_execution=True,
+        status="incomplete",
+        metadata={"intent": "calendar_write", "sender_id": "user-1"},
+    )
+    link = "https://hh.ru/vacancy/example"
+
+    prepared = prepare_task_turn(
+        message=link,
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-calendar-link",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={
+            "current_text": link,
+            "current_message_id": "101",
+            "sender_id": "user-1",
+            "chat_id": "1",
+        },
+    )
+
+    assert prepared.continued is True
+    assert prepared.task.task_id == task.task_id
+    assert "terminal" in prepared.route.toolsets
+    assert "google-workspace" in prepared.route.skill_names
+    assert "Saved task" in prepared.message
+    assert link in prepared.message
