@@ -2602,7 +2602,10 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     if task is None and (
         calendar_request is not None
         or requires_execution
-        or should_track_task(contract_text, route.role, route.toolsets)
+        or (
+            not bare_skill_invocation
+            and should_track_task(contract_text, route.role, route.toolsets)
+        )
     ):
         title_source = calendar_request or contract_text or original
         title = " ".join(title_source.split())[:120] or "Задача Hermes"

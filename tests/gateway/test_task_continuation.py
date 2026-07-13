@@ -151,8 +151,19 @@ def test_advisory_methodology_match_is_not_a_keyword_router():
 
 
 def test_bare_skill_scaffolding_cannot_trigger_pre_model_place_or_save(tmp_path, monkeypatch):
+    from gateway.task_router import TaskRoute
+
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(
+        "gateway.task_runtime.route_turn",
+        lambda *args, **kwargs: TaskRoute(
+            role="planning",
+            reason="skill scaffolding resembles a planning request",
+            toolsets=["skills", "no_mcp"],
+            max_iterations=24,
+        ),
+    )
     monkeypatch.setattr(
         "gateway.task_runtime._with_preloaded_skills",
         lambda route, task_id: (route, ()),
