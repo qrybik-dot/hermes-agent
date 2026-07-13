@@ -439,8 +439,11 @@ class TestTelegramAdaptiveDelay:
         await asyncio.sleep(0.05)
         adapter._enqueue_text_event(_make_event("continuation text", Platform.TELEGRAM))
 
-        # Short chunk arrived → should use normal delay now
+        # Once any chunk was near Telegram's limit, keep the split delay for
+        # the whole batch even when the last chunk is short.
         await asyncio.sleep(0.15)
+        adapter.handle_message.assert_not_called()
+        await asyncio.sleep(0.25)
         adapter.handle_message.assert_called_once()
         text = adapter.handle_message.call_args[0][0].text
         assert "continuation text" in text

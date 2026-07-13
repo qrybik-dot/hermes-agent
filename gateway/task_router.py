@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from gateway.intent_uncertainty import detect_uncertain_intent, is_reminder_request
+from gateway.granola_share import is_granola_share_url
 
 ROLE_ORDER = (
     "no_llm",
@@ -174,6 +175,7 @@ _DRIVE_RE = re.compile(
     re.I,
 )
 _GRANOLA_RE = re.compile(
+    r"https?://notes\.granola\.ai/t/[0-9a-f-]{36}|"
     r"\bgranola\b|(?:в|из|через)\s+granola|заметк\w*\s+granola|транскрипт\w*\s+granola|"
     r"встреч\w*,?\s+(?:сохран[её]нн\w*|записанн\w*)\s+в\s+granola|"
     r"поиск\s+по\s+(?:заметкам|встречам)\s+granola",
@@ -458,9 +460,10 @@ def _intent_flags(text: str) -> dict[str, bool]:
     drive = bool(_DRIVE_RE.search(value))
     reminder = is_reminder_request(value)
     live_listings = is_live_listing_request(value)
-    # A mention of Granola inside a Google Workspace request describes the sender,
-    # subject, or file contents, not a request to open the Granola MCP server.
-    granola = bool(_GRANOLA_RE.search(value)) and not email and not calendar and not drive
+    granola_url_only = is_granola_share_url(value)
+    granola = bool(_GRANOLA_RE.search(value)) and (
+        granola_url_only or (not email and not calendar and not drive)
+    )
     return {
         "email": email,
         "calendar": calendar,
@@ -646,7 +649,7 @@ def select_toolsets(
     flags = _intent_flags(text)
 
     uncertain = detect_uncertain_intent(text or "", context_text=context_text)
-    if role == "simple" and uncertain is not None:
+    if role == "simple" and uncertain is not None and not is_granola_share_url(text):
         return _apply_platform_policy({"clarify"}, platform_toolsets)
 
     if role == "no_llm":
@@ -995,6 +998,14 @@ def route_turn(
     if flags["notebooklm"]:
         operational_context = (operational_context + "\n\n" + notebooklm_operational_context()).strip()
         max_iterations = max(max_iterations, 36)
+    if flags["granola"]:
+        operational_context = (
+            operational_context
+            + "\n\nGranola contract: use only the configured Granola MCP tools for private meetings. "
+              "For a public notes.granola.ai share URL, the deterministic gateway reader handles it before the model. "
+              "Never use terminal, execute_command, arbitrary Python, browser scraping, or a Zoom URL as proof that "
+              "Granola was read. Report success only after a successful Granola tool result or deterministic read evidence."
+        ).strip()
     return TaskRoute(
         role=role,
         reason=reason,

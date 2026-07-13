@@ -268,7 +268,7 @@ class TaskStateStore:
         if message_id is not None:
             self.update(task_id, status_message_id=str(message_id))
 
-    def resolve(self, text: str, platform: str, chat_id: str) -> ContinuationDecision:
+    def resolve(self, text: str, platform: str, chat_id: str, *, session_key: str | None = None) -> ContinuationDecision:
         value = text or ""
         key = (platform, str(chat_id))
         match = _CONTINUE_RE.search(value)
@@ -316,6 +316,7 @@ class TaskStateStore:
                 and len(tasks) == 1
                 and len(value) <= 600
                 and tasks[0].status in {"paused", "blocked", "incomplete"}
+                and (not session_key or tasks[0].session_key == session_key)
                 and time.time() - tasks[0].updated_at <= 6 * 3600
             ):
                 _CHOICE_CACHE.pop(key, None)

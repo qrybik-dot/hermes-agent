@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import json
 import os
@@ -33,6 +33,11 @@ from gateway.avito_intent import (
     is_avito_task_metadata,
 )
 from gateway.pre_model_pipeline import PreModelStage, run_pre_model_pipeline
+from gateway.granola_share import extract_granola_share_url, is_granola_share_url
+from gateway.granola_ingest import ingest_public_granola
+from gateway.transcript_ingest import (
+    looks_like_transcript, stage_transcript, staged_prompt,
+)
 from gateway.save_intent_router import detect_save_intent
 from gateway.task_router import (
     TaskRoute, route_turn, should_generate_html_report,
@@ -201,7 +206,7 @@ def _is_calendar_write_request(text: str) -> bool:
 
 def _is_calendar_followup_payload(text: str) -> bool:
     value = str(text or "").strip()
-    if not value:
+    if not value or extract_granola_share_url(value):
         return False
     return bool(
         _CALENDAR_LINK_ONLY_RE.fullmatch(value)
@@ -709,6 +714,24 @@ def _deterministic_save_intent_response(
     )
 
 
+
+def _deterministic_granola_share_response(text: str) -> dict | None:
+    result = ingest_public_granola(text)
+    if result is None:
+        return None
+    return early_response(
+        result.text,
+        status=result.status,
+        role="no_llm",
+        reason="deterministic Granola public share ingestion",
+        diagnostics={
+            "granola_evidence": result.evidence,
+            "knowledge_readback": result.knowledge_readback,
+            "tool_call_count": result.tool_call_count,
+        },
+    )
+
+
 _TRAVEL_TO_FROM_RE = re.compile(
     r"\b(?:до|в)\s+(?P<destination>.+?)\s+от\s+(?P<start>.+?)(?:\s+и\s+|[?!]|$)",
     re.I | re.S,
@@ -1102,8 +1125,13 @@ def _location_coords(location: dict[str, Any] | None) -> tuple[float, float] | N
 
 
 def _place_intent_from_text(text: str) -> dict[str, Any] | None:
-    value = " ".join(str(text or "").strip().split())
+    raw = str(text or "")
+    value = " ".join(raw.strip().split())
     if not value:
+        return None
+    if len(raw) > 500 or looks_like_transcript(raw):
+        return None
+    if re.search(r"\b(?:транскрипт|транскрибаци|полная запись|в баз[уы]|knowledge)\b", value, re.I):
         return None
     if _AMBIGUOUS_PLACE_SAVE_RE.fullmatch(value):
         return {"ambiguous": True}
@@ -1865,6 +1893,21 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     original = str(message or "")
     msg_ctx = _normalize_message_context(message_context, fallback_text=original, chat_id=str(chat_id))
     current_text = msg_ctx.current_text or original
+    staged_transcript = None
+    if platform_key == "telegram" and looks_like_transcript(current_text):
+        try:
+            staged_transcript = stage_transcript(
+                current_text,
+                source="telegram",
+                chat_id=str(chat_id),
+                sender_id=str(msg_ctx.sender_id or ""),
+            )
+            original = staged_prompt(staged_transcript)
+            message = original
+            current_text = original
+            msg_ctx = replace(msg_ctx, current_text=current_text)
+        except Exception:
+            staged_transcript = None
 
     replay_task = store.recent_matching_request(platform_key, str(chat_id), current_text)
     if replay_task is not None:
@@ -1925,8 +1968,31 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     initial_route = route_turn(current_text, command=None, platform_key=platform_key,
                                user_config=user_config, platform_toolsets=platform_toolsets,
                                context_text=uncertainty_context)
-    pre_continuation_uncertainty = detect_uncertain_intent(
-        current_text, context_text=uncertainty_context
+    if staged_transcript is not None:
+        allowed = set(platform_toolsets or [])
+        staged_tools = {
+            name for name in ("file", "memory", "skills", "session_search", "clarify")
+            if platform_toolsets is None or name in allowed
+        }
+        initial_route = TaskRoute(
+            role="long_context_extract",
+            reason=initial_route.reason + "; staged Telegram transcript",
+            toolsets=sorted(staged_tools),
+            max_iterations=max(initial_route.max_iterations, 24),
+            skill_names=(),
+            skip_context_files=True,
+            operational_context=(
+                initial_route.operational_context
+                + "\n\nTranscript artifact contract: read only the staged artifact; "
+                  "do not reconstruct raw text from session history. "
+                  "If saving was requested, write a structured summary to Knowledge, "
+                  "include the artifact path as source evidence, and verify read-back."
+            ).strip(),
+        )
+    pre_continuation_uncertainty = (
+        None
+        if staged_transcript is not None
+        else detect_uncertain_intent(current_text, context_text=uncertainty_context)
     )
 
     def uncertainty_response():
@@ -1943,6 +2009,15 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 "uncertainty_gate": "pre_model",
             },
         )
+
+    explicit_save_candidate = None
+    if staged_transcript is None:
+        explicit_save_candidate = detect_context_save_note(
+            current_text,
+            msg_ctx.reply_text,
+            msg_ctx.reply_caption,
+            continued=False,
+        ) or detect_quick_note(current_text, continued=False)
 
     def avito_intent_response():
         if avito_intent.kind != "clarify":
@@ -1961,6 +2036,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     pre_model = run_pre_model_pipeline([
         PreModelStage(
+            "granola_share",
+            lambda: _deterministic_granola_share_response(current_text),
+            enabled=staged_transcript is None,
+        ),
+        PreModelStage(
             "location_place",
             lambda: _deterministic_location_place_flow(
                 text=current_text,
@@ -1976,7 +2056,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             lambda: _deterministic_save_intent_response(
                 current_text, msg_ctx.reply_text, msg_ctx.reply_caption
             ),
-            enabled=not active_tasks and not travel_is_source_capture(current_text),
+            enabled=(
+                staged_transcript is None
+                and not travel_is_source_capture(current_text)
+                and (not active_tasks or explicit_save_candidate is not None)
+            ),
         ),
         PreModelStage(
             "avito_intent",
@@ -2014,7 +2098,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             original, initial_route, None, pre_model.response, False,
         )
 
-    decision = store.resolve(original, platform_key, str(chat_id))
+    decision = store.resolve(original, platform_key, str(chat_id), session_key=session_key)
     pending_avito = None
     if decision.kind == "none" and platform_key == "telegram":
         pending_avito = _select_avito_pending_task(
@@ -2174,6 +2258,27 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     route = route_turn(base_text, command=None, platform_key=platform_key,
                        user_config=user_config, platform_toolsets=platform_toolsets,
                        context_text=uncertainty_context)
+    if staged_transcript is not None:
+        allowed = set(platform_toolsets or [])
+        staged_tools = {
+            name for name in ("file", "memory", "skills", "session_search", "clarify")
+            if platform_toolsets is None or name in allowed
+        }
+        route = TaskRoute(
+            role="long_context_extract",
+            reason=route.reason + "; staged Telegram transcript",
+            toolsets=sorted(staged_tools),
+            max_iterations=max(route.max_iterations, 24),
+            skill_names=(),
+            skip_context_files=True,
+            operational_context=(
+                route.operational_context
+                + "\n\nTranscript artifact contract: read only the staged artifact; "
+                  "do not reconstruct raw text from session history. "
+                  "If saving was requested, write a structured summary to Knowledge, "
+                  "include the artifact path as source evidence, and verify read-back."
+            ).strip(),
+        )
     avito_mode = bool(
         platform_key == "telegram"
         and (

@@ -58,6 +58,8 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.granola_evidence import granola_tool_result_successful
+from gateway.transcript_ingest import is_staged_prompt
 from gateway.telegram_task_status import (
     FinalDeliveryDeduper,
     TelegramTaskStatusState,
@@ -16773,6 +16775,7 @@ message_context={
             "formatter": None,
         }
         runtime_calendar_evidence = [None]
+        runtime_granola_evidence = [False]
 
         def _emit_task_status(
             action: str | None = None,
@@ -16808,6 +16811,8 @@ message_context={
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if event_type == "tool.completed":
+                if granola_tool_result_successful(tool_name, kwargs.get("result")):
+                    runtime_granola_evidence[0] = True
                 try:
                     duration_ms = int(float(kwargs.get("duration") or 0) * 1000)
                 except Exception:
@@ -17513,7 +17518,7 @@ message_context={
             # read *and* reassign the outer `_run_agent` parameter without
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
+            nonlocal message, persist_user_message
             routed_toolsets = list(platform_allowed_toolsets)
             _run_sync_started = time.monotonic()
             _agent_returned_at = None
@@ -17818,6 +17823,11 @@ message_context={
                 else:
                     return _early
             message = _prepared_task.message
+            if is_staged_prompt(message):
+                # Persist only the bounded artifact reference. The raw pasted
+                # transcript already lives under /srv/hermes-artifacts and must
+                # not inflate every later turn in this session.
+                persist_user_message = message
             _task_route = _prepared_task.route
             _active_task = _prepared_task.task
             if _prepared_task.continued and _active_task is not None:
@@ -18795,6 +18805,29 @@ message_context={
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
+
+            _granola_action_requested = bool(
+                "granola" in set(routed_toolsets or [])
+                and re.search(
+                    r"\b(?:прочит|посмотр|найд|получ|сохран|занес|запис|встреч|транскрипт|данн)\w*",
+                    str(message or ""),
+                    re.I,
+                )
+            )
+            if (
+                final_response
+                and _granola_action_requested
+                and not runtime_granola_evidence[0]
+            ):
+                final_response = (
+                    "INCOMPLETE\nGranola не была фактически прочитана: штатный Granola-инструмент "
+                    "не вернул подтверждённый результат. Я не буду выдавать данные из календаря, "
+                    "Zoom или старого контекста за содержимое Granola"
+                )
+                result["final_response"] = final_response
+                result["partial"] = True
+                result["completed"] = False
+                result["granola_evidence_missing"] = True
 
             if _active_task is not None:
                 from gateway.task_continuation import TaskStateStore, is_progress_only

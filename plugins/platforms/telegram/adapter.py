@@ -7682,12 +7682,17 @@ class TelegramAdapter(BasePlatformAdapter):
         chunk_len = len(event.text or "")
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            event._saw_split_chunk = chunk_len >= self._SPLIT_THRESHOLD  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
             # Append text from the follow-up chunk
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            existing._saw_split_chunk = bool(  # type: ignore[attr-defined]
+                getattr(existing, "_saw_split_chunk", False)
+                or chunk_len >= self._SPLIT_THRESHOLD
+            )
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
@@ -7724,7 +7729,8 @@ class TelegramAdapter(BasePlatformAdapter):
             pending = self._pending_text_batches.get(key)
             last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
             total_len = len(getattr(pending, "text", "") or "") if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
+            saw_split = bool(getattr(pending, "_saw_split_chunk", False)) if pending else False
+            if saw_split or last_len >= self._SPLIT_THRESHOLD:
                 delay = self._text_batch_split_delay_seconds
             elif total_len <= self._TEXT_BATCH_FAST_LEN:
                 delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
