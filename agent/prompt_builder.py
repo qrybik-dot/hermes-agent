@@ -1253,7 +1253,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1340,6 +1340,9 @@ def _build_snapshot_entry(
     platforms = frontmatter.get("platforms") or []
     if isinstance(platforms, str):
         platforms = [platforms]
+    environments = frontmatter.get("environments") or []
+    if isinstance(environments, str):
+        environments = [environments]
 
     return {
         "skill_name": skill_name,
@@ -1347,6 +1350,9 @@ def _build_snapshot_entry(
         "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
+        "environments": [
+            str(item).strip() for item in environments if str(item).strip()
+        ],
         "conditions": extract_skill_conditions(frontmatter),
     }
 
@@ -1431,11 +1437,10 @@ def build_skills_system_prompt(
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
 
-    ``compact_categories`` (e.g. from the coding posture — see
-    agent/coding_context.py) demotes whole categories to a names-only line in
-    the rendered index. Nothing is ever hidden: every skill name stays
-    visible and loadable via ``skill_view`` / ``skills_list``; only the
-    descriptions are dropped, and a footer note explains the demotion.
+    The stable catalog is names-only. Tool/toolset conditions decide whether a
+    skill should be preloaded for the current route, not whether its name is
+    discoverable. Platform and runtime-environment gates still apply so a
+    kanban-only skill is not offered to a normal Telegram agent.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1485,13 +1490,10 @@ def build_skills_system_prompt(
             platforms = entry.get("platforms") or []
             if not skill_matches_platform({"platforms": platforms}):
                 continue
-            if frontmatter_name in disabled or skill_name in disabled:
+            environments = entry.get("environments") or []
+            if not skill_matches_environment({"environments": environments}):
                 continue
-            if not _skill_should_show(
-                entry.get("conditions") or {},
-                available_tools,
-                available_toolsets,
-            ):
+            if frontmatter_name in disabled or skill_name in disabled:
                 continue
             skills_by_category.setdefault(category, []).append(
                 (frontmatter_name, entry.get("description", ""))
@@ -1511,12 +1513,6 @@ def build_skills_system_prompt(
                 continue
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
-                continue
-            if not _skill_should_show(
-                extract_skill_conditions(frontmatter),
-                available_tools,
-                available_toolsets,
-            ):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
                 (entry["frontmatter_name"], entry["description"])
@@ -1566,12 +1562,6 @@ def build_skills_system_prompt(
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
-                    continue
-                if not _skill_should_show(
-                    extract_skill_conditions(frontmatter),
-                    available_tools,
-                    available_toolsets,
-                ):
                     continue
                 seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(

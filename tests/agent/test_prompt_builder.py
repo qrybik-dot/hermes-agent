@@ -1443,7 +1443,7 @@ class TestBuildSkillsSystemPromptConditional:
         yield
         clear_skills_system_prompt_cache(clear_snapshot=True)
 
-    def test_fallback_skill_hidden_when_primary_available(self, monkeypatch, tmp_path):
+    def test_fallback_skill_name_stays_visible_when_primary_available(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
         skill_dir.mkdir(parents=True)
@@ -1454,7 +1454,8 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets={"web"},
         )
-        assert "duckduckgo" not in result
+        assert "duckduckgo" in result
+        assert "Free web search" not in result
 
     def test_fallback_skill_shown_when_primary_unavailable(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1469,7 +1470,7 @@ class TestBuildSkillsSystemPromptConditional:
         )
         assert "duckduckgo" in result
 
-    def test_requires_skill_hidden_when_toolset_missing(self, monkeypatch, tmp_path):
+    def test_requires_skill_name_stays_visible_when_toolset_missing(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "iot" / "openhue"
         skill_dir.mkdir(parents=True)
@@ -1480,7 +1481,8 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "openhue" not in result
+        assert "openhue" in result
+        assert "Hue lights" not in result
 
     def test_requires_skill_shown_when_toolset_available(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1518,6 +1520,30 @@ class TestBuildSkillsSystemPromptConditional:
         )
         result = build_skills_system_prompt()
         assert "duckduckgo" in result
+
+    def test_snapshot_preserves_environment_filter(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+        monkeypatch.setattr(
+            "tools.kanban_tools._profile_has_kanban_toolset", lambda: False,
+        )
+        from agent.skill_utils import _ENV_DETECT_CACHE
+        _ENV_DETECT_CACHE.clear()
+        skill_dir = tmp_path / "skills" / "devops" / "kanban-worker"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: kanban-worker\ndescription: Kanban only\n"
+            "environments: [kanban]\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        second = build_skills_system_prompt()
+
+        assert "kanban-worker" not in first
+        assert "kanban-worker" not in second
 
     def test_null_metadata_does_not_crash(self, monkeypatch, tmp_path):
         """Regression: metadata key present but null should not AttributeError."""
