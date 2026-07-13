@@ -18831,6 +18831,7 @@ message_context={
 
             if _active_task is not None:
                 from gateway.task_continuation import TaskStateStore, is_progress_only
+                from gateway.task_runtime import is_advisory_methodology_skill_invocation
                 _task_store = TaskStateStore()
                 _task_tool_calls = max(
                     int(request_metrics.get("tool_call_count", 0) or 0),
@@ -18839,7 +18840,14 @@ message_context={
                 request_metrics["tool_call_count"] = _task_tool_calls
                 _turn_exit_reason = str(result.get("turn_exit_reason") or "")
                 _budget_exhausted = _turn_exit_reason.startswith("max_iterations_reached")
-                _no_execution_tools = _active_task.requires_execution and _task_tool_calls == 0
+                _advisory_methodology_skill = is_advisory_methodology_skill_invocation(
+                    str(message or "")
+                )
+                _no_execution_tools = bool(
+                    _active_task.requires_execution
+                    and _task_tool_calls == 0
+                    and not _advisory_methodology_skill
+                )
                 _provider_failed_before_tools = bool(
                     _no_execution_tools and (result.get("failed") or result.get("error"))
                 )

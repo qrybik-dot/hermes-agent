@@ -58,6 +58,26 @@ _TASK_OUTCOME_RE = re.compile(
 )
 
 
+_ADVISORY_METHODOLOGY_SKILL_INVOCATION_RE = re.compile(
+    r'^\[IMPORTANT: The user has invoked the "(triz|adizes)" skill, '
+    r'indicating they want you to follow its instructions\.'
+)
+
+
+def is_advisory_methodology_skill_invocation(message: str) -> bool:
+    """Return whether a trusted slash payload is advisory, not executable.
+
+    TRIZ and Adizes produce methodology analysis and can legitimately finish
+    without tools. Match the gateway-generated activation contract rather
+    than user keywords so this does not become another semantic router.
+    """
+    text = str(message or "")
+    match = _ADVISORY_METHODOLOGY_SKILL_INVOCATION_RE.match(text)
+    if match is None:
+        return False
+    return "The full skill content is loaded below." in text[:500]
+
+
 def task_reported_non_success(
     final_response: str,
     *,

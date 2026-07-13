@@ -17,6 +17,7 @@ from gateway.task_runtime import (
     calendar_evidence_complete,
     extract_calendar_evidence_from_result,
     extract_calendar_evidence_from_tool_result,
+    is_advisory_methodology_skill_invocation,
     persist_calendar_evidence_from_tool_result,
     prepare_task_turn,
     task_reported_non_success,
@@ -80,6 +81,31 @@ def test_pause_progress_and_contract():
     )
     assert plan is False
     assert required_plan == ()
+
+
+def test_advisory_methodology_slash_payload_does_not_require_tool_evidence():
+    for name in ("triz", "adizes"):
+        payload = (
+            f'[IMPORTANT: The user has invoked the "{name}" skill, indicating they want '
+            "you to follow its instructions. The full skill content is loaded below.]\n\n"
+            "# Methodology"
+        )
+        assert is_advisory_methodology_skill_invocation(payload)
+
+
+def test_advisory_methodology_match_is_not_a_keyword_router():
+    assert not is_advisory_methodology_skill_invocation(
+        "ТРИЗ: помоги решить техническое противоречие"
+    )
+    assert not is_advisory_methodology_skill_invocation(
+        '[IMPORTANT: The user has invoked the "vps-admin-safe" skill, indicating they want '
+        "you to follow its instructions. The full skill content is loaded below.]"
+    )
+    assert not is_advisory_methodology_skill_invocation(
+        '[IMPORTANT: The user has invoked the "triz" skill, indicating they want '
+        "you to follow its instructions.]"
+    )
+
 
 def test_status_message_persists(tmp_path):
     store = _store(tmp_path)
