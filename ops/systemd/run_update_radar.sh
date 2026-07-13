@@ -2,6 +2,7 @@
 set -eu
 export HOME=/home/hermes
 export HERMES_HOME=/home/hermes/.hermes
+export PYTHONPATH=/home/hermes/hermes-runtime/current${PYTHONPATH:+:$PYTHONPATH}
 export PATH=/home/hermes/hermes-runtime/shared/venv/bin:/home/hermes/.local/bin:/usr/local/bin:/usr/bin:/bin
 STATE_DIR="$HERMES_HOME/update-radar"
 LOG_DIR="$STATE_DIR/logs"
