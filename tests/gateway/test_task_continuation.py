@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -2455,6 +2456,25 @@ def test_calendar_link_followup_resumes_single_unfinished_calendar_task(tmp_path
     monkeypatch.setenv("HERMES_HOME", str(state_dir))
     state_dir.mkdir()
     store = TaskStateStore(state_dir / "state.db")
+    stale = store.create(
+        platform="telegram",
+        chat_id="1",
+        session_key="stale",
+        title="Old calendar update",
+        original_request="Добавь старую ссылку в описание встречи в календаре",
+        role="simple",
+        toolsets=["file", "skills", "terminal", "no_mcp"],
+        required_toolsets=["terminal"],
+        requires_execution=True,
+        status="incomplete",
+        metadata={"intent": "calendar_write", "sender_id": "user-1"},
+    )
+    with sqlite3.connect(state_dir / "state.db") as conn:
+        old_time = time.time() - 7 * 3600
+        conn.execute(
+            "UPDATE gateway_tasks SET created_at=?, updated_at=? WHERE task_id=?",
+            (old_time, old_time, stale.task_id),
+        )
     task = store.create(
         platform="telegram",
         chat_id="1",

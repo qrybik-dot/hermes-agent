@@ -365,6 +365,13 @@ def _select_calendar_pending_task(store: TaskStateStore, platform_key: str, chat
         task for task in store.active(platform_key, str(chat_id))
         if _task_is_calendar_write(task) and _calendar_task_sender_matches(task, ctx)
     ]
+    if _is_calendar_followup_payload(ctx.current_text):
+        recent = [
+            task for task in matches
+            if task.status not in {"awaiting_delivery", "delivery_failed"}
+            and time.time() - task.updated_at <= 6 * 3600
+        ]
+        return recent[0] if recent else None
     return matches[0] if len(matches) == 1 else None
 
 
