@@ -78,6 +78,32 @@ def is_advisory_methodology_skill_invocation(message: str) -> bool:
     return "The full skill content is loaded below." in text[:500]
 
 
+def execution_intent_text(message: str) -> str:
+    """Return user-authored intent without slash-skill scaffolding.
+
+    Slash commands expand into a model-facing message containing the complete
+    skill body.  That body may contain verbs such as ``check``, ``create`` or
+    ``save`` and must not turn a bare advisory invocation into an execution
+    contract.  Reuse the canonical extractor already used by memory providers;
+    keep ordinary messages byte-for-byte unchanged.
+    """
+    text = str(message or "")
+    from agent.skill_commands import extract_user_instruction_from_skill_message
+
+    extracted = extract_user_instruction_from_skill_message(text)
+    if extracted is not None:
+        return extracted
+
+    is_skill_scaffolding = bool(
+        text.startswith("[IMPORTANT: The user has invoked the ")
+        and (
+            "The full skill content is loaded below.]" in text[:500]
+            or " skill bundle," in text[:500]
+        )
+    )
+    return "" if is_skill_scaffolding else text
+
+
 def task_reported_non_success(
     final_response: str,
     *,
@@ -2468,7 +2494,8 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             operational_context=(route.operational_context + "\n\n" + contract).strip(),
         )
 
-    requires_execution, required = infer_execution_contract(base_text, route.role, route.toolsets)
+    contract_text = execution_intent_text(base_text)
+    requires_execution, required = infer_execution_contract(contract_text, route.role, route.toolsets)
     if task is not None:
         requires_execution, required = task.requires_execution, task.required_toolsets
     if "city-travel-concierge" in route.skill_names:
@@ -2565,9 +2592,9 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     if task is None and (
         calendar_request is not None
         or requires_execution
-        or should_track_task(original, route.role, route.toolsets)
+        or should_track_task(contract_text, route.role, route.toolsets)
     ):
-        title_source = calendar_request or original
+        title_source = calendar_request or contract_text or original
         title = " ".join(title_source.split())[:120] or "Задача Hermes"
         task_metadata = dict(delivery_policy)
         source_request_id = _task_source_request_id(

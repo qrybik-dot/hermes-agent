@@ -17,6 +17,7 @@ from gateway.task_runtime import (
     calendar_evidence_complete,
     extract_calendar_evidence_from_result,
     extract_calendar_evidence_from_tool_result,
+    execution_intent_text,
     is_advisory_methodology_skill_invocation,
     persist_calendar_evidence_from_tool_result,
     prepare_task_turn,
@@ -81,6 +82,48 @@ def test_pause_progress_and_contract():
     )
     assert plan is False
     assert required_plan == ()
+
+
+def _expanded_skill(name: str, instruction: str | None = None) -> str:
+    payload = (
+        f'[IMPORTANT: The user has invoked the "{name}" skill, indicating they want '
+        "you to follow its instructions. The full skill content is loaded below.]\n\n"
+        "---\nname: example\n---\n# Procedure\nCheck, create, save and verify results."
+    )
+    if instruction is not None:
+        payload += (
+            "\n\nThe user has provided the following instruction alongside the skill invocation: "
+            + instruction
+        )
+    return payload
+
+
+def test_execution_intent_ignores_bare_skill_body_for_every_skill():
+    assert execution_intent_text(_expanded_skill("triz")) == ""
+    assert execution_intent_text(_expanded_skill("adizes")) == ""
+    assert execution_intent_text(_expanded_skill("future-methodology")) == ""
+
+
+def test_execution_intent_preserves_slash_instruction_and_ordinary_text():
+    instruction = "Настрой gateway на VPS и проверь логи"
+    assert execution_intent_text(_expanded_skill("triz", instruction)) == instruction
+    assert execution_intent_text("ТРИЗ: найди противоречие") == "ТРИЗ: найди противоречие"
+
+
+def test_skill_instruction_still_requires_real_tool_evidence():
+    text = execution_intent_text(
+        _expanded_skill("triz", "Настрой gateway на VPS и проверь логи")
+    )
+    execution, required = infer_execution_contract(text, "server_debug", ["terminal"])
+    assert execution is True
+    assert required == ("terminal",)
+
+
+def test_bare_skill_body_does_not_create_execution_contract():
+    text = execution_intent_text(_expanded_skill("triz"))
+    execution, required = infer_execution_contract(text, "expert_analysis", ["skills"])
+    assert execution is False
+    assert required == ()
 
 
 def test_advisory_methodology_slash_payload_does_not_require_tool_evidence():
