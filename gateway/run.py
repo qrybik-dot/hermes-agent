@@ -10170,7 +10170,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         already run and images are represented in-text.
         """
         history = history or []
-        message_text = event.text or ""
+        _quick_task_pretranscribed = getattr(
+            event, "_quick_task_pretranscribed_text", None,
+        )
+        message_text = (
+            _quick_task_pretranscribed
+            if isinstance(_quick_task_pretranscribed, str)
+            else (event.text or "")
+        )
         _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
         # Use the same helper every other call site uses so the write key here
@@ -10249,7 +10256,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         image_paths,
                     )
 
-            if audio_paths:
+            if audio_paths and _quick_task_pretranscribed is None:
                 message_text, _successful_transcripts = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
@@ -10487,6 +10494,151 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    async def _try_quick_task_capture(
+        self,
+        *,
+        event,
+        source,
+        request_id: str,
+        received_at: str,
+        started_at: float,
+    ) -> bool:
+        """Capture explicit task commands before session/history/agent setup.
+
+        Voice clips are transcribed here once and marked on the event so the
+        normal path can reuse the transcript without a second STT call.  A
+        non-matching command falls through without changing normal routing.
+        """
+        from gateway.quick_task_capture import capture_quick_task, detect_quick_task
+
+        candidate = str(getattr(event, "text", None) or "").strip()
+        successful_transcripts: list[str] = []
+        voice_paths: list[str] = []
+        if getattr(event, "media_urls", None):
+            for index, path in enumerate(event.media_urls):
+                media_type = (
+                    event.media_types[index]
+                    if index < len(getattr(event, "media_types", []) or [])
+                    else ""
+                )
+                if event.message_type == MessageType.VOICE or (
+                    media_type.startswith("audio/")
+                    and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
+                ):
+                    voice_paths.append(path)
+
+        if voice_paths:
+            enriched, successful_transcripts = await self._enrich_message_with_transcription(
+                candidate,
+                voice_paths,
+            )
+            # Reuse STT output on fall-through; never transcribe one inbound
+            # clip twice merely because it was not a quick-task command.
+            setattr(event, "_quick_task_pretranscribed_text", enriched)
+            if len(successful_transcripts) == 1 and not candidate:
+                candidate = successful_transcripts[0]
+
+            if successful_transcripts:
+                echo_adapter = self.adapters.get(source.platform)
+                echo_meta = self._thread_metadata_for_source(
+                    source, self._reply_anchor_for_event(event),
+                )
+                if echo_adapter:
+                    for transcript in successful_transcripts:
+                        try:
+                            await echo_adapter.send(
+                                source.chat_id,
+                                f'🎙️ "{transcript}"',
+                                metadata=echo_meta,
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "Transcript echo failed (non-fatal): %s", exc,
+                            )
+
+        if detect_quick_task(candidate) is None:
+            return False
+
+        platform_key = _platform_config_key(source.platform)
+        quick_task = await asyncio.to_thread(
+            capture_quick_task,
+            candidate,
+            platform=platform_key,
+            chat_id=str(source.chat_id),
+            request_id=request_id,
+            session_id=None,
+        )
+        if quick_task is None:
+            return False
+
+        response = f"Записал задачу «{quick_task.title}»."
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            return False
+        metadata = self._thread_metadata_for_source(
+            source, self._reply_anchor_for_event(event),
+        )
+        try:
+            sent = await adapter.send(source.chat_id, response, metadata=metadata)
+            if getattr(sent, "success", True) is False:
+                return False
+        except Exception:
+            logger.warning("Quick task response delivery failed", exc_info=True)
+            return False
+        try:
+            if hasattr(adapter, "stop_typing"):
+                await adapter.stop_typing(source.chat_id)
+        except Exception:
+            pass
+
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "response ready: request_id=%s platform=%s chat=%s time=%.3fs "
+            "api_calls=0 response=%d chars",
+            request_id,
+            platform_key,
+            source.chat_id or "unknown",
+            elapsed_ms / 1000,
+            len(response),
+        )
+        result = {
+            "final_response": response,
+            "api_calls": 0,
+            "completed": True,
+            "task_level": "no_llm",
+            "selected_model": "deterministic",
+            "selected_provider": "gateway",
+            "model": "deterministic",
+            "provider": "gateway",
+            "routing_reason": "pre-session deterministic quick Kanban capture",
+            "diagnostics": {
+                "tool_call_count": 0,
+                "skill_call_count": 0,
+                "quick_task_created": quick_task.created,
+                "response_mode": "deterministic",
+            },
+        }
+        try:
+            metric = _build_gateway_request_metrics(
+                request_id=request_id,
+                received_at=received_at,
+                completed_at=datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
+                total_ms=elapsed_ms,
+                agent_result=result,
+                telegram_send_ms=None,
+            )
+            logger.info(
+                "gateway_request_metrics %s",
+                json.dumps(
+                    _compact_gateway_metrics(metric, result),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+        except Exception as exc:
+            logger.debug("quick task metrics build failed: %s", exc)
+        return True
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.monotonic()
@@ -10502,6 +10654,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _platform_name, source.user_name or source.user_id or "unknown",
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
+
+        # Explicit task capture is independent of conversation state.  Handle
+        # it before session recovery, transcript loading, skill routing and the
+        # expensive run_agent import so a cold cache cannot turn a one-step
+        # write into a 20-30 second pseudo-agent run.
+        if await self._try_quick_task_capture(
+            event=event,
+            source=source,
+            request_id=_request_id,
+            received_at=_received_at,
+            started_at=_msg_start_time,
+        ):
+            return None
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's

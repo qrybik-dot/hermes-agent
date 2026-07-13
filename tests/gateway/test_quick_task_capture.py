@@ -1,8 +1,12 @@
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from gateway.quick_task_capture import capture_quick_task, detect_quick_task
+from gateway.config import Platform
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.run import GatewayRunner
 from gateway.task_runtime import prepare_task_turn
 
 
@@ -118,3 +122,95 @@ def test_prepare_turn_captures_task_before_router_or_history(tmp_path, monkeypat
     with sqlite3.connect(tmp_path / ".hermes" / "kanban.db") as conn:
         row = conn.execute("SELECT title FROM tasks").fetchone()
     assert row[0] == "Сделать пост на LinkedIn с объявлением о наборе айтишников"
+
+
+class _Adapter:
+    def __init__(self):
+        self.sent = []
+        self.typing_stopped = False
+
+    async def send(self, chat_id, text, metadata=None):
+        self.sent.append((chat_id, text, metadata))
+        return SimpleNamespace(success=True)
+
+    async def stop_typing(self, chat_id):
+        self.typing_stopped = True
+
+
+def _runner_with_adapter(adapter):
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._thread_metadata_for_source = lambda source, anchor: {"reply_to": anchor}
+    runner._reply_anchor_for_event = lambda event: event.message_id
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_gateway_fast_path_runs_before_session_setup(tmp_path, monkeypatch):
+    _common(tmp_path, monkeypatch)
+    adapter = _Adapter()
+    runner = _runner_with_adapter(adapter)
+    event = MessageEvent(
+        text="Запиши задачу проверить production smoke",
+        message_type=MessageType.TEXT,
+        message_id="17",
+    )
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+    )
+
+    handled = await runner._try_quick_task_capture(
+        event=event,
+        source=source,
+        request_id="request-17",
+        received_at="2026-07-13T21:46:10.000Z",
+        started_at=0.0,
+    )
+
+    assert handled is True
+    assert adapter.sent[-1][1] == "Записал задачу «Проверить production smoke»."
+    assert adapter.typing_stopped is True
+    with sqlite3.connect(tmp_path / ".hermes" / "kanban.db") as conn:
+        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_fast_path_reuses_voice_transcript(tmp_path, monkeypatch):
+    _common(tmp_path, monkeypatch)
+    adapter = _Adapter()
+    runner = _runner_with_adapter(adapter)
+
+    async def _transcribe(user_text, paths):
+        transcript = "Запиши задачу проверить голосовой smoke"
+        return f'"{transcript}"', [transcript]
+
+    runner._enrich_message_with_transcription = _transcribe
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        message_id="18",
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+    )
+
+    handled = await runner._try_quick_task_capture(
+        event=event,
+        source=source,
+        request_id="voice-18",
+        received_at="2026-07-13T21:46:10.000Z",
+        started_at=0.0,
+    )
+
+    assert handled is True
+    assert event._quick_task_pretranscribed_text == (
+        '"Запиши задачу проверить голосовой smoke"'
+    )
+    assert [item[1] for item in adapter.sent] == [
+        '🎙️ "Запиши задачу проверить голосовой smoke"',
+        "Записал задачу «Проверить голосовой smoke».",
+    ]
