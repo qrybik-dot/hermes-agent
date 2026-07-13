@@ -1939,11 +1939,16 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     original = str(message or "")
     msg_ctx = _normalize_message_context(message_context, fallback_text=original, chat_id=str(chat_id))
     current_text = msg_ctx.current_text or original
+    current_intent = execution_intent_text(current_text)
+    bare_skill_invocation = bool(
+        current_text.startswith("[IMPORTANT: The user has invoked the ")
+        and not current_intent.strip()
+    )
     staged_transcript = None
-    if platform_key == "telegram" and looks_like_transcript(current_text):
+    if platform_key == "telegram" and looks_like_transcript(current_intent):
         try:
             staged_transcript = stage_transcript(
-                current_text,
+                current_intent,
                 source="telegram",
                 chat_id=str(chat_id),
                 sender_id=str(msg_ctx.sender_id or ""),
@@ -1952,10 +1957,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             message = original
             current_text = original
             msg_ctx = replace(msg_ctx, current_text=current_text)
+            current_intent = current_text
         except Exception:
             staged_transcript = None
 
-    replay_task = store.recent_matching_request(platform_key, str(chat_id), current_text)
+    replay_task = store.recent_matching_request(platform_key, str(chat_id), current_intent)
     if replay_task is not None:
         replay_text = str(replay_task.metadata.get("final_response") or "").strip()
         replay_tool_calls = int(replay_task.metadata.get("tool_call_count", 0) or 0)
@@ -1987,10 +1993,10 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     )
     active_tasks = store.active(platform_key, str(chat_id))
     avito_intent = detect_avito_intent(
-        original,
-        context_text="\n".join(part for part in (current_text, uncertainty_context) if part),
+        current_intent,
+        context_text="\n".join(part for part in (current_intent, uncertainty_context) if part),
     )
-    if re.fullmatch(r"\s*(?:почему|из-за\s+чего|в\s+ч[её]м\s+причина)\s+(?:эта\s+)?(?:ошибка|blocked|блокировка)[\s.!?]*", original, re.I):
+    if re.fullmatch(r"\s*(?:почему|из-за\s+чего|в\s+ч[её]м\s+причина)\s+(?:эта\s+)?(?:ошибка|blocked|блокировка)[\s.!?]*", current_intent, re.I):
         if len(active_tasks) == 1:
             current = active_tasks[0]
             reason = current.last_error or "причина не сохранена"
@@ -2011,7 +2017,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 ),
                 False,
             )
-    initial_route = route_turn(current_text, command=None, platform_key=platform_key,
+    initial_route = route_turn(current_intent, command=None, platform_key=platform_key,
                                user_config=user_config, platform_toolsets=platform_toolsets,
                                context_text=uncertainty_context)
     if staged_transcript is not None:
@@ -2037,15 +2043,15 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         )
     pre_continuation_uncertainty = (
         None
-        if staged_transcript is not None
-        else detect_uncertain_intent(current_text, context_text=uncertainty_context)
+        if staged_transcript is not None or bare_skill_invocation
+        else detect_uncertain_intent(current_intent, context_text=uncertainty_context)
     )
 
     def uncertainty_response():
         if pre_continuation_uncertainty is None:
             return None
         return early_response(
-            clarification_question(current_text, pre_continuation_uncertainty),
+            clarification_question(current_intent, pre_continuation_uncertainty),
             role="no_llm",
             reason="deterministic uncertainty gate before continuation",
             diagnostics={
@@ -2059,11 +2065,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     explicit_save_candidate = None
     if staged_transcript is None:
         explicit_save_candidate = detect_context_save_note(
-            current_text,
+            current_intent,
             msg_ctx.reply_text,
             msg_ctx.reply_caption,
             continued=False,
-        ) or detect_quick_note(current_text, continued=False)
+        ) or detect_quick_note(current_intent, continued=False)
 
     def avito_intent_response():
         if avito_intent.kind != "clarify":
@@ -2083,13 +2089,13 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     pre_model = run_pre_model_pipeline([
         PreModelStage(
             "granola_share",
-            lambda: _deterministic_granola_share_response(current_text),
+            lambda: _deterministic_granola_share_response(current_intent),
             enabled=staged_transcript is None,
         ),
         PreModelStage(
             "location_place",
             lambda: _deterministic_location_place_flow(
-                text=current_text,
+                text=current_intent,
                 route=initial_route,
                 platform_key=platform_key,
                 chat_id=str(chat_id),
@@ -2100,11 +2106,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         PreModelStage(
             "save_intent",
             lambda: _deterministic_save_intent_response(
-                current_text, msg_ctx.reply_text, msg_ctx.reply_caption
+                current_intent, msg_ctx.reply_text, msg_ctx.reply_caption
             ),
             enabled=(
                 staged_transcript is None
-                and not travel_is_source_capture(current_text)
+                and not travel_is_source_capture(current_intent)
                 and (not active_tasks or explicit_save_candidate is not None)
             ),
         ),
@@ -2121,7 +2127,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         PreModelStage(
             "place_lookup",
             lambda: _deterministic_place_lookup(
-                text=current_text,
+                text=current_intent,
                 route=initial_route,
                 platform_key=platform_key,
                 chat_id=str(chat_id),
@@ -2131,7 +2137,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         PreModelStage(
             "city_travel_followup",
             lambda: _deterministic_city_travel_followup(
-                text=current_text,
+                text=current_intent,
                 route=initial_route,
                 platform_key=platform_key,
                 chat_id=str(chat_id),
@@ -2144,7 +2150,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             original, initial_route, None, pre_model.response, False,
         )
 
-    decision = store.resolve(original, platform_key, str(chat_id), session_key=session_key)
+    decision = store.resolve(current_intent, platform_key, str(chat_id), session_key=session_key)
     pending_avito = None
     if decision.kind == "none" and platform_key == "telegram":
         pending_avito = _select_avito_pending_task(
@@ -2152,7 +2158,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             platform_key,
             str(chat_id),
             msg_ctx,
-            context_text="\n".join(part for part in (original, uncertainty_context) if part),
+            context_text="\n".join(part for part in (current_intent, uncertainty_context) if part),
         )
     pending_calendar = None
     if decision.kind == "none" and pending_avito is None:
@@ -2179,7 +2185,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     pending_calendar_draft_task = pending_calendar
     calendar_continuation = (
         pending_calendar
-        if pending_calendar is not None and _is_calendar_followup_payload(current_text)
+        if pending_calendar is not None and _is_calendar_followup_payload(current_intent)
         else None
     )
     task = (
@@ -2190,7 +2196,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     if task is not None and _task_is_calendar_write(task) and not _calendar_task_sender_matches(task, msg_ctx):
         task = None
     continued = task is not None
-    use_other_path = bool(re.search(r"\bдруг(?:ой|им)\s+(?:источник|способ)(?:ом)?\b", original, re.I))
+    use_other_path = bool(re.search(r"\bдруг(?:ой|им)\s+(?:источник|способ)(?:ом)?\b", current_intent, re.I))
     if task is not None and int(task.metadata.get("budget_exhaustions", 0) or 0) >= 2 and not use_other_path:
         return PreparedTaskTurn(
             original, None, task,
@@ -2246,11 +2252,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     if task is None:
         quick_note = detect_context_save_note(
-            current_text,
+            current_intent,
             msg_ctx.reply_text,
             msg_ctx.reply_caption,
             continued=False,
-        ) or detect_quick_note(current_text, continued=False)
+        ) or detect_quick_note(current_intent, continued=False)
         if quick_note is not None:
             try:
                 quick_result = run_quick_save(quick_note)
@@ -2268,7 +2274,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 False,
             )
 
-    if is_pause_request(original):
+    if is_pause_request(current_intent):
         pending = store.active(platform_key, str(chat_id))
         if len(pending) == 1:
             store.update(pending[0].task_id, status="paused")
@@ -2285,22 +2291,23 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
     calendar_request = None
     calendar_request_draft = None
     calendar_request_source_task_id = None
-    if draft is not None and _is_calendar_write_request(current_text):
-        calendar_request = _format_calendar_request(current_text, draft, draft_source)
+    if draft is not None and _is_calendar_write_request(current_intent):
+        calendar_request = _format_calendar_request(current_intent, draft, draft_source)
         calendar_request_draft = draft
         if task is None:
             message = calendar_request
-    elif _is_calendar_write_request(current_text):
+    elif _is_calendar_write_request(current_intent):
         saved_draft_source = task or pending_calendar_draft_task
         saved_draft = saved_draft_source.metadata.get("calendar_event_draft") if saved_draft_source else None
         if isinstance(saved_draft, dict):
-            calendar_request = _format_calendar_request(current_text, saved_draft, "pending_task")
+            calendar_request = _format_calendar_request(current_intent, saved_draft, "pending_task")
             calendar_request_draft = saved_draft
             calendar_request_source_task_id = saved_draft_source.task_id
             if task is None:
                 message = calendar_request
 
     base_text = task.original_request if task else str(calendar_request or message or "")
+    contract_text = execution_intent_text(base_text)
     route = route_turn(base_text, command=None, platform_key=platform_key,
                        user_config=user_config, platform_toolsets=platform_toolsets,
                        context_text=uncertainty_context)
@@ -2402,7 +2409,11 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         )
 
     if task is None:
-        uncertainty_kind = detect_uncertain_intent(base_text, context_text=uncertainty_context)
+        uncertainty_kind = (
+            None
+            if bare_skill_invocation
+            else detect_uncertain_intent(contract_text, context_text=uncertainty_context)
+        )
         clarify_only = route.toolsets == ["clarify"]
         if uncertainty_kind is not None or clarify_only:
             kind = uncertainty_kind or "ambiguous_action"
@@ -2411,7 +2422,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 route,
                 None,
                 early_response(
-                    clarification_question(base_text, kind),
+                    clarification_question(contract_text, kind),
                     role="no_llm",
                     reason="deterministic uncertainty gate",
                     diagnostics={
@@ -2426,7 +2437,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
 
     if task is None:
         travel_fast_response = _run_city_travel_trip_fast_path(
-            base_text,
+            contract_text,
             route,
             platform_key=platform_key,
             chat_id=str(chat_id),
@@ -2442,7 +2453,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 continued,
             )
 
-    preflight = _deterministic_input_preflight(base_text, route)
+    preflight = _deterministic_input_preflight(contract_text, route)
     if preflight is not None:
         missing_inputs, preflight_reason = preflight
         if task is not None:
@@ -2494,7 +2505,6 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             operational_context=(route.operational_context + "\n\n" + contract).strip(),
         )
 
-    contract_text = execution_intent_text(base_text)
     requires_execution, required = infer_execution_contract(contract_text, route.role, route.toolsets)
     if task is not None:
         requires_execution, required = task.requires_execution, task.required_toolsets
@@ -2506,7 +2516,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         required = ("avito", "image_gen", "vision")
 
     html_report_requested = should_generate_html_report(
-        base_text, route.role, requires_execution=requires_execution,
+        contract_text, route.role, requires_execution=requires_execution,
     )
     delivery_policy = {
         "final_delivery_owner": "gateway_runtime",

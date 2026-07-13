@@ -150,6 +150,54 @@ def test_advisory_methodology_match_is_not_a_keyword_router():
     )
 
 
+def test_bare_skill_scaffolding_cannot_trigger_pre_model_place_or_save(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(
+        "gateway.task_runtime._with_preloaded_skills",
+        lambda route, task_id: (route, ()),
+    )
+    (tmp_path / ".hermes").mkdir()
+    payload = (
+        '[IMPORTANT: The user has invoked the "adizes" skill, indicating they want '
+        'you to follow its instructions. The full skill content is loaded below.]\n\n'
+        '---\nname: adizes\n---\n'
+        '# Procedure\nРабота пока не сохранена. Пришли геолокацию. '
+        'Сохрани место, продолжай и проверь календарь.'
+    )
+
+    prepared = prepare_task_turn(
+        message=payload,
+        platform_key="telegram",
+        chat_id="1",
+        session_key="new",
+        session_id="session-new",
+        request_id="req-bare-adizes",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
+        message_context={"current_text": payload, "current_message_id": "100"},
+    )
+
+    assert prepared.early_response is None
+    assert prepared.task is None
+    assert prepared.message == payload
+
+
+def test_skill_action_instruction_still_reaches_pre_model_place_flow(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+    payload = _expanded_skill("adizes", "Запомни мою работу")
+    prepared = prepare_task_turn(
+        message=payload, platform_key="telegram", chat_id="1", session_key="new",
+        session_id="session-new", request_id="req-adizes-action",
+        user_config={"agent": {}}, platform_toolsets=["file", "memory", "skills", "no_mcp"],
+        message_context={"current_text": payload, "current_message_id": "101"},
+    )
+    assert prepared.early_response is not None
+    assert "геолокац" in prepared.early_response["final_response"].lower()
+
+
 def test_status_message_persists(tmp_path):
     store = _store(tmp_path)
     task = store.create(platform="telegram", chat_id="1", session_key="s", title="Task",
