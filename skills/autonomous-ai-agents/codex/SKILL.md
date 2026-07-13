@@ -1,11 +1,11 @@
 ---
 name: codex
 description: "Delegate coding to OpenAI Codex CLI (features, PRs)."
-version: 1.0.0
-author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
+  version: 1.0.0
+  author: Hermes Agent
+  platforms: [linux, macos, windows]
   hermes:
     tags: [Coding-Agent, Codex, OpenAI, Code-Review, Refactoring]
     related_skills: [claude-code, hermes-agent]
@@ -26,9 +26,12 @@ Requires the codex CLI and a git repository.
 
 ## Prerequisites
 
-- Codex installed: `npm install -g @openai/codex`
+- Codex installed: `npm install -g @openai/codex` (needed for terminal delegation, not for Hermes model access through an already configured `openai-codex` provider)
 - OpenAI auth configured: either `OPENAI_API_KEY` or Codex OAuth credentials
   from the Codex CLI login flow
+- If `codex exec` or `codex doctor` returns `401` with a missing-scope error,
+  verify the selected credential has the required Responses API scope. Never
+  print the token while diagnosing it.
 - **Must run inside a git repository** — Codex refuses to run outside one
 - Use `pty=true` in terminal calls — Codex is an interactive terminal app
 

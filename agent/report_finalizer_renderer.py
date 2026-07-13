@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 import uuid
 
+from gateway.messaging_contract import public_response_text, public_verdict
+
 _STATUS_RE = re.compile(r"(?im)^\s*(?:Статус|Status|Итог|Verdict)?\s*:?[\s#>*-]*(READY|PARTIAL|BLOCKED|INCOMPLETE)\b")
 _SECTION_RE = re.compile(r"(?m)^#{1,3}\s+(.+?)\s*$|^(Итог|Сделано|Проверено|Файлы|Риски|Следующий шаг)\s*:\s*$")
 
@@ -32,8 +34,7 @@ def _detect_status(text: str, *, completed: bool | None = None, failed: bool | N
         return "BLOCKED"
     match = _STATUS_RE.search(text or "")
     if match:
-        label = match.group(1).upper()
-        return label
+        return public_verdict(match.group(1), has_usable_result=True)
     if completed is True:
         return "READY"
     return "PARTIAL"
@@ -43,7 +44,6 @@ def _status_class(status: str) -> str:
     return {
         "READY": "ready",
         "PARTIAL": "partial",
-        "INCOMPLETE": "partial",
         "BLOCKED": "blocked",
     }.get(status, "partial")
 
@@ -123,7 +123,7 @@ def render_task_report_html(
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"task-report-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{report_id}.html"
 
-    body = _paragraphize(final_response)
+    body = _paragraphize(public_response_text(final_response))
     klass = _status_class(status)
     safe_title = escape(title)
     meta_rows = "".join(
@@ -156,8 +156,8 @@ def render_task_report_html(
     html[data-theme="light"] {{ --bg: #f7f8fb; --panel: #ffffff; --text: #14171f; --muted: #647084; --line: #dce2ec; --accent: #476cff; --shadow: 0 18px 48px rgba(20, 23, 31, .10); }}
     html[data-theme="dark"] {{ --bg: #0d1117; --panel: #151b23; --text: #eef2f8; --muted: #9aa7b8; --line: #2b3442; --accent: #8ea2ff; --shadow: 0 18px 48px rgba(0,0,0,.35); }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 16%, transparent), transparent 34rem), var(--bg); color: var(--text); }}
-    main {{ width: min(1120px, calc(100vw - 32px)); margin: 32px auto; }}
+    body {{ margin: 0; font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }}
+    main {{ width: min(960px, calc(100vw - 32px)); margin: 32px auto; }}
     .hero, .card {{ background: color-mix(in srgb, var(--panel) 96%, transparent); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); }}
     .hero {{ padding: clamp(20px, 4vw, 40px); display: grid; gap: 16px; }}
     .eyebrow {{ color: var(--muted); text-transform: uppercase; letter-spacing: .12em; font-size: 12px; font-weight: 700; }}
@@ -185,26 +185,11 @@ def render_task_report_html(
     </section>
     <section class="grid">
       <article class="card" aria-label="Final response">
-        <h2>Краткий результат</h2>
         {body}
-        <h2>Что сделано</h2>
-        <p class="muted">См. подтверждённые пункты в финальном ответе выше.</p>
-        <h2>Что не сделано</h2>
-        <p class="muted">Если статус не READY, незавершённая часть указана в финальном ответе.</p>
-        <h2>Проверки и доказательства</h2>
-        <p class="muted">Доказательства сохранены в тексте отчёта и метаданных.</p>
-        <h2>Риски</h2>
-        <p class="muted">Актуальные риски указаны в финальном ответе.</p>
-        <h2>Следующий шаг</h2>
-        <p class="muted">Следующее действие указано в финальном ответе.</p>
       </article>
       <aside class="card" aria-label="Run metadata">
         <h2>Метаданные</h2>
         <dl>{meta_rows}</dl>
-        <details>
-          <summary>Appendix: technical details</summary>
-          <p class="muted">Полный prompt и runlog не включаются в основной поток отчёта.</p>
-        </details>
       </aside>
     </section>
   </main>

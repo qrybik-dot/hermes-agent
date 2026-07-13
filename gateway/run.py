@@ -70,6 +70,7 @@ from gateway.telegram_task_status import (
     text_delivery_confirmed,
     verdict_from_text,
 )
+from gateway.messaging_contract import public_response_text
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -534,7 +535,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = public_response_text(_redact_gateway_user_facing_secrets(str(text)))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
@@ -19227,6 +19228,9 @@ message_context={
                     )
                 except Exception:
                     pass
+
+            final_response = public_response_text(final_response or "")
+            result["final_response"] = final_response
 
             _html_report_requested = False
             if final_response and _active_task is not None:

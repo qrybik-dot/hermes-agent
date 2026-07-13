@@ -8,6 +8,8 @@ import re
 import time
 from typing import Iterable, Mapping, Sequence
 
+from gateway.messaging_contract import public_verdict
+
 
 _TECHNICAL_EVENT_RE = re.compile(
     r"receiving stream response|waiting for non-streaming API response|pytest|\buv\b|venv|delegate_task|reviewer|subagent|"
@@ -255,7 +257,7 @@ class TelegramTaskStatusState:
         return self.max_percent
 
     def stage_icon(self) -> str:
-        if self.final_verdict in {"BLOCKED", "INCOMPLETE", "PARTIAL"}:
+        if self.final_verdict in {"BLOCKED", "PARTIAL"}:
             return "⚠️"
         phase_order = ["start", "discover", "work", "verify", "deliver", "done"]
         phase = "done" if self.final_verdict in {"READY", "SUCCESS"} else self.current_phase
@@ -308,7 +310,7 @@ class TelegramTaskStatusState:
         elif self.final_verdict == "BLOCKED":
             pct = min(pct, 90)
             stage_name = "Остановлено из-за блокера"
-        elif self.final_verdict in {"INCOMPLETE", "PARTIAL"}:
+        elif self.final_verdict == "PARTIAL":
             pct = min(pct, 90)
             stage_name = "Завершено частично"
 
@@ -351,11 +353,10 @@ def verdict_from_text(text: str, *, failed: bool = False, partial: bool = False)
     if failed:
         return "BLOCKED"
     if partial:
-        return "INCOMPLETE"
+        return "PARTIAL"
     match = re.search(r"(?im)^\s*(?:статус\s*:\s*)?(READY|PARTIAL|BLOCKED|INCOMPLETE)\b", text or "")
     if match:
-        value = match.group(1).upper()
-        return "INCOMPLETE" if value == "PARTIAL" else value
+        return public_verdict(match.group(1), has_usable_result=True)
     return "READY"
 
 

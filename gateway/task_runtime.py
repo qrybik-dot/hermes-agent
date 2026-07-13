@@ -51,6 +51,7 @@ from gateway.quick_note_capture import (
     format_quick_save_response,
     run_quick_save,
 )
+from gateway.quick_task_capture import capture_quick_task
 
 _TASK_OUTCOME_RE = re.compile(
     r"(?m)^\s*(?:[-*#>]+\s*)?(?:[^:\n]{0,40}:\s*)?"
@@ -1935,7 +1936,6 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                       session_key: str, session_id: str, request_id: str,
                       user_config: dict, platform_toolsets: list[str] | None,
                       message_context: dict | MessageContext | None = None) -> PreparedTaskTurn:
-    store = TaskStateStore()
     original = str(message or "")
     msg_ctx = _normalize_message_context(message_context, fallback_text=original, chat_id=str(chat_id))
     current_text = msg_ctx.current_text or original
@@ -1961,6 +1961,36 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         except Exception:
             staged_transcript = None
 
+    # Explicit task capture is a deterministic write.  Keep it ahead of
+    # replay, uncertainty, continuation, skill loading and model routing so a
+    # stale session cannot turn one Kanban card into a long agent run.
+    quick_task = capture_quick_task(
+        current_intent,
+        platform=platform_key,
+        chat_id=str(chat_id),
+        request_id=request_id,
+        session_id=session_id,
+    )
+    if quick_task is not None:
+        return PreparedTaskTurn(
+            original,
+            None,
+            None,
+            early_response(
+                f"Записал задачу «{quick_task.title}».",
+                role="no_llm",
+                reason="deterministic quick Kanban capture",
+                diagnostics={
+                    "quick_task_created": quick_task.created,
+                    "tool_call_count": 0,
+                    "skill_call_count": 0,
+                    "response_mode": "deterministic",
+                },
+            ),
+            False,
+        )
+
+    store = TaskStateStore()
     replay_task = store.recent_matching_request(platform_key, str(chat_id), current_intent)
     if replay_task is not None:
         replay_text = str(replay_task.metadata.get("final_response") or "").strip()

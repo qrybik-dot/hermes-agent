@@ -101,7 +101,7 @@ def test_tool_event_does_not_surface_in_telegram():
 def test_iteration_budget_exhausted_maps_to_one_incomplete_final():
     deduper = FinalDeliveryDeduper()
     verdict = verdict_from_text("INCOMPLETE\niteration_budget_exhausted")
-    assert verdict == "INCOMPLETE"
+    assert verdict == "PARTIAL"
     assert deduper.mark_once(task_id="task", verdict=verdict, delivery_type="text", generation="gateway-runtime-v1")
     assert not deduper.mark_once(task_id="task", verdict=verdict, delivery_type="text", generation="gateway-runtime-v1")
 
@@ -166,7 +166,7 @@ def test_waiting_for_non_streaming_status_does_not_surface():
 
 def test_incomplete_final_status_never_reaches_100_percent():
     state = TelegramTaskStatusState("demo")
-    rendered = state.render(stage="delivery", verdict="INCOMPLETE")
+    rendered = state.render(stage="delivery", verdict="PARTIAL")
     assert "100%" not in rendered
     assert "90%" in rendered or "80%" in rendered or "60%" in rendered
 

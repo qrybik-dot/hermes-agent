@@ -65,6 +65,13 @@ _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 # substitute for ``curator.prune_builtins: false``, which exempts ALL built-ins.
 PROTECTED_BUILTIN_SKILLS: Set[str] = {
     "plan",
+    "task-workflow",
+    "task-operating-mode",
+    "task-progress-roadmap",
+    "telegram-status-ux",
+    "telegram-family-assistant",
+    "milestone-memory-writer",
+    "model-router",
 }
 
 
@@ -254,10 +261,10 @@ def _prune_builtins_enabled() -> bool:
         cfg = load_config()
         cur = cfg.get("curator") if isinstance(cfg, dict) else None
         if isinstance(cur, dict):
-            return bool(cur.get("prune_builtins", True))
+            return bool(cur.get("prune_builtins", False))
     except Exception as e:  # pragma: no cover — best-effort config read
         logger.debug("Failed to read curator.prune_builtins: %s", e)
-    return True
+    return False
 
 
 def _suppressed_file() -> Path:
@@ -417,14 +424,24 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
 
 
 def is_agent_created(skill_name: str) -> bool:
-    """Whether *skill_name* is neither bundled nor hub-installed."""
-    off_limits = _read_bundled_manifest_names() | _read_hub_installed_names()
-    if skill_name in off_limits:
+    """Whether telemetry explicitly records agent ownership."""
+    local_dir = _find_skill_dir(skill_name)
+    if local_dir is not None and is_external_skill_path(local_dir):
         return False
-    return not (
-        _find_skill_dir(skill_name) is None
-        and _find_external_skill_dir(skill_name) is not None
-    )
+    if local_dir is None and _find_external_skill_dir(skill_name) is not None:
+        return False
+    return _is_curator_managed_record(load_usage().get(skill_name))
+
+
+def skill_provenance(skill_name: str) -> str:
+    """Return bundled, hub, manual, or agent-created provenance."""
+    if is_bundled(skill_name):
+        return "bundled"
+    if is_hub_installed(skill_name):
+        return "hub"
+    if is_agent_created(skill_name):
+        return "agent-created"
+    return "manual"
 
 
 def is_hub_installed(skill_name: str) -> bool:

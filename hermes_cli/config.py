@@ -2184,6 +2184,9 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Ordinary work must not nudge autonomous skill creation. New reusable
+        # skills are created through explicit /learn requests.
+        "creation_nudge_interval": 0,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
@@ -2208,7 +2211,7 @@ DEFAULT_CONFIG = {
         # agent, which can retry with the flagged content removed.
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
-        "guard_agent_created": False,
+        "guard_agent_created": True,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.
@@ -2262,7 +2265,7 @@ DEFAULT_CONFIG = {
         # long-unused built-in is archived only after archive_after_days of
         # genuine non-use (never a mass-prune on the first run). Set to false
         # to keep all bundled built-ins permanently.
-        "prune_builtins": True,
+        "prune_builtins": False,
         # Pre-run backup: before every real curator pass (dry-run is
         # skipped), snapshot ~/.hermes/skills/ into
         # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the

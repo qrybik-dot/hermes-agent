@@ -174,12 +174,10 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "After completing a complex task (5+ tool calls), fixing a tricky error, "
-    "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
-    "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "Treat skills as durable, reviewed workflows rather than turn-by-turn notes. "
+    "Create a new skill only through an explicit /learn request. "
+    "Patch an existing skill only after reading it and confirming a repeatable "
+    "lesson; keep the patch narrow, validate it, and preserve an audit trail."
 )
 
 KANBAN_GUIDANCE = (
@@ -1605,17 +1603,18 @@ def build_skills_system_prompt(
     # what the index stops showing them. Match on the top-level category
     # segment so nested categories ("social-media/twitter") are demoted with
     # their parent.
-    demoted = frozenset(
-        cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
-    )
+    # The stable session prompt carries the complete name index, while routed
+    # skills are preloaded with their full instructions for the current task.
+    # Descriptions for all 100+ skills made every unrelated request pay the
+    # same context and classifier cost, so the base catalog is names-only.
+    demoted = frozenset(skills_by_category)
 
     hidden_note = ""
     if demoted:
         hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
+            "\n(Categories marked [names only] keep the stable catalog bounded. "
+            "Relevant skills are preloaded by routing or load normally with "
+            "skill_view(name).)"
         )
 
     if not skills_by_category:
@@ -1644,32 +1643,23 @@ def build_skills_system_prompt(
                     index_lines.append(f"    - {name}")
 
         result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
+            "## Skills\n"
+            "Load a skill when its name clearly matches the request or when a concrete "
+            "gap proves it is needed. Follow a loaded skill, but do not load speculative "
+            "or merely adjacent skills. Use skills_list for discovery.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "New skills require an explicit /learn request. Patch a loaded skill only "
+            "after confirming a repeatable defect, then validate the narrow change.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Proceed without a skill when no clear match or proven need exists."
             + hidden_note
         )
 

@@ -1303,10 +1303,10 @@ def init_agent(
     _inject_memory_provider_tools(agent)
 
     # Skills config: nudge interval for skill creation reminders
-    agent._skill_nudge_interval = 10
+    agent._skill_nudge_interval = 0
     try:
         skills_config = _agent_cfg.get("skills", {})
-        agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+        agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 0))
     except Exception:
         pass
 

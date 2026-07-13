@@ -24,8 +24,11 @@ def test_report_finalizer_renderer_writes_theme_aware_html(tmp_path):
     assert "prefers-color-scheme" in html
     assert 'data-theme="dark"' in html
     assert "@media (max-width" in html
-    assert "Что не сделано" in html
-    assert "Appendix: technical details" in html
+    assert "Что не сделано" not in html
+    assert "max-width: 960px" not in html  # renderer uses the equivalent width:min() rule
+    assert "min(960px" in html
+    assert "gradient(" not in html
+    assert "Appendix: technical details" not in html
     assert validate_html_report(artifact.path) == []
 
 
@@ -40,14 +43,15 @@ def test_report_finalizer_renderer_escapes_user_content(tmp_path):
     assert validate_html_report(artifact.path) == []
 
 
-def test_report_finalizer_renderer_keeps_incomplete_status(tmp_path):
+def test_report_finalizer_renderer_maps_incomplete_to_partial(tmp_path):
     artifact = render_task_report_html(
         final_response="INCOMPLETE\nЛимит шагов исчерпан",
         output_dir=tmp_path,
     )
     html = artifact.path.read_text(encoding="utf-8")
-    assert artifact.status == "INCOMPLETE"
-    assert 'data-status="INCOMPLETE"' in html
+    assert artifact.status == "PARTIAL"
+    assert 'data-status="PARTIAL"' in html
+    assert "INCOMPLETE" not in html
     assert validate_html_report(artifact.path) == []
 
 

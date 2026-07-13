@@ -412,8 +412,26 @@ class TestBuildSkillsSystemPrompt:
         )
         result = build_skills_system_prompt()
         assert "python-debug" in result
-        assert "Debug Python scripts" in result
+        assert "Debug Python scripts" not in result
         assert "available_skills" in result
+
+    def test_large_skill_catalog_stays_under_budget(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for index in range(120):
+            skill = tmp_path / "skills" / f"category-{index % 12}" / f"skill-{index:03d}"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\n"
+                f"name: skill-{index:03d}\n"
+                f"description: Long irrelevant description {index} " + "x" * 180 + "\n"
+                "---\n",
+                encoding="utf-8",
+            )
+        result = build_skills_system_prompt()
+        assert len(result.encode("utf-8")) <= 6000
+        assert "skill-000" in result
+        assert "skill-119" in result
+        assert "Long irrelevant description" not in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -424,7 +442,7 @@ class TestBuildSkillsSystemPrompt:
             (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
         result = build_skills_system_prompt()
         # "search" should appear only once per category
-        assert result.count("- search") == 1
+        assert result.count("search") == 1
 
     def test_compact_categories_demoted_to_names_only(self, monkeypatch, tmp_path):
         """Posture-driven demotion keeps every skill NAME visible.
@@ -445,8 +463,10 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt(
             compact_categories=frozenset({"social-media"})
         )
-        # Coding-adjacent category keeps its full entry.
-        assert "pr-review" in result and "Does pr-review things" in result
+        # The stable base catalog is names-only for every category; routed
+        # skills carry full instructions later in the request path.
+        assert "pr-review" in result
+        assert "Does pr-review things" not in result
         # Demoted category: name stays visible, description is dropped.
         assert "tweet-stuff" in result
         assert "Does tweet-stuff things" not in result
@@ -470,9 +490,10 @@ class TestBuildSkillsSystemPrompt:
         )
         assert "thread-writer" in compact
         assert "Write threads" not in compact
-        # Unfiltered call must not be served from the compacted cache entry.
+        # Unfiltered calls use the same bounded names-only base catalog.
         full = build_skills_system_prompt()
-        assert "Write threads" in full
+        assert "thread-writer" in full
+        assert "Write threads" not in full
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
@@ -520,7 +541,7 @@ class TestBuildSkillsSystemPrompt:
             result = build_skills_system_prompt()
 
         assert "imessage" in result
-        assert "Send iMessages" in result
+        assert "Send iMessages" not in result
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
@@ -1644,5 +1665,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

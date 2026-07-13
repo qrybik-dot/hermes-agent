@@ -1,11 +1,11 @@
 ---
 name: plan
-description: "Plan mode: write an actionable markdown plan to .hermes/plans/, no execution. Bite-sized tasks, exact paths, complete code."
-version: 2.0.0
-author: Hermes Agent (writing-craft adapted from obra/superpowers)
+description: "Adaptive planning and explicit plan mode: compact plans for large/risky work, optional reviewer, and actionable markdown plans when requested."
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
+  version: 2.1.0
+  author: Hermes Agent (writing-craft adapted from obra/superpowers)
+  platforms: [linux, macos, windows]
   hermes:
     tags: [planning, plan-mode, implementation, workflow, design, documentation]
     related_skills: [subagent-driven-development, test-driven-development, requesting-code-review]
@@ -13,9 +13,31 @@ metadata:
 
 # Plan Mode
 
-Use this skill when the user wants a plan instead of execution.
+This skill supports two activation modes. The gateway operational context is authoritative when it names the mode.
 
-## Core behavior
+## 1. Explicit plan-only mode
+
+Use when the user asks for a plan instead of execution or invokes `/plan`.
+
+- Plan only and do not implement.
+- Save the requested plan under `.hermes/plans/`.
+- The detailed implementation-plan guidance below applies in full.
+
+## 2. Adaptive execution mode
+
+Use when the gateway preloads this skill for a large, multi-step, ambiguous, or risky task, or when the user explicitly asks for JTBD/DoD together with execution.
+
+- Keep the current task router, safety approvals, progress UX, and READY / PARTIAL / BLOCKED statuses authoritative.
+- Do not stop after planning when the user requested implementation.
+- Do not create a plan file unless the user explicitly asked for one.
+- Show only what helps the user: goal in 1 line, plan in 3–7 items, up to 3 risks, and DoD in 2–5 criteria.
+- Quick tasks do not load this skill. Medium tasks use only a short internal plan and no reviewer.
+- For risky, irreversible, or approval-sensitive implementation, ask exactly one reviewer to inspect the draft plan. Do not invoke a reviewer for ordinary large analysis or reversible work. The reviewer checks goal, omissions, overengineering, safety, rollback, and report UX, returning at most 5 findings.
+- Use a different model/provider for the review if possible (e.g., via the model-router skill). If the reviewer runs on the same inherited model/provider, perform an explicit self-review and do not call it independent.
+- If delegation is unavailable, perform one clearly labeled self-review and do not call it independent.
+- Never delegate the implementation itself from this planning step.
+
+## Explicit plan-only behavior
 
 For this turn, you are planning only.
 

@@ -184,7 +184,7 @@ def get_prune_builtins() -> bool:
     Hub-installed skills are never pruned regardless of this flag.
     """
     cfg = _load_config()
-    return bool(cfg.get("prune_builtins", True))
+    return bool(cfg.get("prune_builtins", False))
 
 
 def get_consolidate() -> bool:

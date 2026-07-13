@@ -312,7 +312,7 @@ description: test skill
 
 
 def test_is_agent_created(skills_home):
-    from tools.skill_usage import is_agent_created
+    from tools.skill_usage import is_agent_created, mark_agent_created, skill_provenance
     skills_dir = skills_home / "skills"
     (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
     hub_dir = skills_dir / ".hub"
@@ -320,9 +320,15 @@ def test_is_agent_created(skills_home):
     (hub_dir / "lock.json").write_text(
         json.dumps({"installed": {"hubbed": {}}}), encoding="utf-8",
     )
+    assert is_agent_created("my-skill") is False
+    assert skill_provenance("my-skill") == "manual"
+    mark_agent_created("my-skill")
     assert is_agent_created("my-skill") is True
+    assert skill_provenance("my-skill") == "agent-created"
     assert is_agent_created("bundled") is False
     assert is_agent_created("hubbed") is False
+    assert skill_provenance("bundled") == "bundled"
+    assert skill_provenance("hubbed") == "hub"
 
 
 def test_agent_created_skips_archive_and_hub_dirs(skills_home):

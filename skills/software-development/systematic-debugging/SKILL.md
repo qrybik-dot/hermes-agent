@@ -1,11 +1,11 @@
 ---
 name: systematic-debugging
 description: "4-phase root cause debugging: understand bugs before fixing."
-version: 1.1.0
-author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
+  version: 1.1.0
+  author: Hermes Agent (adapted from obra/superpowers)
+  platforms: [linux, macos, windows]
   hermes:
     tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
     related_skills: [test-driven-development, plan, subagent-driven-development]
@@ -369,6 +369,9 @@ Use these Hermes tools during Phase 1:
 - **`read_file`** — Read source code with line numbers for precise analysis
 - **`terminal`** — Run tests, check git history, reproduce bugs
 - **`web_search`/`web_extract`** — Research error messages, library docs
+- **Stack Overflow helper** (`scripts/stack_overflow_helper.py`) — Query
+  community-vetted fixes read-only when primary documentation and local
+  evidence are insufficient; keep rate limits and runtime versions explicit.
 
 ### With delegate_task
 

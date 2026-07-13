@@ -1,7 +1,10 @@
 ---
 name: youtube-content
 description: "YouTube transcripts to summaries, threads, blogs."
-platforms: [linux, macos, windows]
+metadata:
+  platforms: [linux, macos, windows]
+  hermes:
+    category: media
 ---
 
 # YouTube Content Tool
@@ -59,6 +62,14 @@ After fetching the transcript, format it based on what the user asks for:
 24:10 Results — benchmark comparisons and key takeaways
 31:55 Q&A — audience questions on scalability and next steps
 ```
+
+## Download and delivery policy
+
+- Download and send the full video only when the user explicitly asks for the file.
+- For summary or transcript requests, prefer transcript/audio extraction and do not download the full video by default.
+- Verify type and size before delivery. If the platform limit is exceeded, do not retry the same upload repeatedly; use a smaller artifact or return transcript/summary.
+- After an explicit download, deliver the media first and offer transcription or summary as a follow-up.
+- When a source is blocked, try one appropriate fallback and then report the exact blocker; do not loop through near-identical methods.
 
 ## Workflow
 

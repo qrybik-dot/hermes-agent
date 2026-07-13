@@ -1,11 +1,11 @@
 ---
 name: github-auth
 description: "GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login."
-version: 1.1.0
-author: Hermes Agent
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
+  version: 1.1.0
+  author: Hermes Agent
+  platforms: [linux, macos, windows]
   hermes:
     tags: [GitHub, Authentication, Git, gh-cli, SSH, Setup]
     related_skills: [github-pr-workflow, github-code-review, github-issues, github-repo-management]
@@ -244,4 +244,7 @@ fi
 | `ssh: connect to host github.com port 22: Connection refused` | Try SSH over HTTPS port: add `Host github.com` with `Port 443` and `Hostname ssh.github.com` to `~/.ssh/config` |
 | Credentials not persisting | Check `git config --global credential.helper` — must be `store` or `cache` |
 | Multiple GitHub accounts | Use SSH with different keys per host alias in `~/.ssh/config`, or per-repo credential URLs |
+| Wrong SSH identity / host alias mismatch | Use repo-local `core.sshCommand` to pin the identity: `git config core.sshCommand "ssh -i /home/hermes/.ssh/<key_name>"` — avoids editing global SSH config |
+| Push rejected because local main is behind remote | Rebase first on fetched remote: `git fetch <remote>` then `git rebase FETCH_HEAD`, then push. If multiple keys exist, ensure `core.sshCommand` is set so `fetch` uses the same key as `push` |
+| `ERROR: Repository not found` during push | Usually means the SSH identity resolved for the push does not have access to the repo. Verify the correct key is used and the remote URL uses the right host. |
 | `gh: command not found` + no sudo | Use git-only Method 1 above — no installation needed |

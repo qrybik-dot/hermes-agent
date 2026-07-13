@@ -2565,8 +2565,8 @@ _server_connect_errors: Dict[str, str] = {}
 # this state — they keep the count and timestamp in sync.
 _server_error_counts: Dict[str, int] = {}
 _server_breaker_opened_at: Dict[str, float] = {}
-_CIRCUIT_BREAKER_THRESHOLD = 3
-_CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0
+_CIRCUIT_BREAKER_THRESHOLD = 2
+_CIRCUIT_BREAKER_COOLDOWN_SEC = 600.0
 
 
 def _bump_server_error(server_name: str) -> None:
