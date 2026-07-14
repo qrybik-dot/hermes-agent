@@ -1,0 +1,45 @@
+[Unit]
+Description=Synchronize Granola summaries into the canonical Meetings archive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes/hermes-runtime/current
+Environment="PYTHONDONTWRITEBYTECODE=1"
+ExecStart=/home/hermes/hermes-runtime/shared/venv/bin/python -m gateway.granola_sync
+UMask=0007
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+RuntimeDirectory=hermes-granola-sync
+RuntimeDirectoryMode=0750
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/hermes-memory/vault/Meetings/Granola /srv/hermes-memory/staging/granola-sync
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=192M
+CPUQuota=35%
+TimeoutStartSec=4min

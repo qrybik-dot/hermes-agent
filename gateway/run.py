@@ -11431,6 +11431,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
 message_context={
                     "current_text": getattr(event, "text", None) or message_text,
+                    "processed_text": message_text,
+                    "attachment_paths": list(getattr(event, "media_urls", None) or []),
                     "current_message_id": getattr(event, "message_id", None),
                     "chat_id": getattr(source, "chat_id", None),
                     "sender_id": getattr(source, "user_id", None),

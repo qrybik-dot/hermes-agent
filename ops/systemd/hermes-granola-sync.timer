@@ -1,0 +1,13 @@
+[Unit]
+Description=Check Granola for new meetings every 30 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+AccuracySec=2min
+RandomizedDelaySec=90s
+Persistent=true
+Unit=hermes-granola-sync.service
+
+[Install]
+WantedBy=timers.target

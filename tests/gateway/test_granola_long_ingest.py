@@ -5,6 +5,7 @@ from gateway.granola_evidence import granola_tool_result_successful
 from gateway.granola_ingest import (
     GranolaIngestResult, ingest_public_granola, should_ingest_public_granola,
 )
+from gateway.granola_archive import ArchiveResult
 from gateway.granola_share import GranolaShare, parse_granola_share_html
 from gateway.task_continuation import TaskStateStore
 from gateway.task_router import route_turn
@@ -170,24 +171,28 @@ def test_large_transcript_is_not_location_and_is_staged(tmp_path, monkeypatch):
     assert "Пришли геолокацию" not in prepared.message
 
 
-def test_public_granola_ingest_requires_knowledge_readback(monkeypatch):
+def test_public_granola_ingest_writes_only_canonical_archive(monkeypatch):
     monkeypatch.setattr("gateway.granola_ingest.fetch_granola_share", lambda url: _share())
     monkeypatch.setattr(
-        "gateway.granola_ingest.run_quick_save",
-        lambda note: {"saved": True, "readback_count": 1, "status": "saved"},
+        "gateway.granola_ingest.upsert_meeting",
+        lambda meeting: ArchiveResult("success", "/vault/Meetings/Granola/test.md", meeting.meeting_id, created=True),
     )
+    monkeypatch.setattr("gateway.granola_ingest.set_pending", lambda meeting: None)
     result = ingest_public_granola(GRANOLA_URL)
     assert result.status == "success"
     assert result.knowledge_readback is True
     assert result.evidence["document_id"] == _share().document_id
+    assert "Meetings/Granola" in result.text
+    assert "career" not in result.text
 
     monkeypatch.setattr(
-        "gateway.granola_ingest.run_quick_save",
-        lambda note: {"saved": True, "readback_count": 0, "status": "saved"},
+        "gateway.granola_ingest.upsert_meeting",
+        lambda meeting: ArchiveResult("blocked", None, meeting.meeting_id, reason="ambiguous"),
     )
     failed = ingest_public_granola(GRANOLA_URL)
     assert failed.status == "failed"
     assert failed.knowledge_readback is False
+    assert failed.text.startswith("PARTIAL")
 
 
 def test_public_granola_explicit_target_priority():

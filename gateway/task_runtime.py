@@ -35,6 +35,7 @@ from gateway.avito_intent import (
 from gateway.pre_model_pipeline import PreModelStage, run_pre_model_pipeline
 from gateway.granola_share import extract_granola_share_url, is_granola_share_url
 from gateway.granola_ingest import ingest_public_granola
+from gateway.granola_archive import handle_transcript_reply
 from gateway.transcript_ingest import (
     looks_like_transcript, stage_transcript, staged_prompt,
 )
@@ -277,6 +278,8 @@ _EVENT_LINE_RE = re.compile(
 @dataclass(frozen=True)
 class MessageContext:
     current_text: str = ""
+    processed_text: str = ""
+    attachment_paths: tuple[str, ...] = ()
     current_message_id: str | None = None
     chat_id: str | None = None
     sender_id: str | None = None
@@ -296,6 +299,8 @@ def _normalize_message_context(value: dict | MessageContext | None, *, fallback_
     data = value if isinstance(value, dict) else {}
     return MessageContext(
         current_text=str(data.get("current_text") or fallback_text or ""),
+        processed_text=str(data.get("processed_text") or data.get("current_text") or fallback_text or ""),
+        attachment_paths=tuple(str(item) for item in (data.get("attachment_paths") or []) if item),
         current_message_id=str(data["current_message_id"]) if data.get("current_message_id") is not None else None,
         chat_id=str(data.get("chat_id") or chat_id or ""),
         sender_id=str(data["sender_id"]) if data.get("sender_id") is not None else None,
@@ -1954,6 +1959,44 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         current_text.startswith("[IMPORTANT: The user has invoked the ")
         and not current_intent.strip()
     )
+    if platform_key == "telegram":
+        try:
+            granola_reply = handle_transcript_reply(
+                current_text=current_intent,
+                processed_text=msg_ctx.processed_text or original,
+                reply_text="\n".join(
+                    value for value in (msg_ctx.reply_text or "", msg_ctx.reply_caption or "") if value
+                ),
+                attachment_paths=msg_ctx.attachment_paths,
+            )
+        except Exception:
+            granola_reply = None
+        if granola_reply is not None:
+            if granola_reply.status == "success":
+                response = "Добавил полную запись к встрече в Meetings/Granola."
+            elif granola_reply.status == "duplicate":
+                response = "Полная запись уже была добавлена к этой встрече. Дубль не создавал."
+            else:
+                response = "BLOCKED\nНе смог безопасно сопоставить полную запись со встречей: " + granola_reply.reason
+            return PreparedTaskTurn(
+                original,
+                None,
+                None,
+                early_response(
+                    response,
+                    role="no_llm",
+                    reason="deterministic Granola transcript association",
+                    diagnostics={
+                        "tool_call_count": 0,
+                        "skill_call_count": 0,
+                        "response_mode": "deterministic",
+                        "granola_meeting_id": granola_reply.meeting_id,
+                        "granola_duplicate": granola_reply.duplicate,
+                    },
+                ),
+                False,
+            )
+
     staged_transcript = None
     if platform_key == "telegram" and looks_like_transcript(current_intent):
         try:

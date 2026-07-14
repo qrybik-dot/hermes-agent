@@ -7,7 +7,7 @@ import re
 from gateway.granola_share import (
     extract_granola_share_url, fetch_granola_share, is_granola_share_url,
 )
-from gateway.quick_note_capture import QuickNote, run_quick_save
+from gateway.granola_archive import GranolaMeeting, set_pending, upsert_meeting
 
 
 _EXPLICIT_OTHER_TARGET_RE = re.compile(
@@ -48,15 +48,6 @@ class GranolaIngestResult:
     tool_call_count: int
 
 
-def _quick_save_ok(value: dict) -> bool:
-    saved = bool(value.get("saved") or value.get("already_exists"))
-    try:
-        readback = int(value.get("readback_count") or 0) > 0
-    except (TypeError, ValueError):
-        readback = False
-    return saved and readback
-
-
 def ingest_public_granola(text: str) -> GranolaIngestResult | None:
     if not should_ingest_public_granola(text):
         return None
@@ -92,56 +83,43 @@ def ingest_public_granola(text: str) -> GranolaIngestResult | None:
             tool_call_count=1,
         )
 
-    safe_summary = share.knowledge_summary()
-    facts = [
-        line.lstrip("• ").strip()
-        for line in safe_summary.splitlines()
-        if line.strip() and not line.startswith(("Дата Granola:", "Granola document ID:", "Источник:"))
-    ]
-    note = QuickNote(
-        payload={
-            "knowledge_project": "career",
-            "type": "evidence",
-            "title": ("Встреча Granola: " + share.title)[:240],
-            "summary": safe_summary,
-            "accepted_facts": facts[:12],
-            "evidence": [f"Granola document ID: {share.document_id}", share.source_url],
-            "sources": [share.source_url],
-            "sensitivity": "internal",
-            "gpt_access": "allowed",
-            "source_system": "granola",
-            "source_workspace": "telegram",
-            "granola_document_id": share.document_id,
-            "granola_content_hash": share.content_hash,
-        },
-        idempotency_key="granola-share:" + share.content_hash,
+    meeting = GranolaMeeting(
+        meeting_id=share.document_id or share.content_hash[:24],
+        title=share.title,
+        meeting_date=share.created_at,
+        summary=share.knowledge_summary(),
+        source_url=share.source_url,
+        content_hash=share.content_hash,
     )
     try:
-        saved = run_quick_save(note)
+        saved = upsert_meeting(meeting)
     except Exception as exc:
-        saved = {"status": "error", "saved": False, "message": str(exc), "readback_count": 0}
-    if not _quick_save_ok(saved):
+        saved = None
+        save_error = str(exc)
+    else:
+        save_error = ""
+    if saved is None or saved.status not in {"success", "duplicate"}:
         return GranolaIngestResult(
             status="failed",
             text=(
-                "INCOMPLETE\nGranola прочитана, но сохранение в Knowledge не подтверждено: "
-                + str(saved.get("message") or saved.get("status") or "unknown")[:300]
+                "PARTIAL\nGranola прочитана, но сохранение в Meetings/Granola не подтверждено: "
+                + (save_error or getattr(saved, "reason", "unknown"))[:300]
             ),
             evidence=evidence,
             knowledge_readback=False,
-            tool_call_count=2,
+            tool_call_count=1,
         )
+    set_pending(meeting)
     return GranolaIngestResult(
         status="success",
         text=(
-            "READY\nGranola прочитана и сохранена в Hermes Knowledge.\n"
-            f"Встреча: {share.title}\n"
-            f"Документ: {share.document_id or 'public share'}\n"
-            f"Источник: {share.source_url}"
+            "Granola прочитана и самари сохранено в Meetings/Granola.\n"
+            "Полная запись недоступна: пришли её ответом как текст или текстовый файл.\n"
+            f"[GRANOLA_TRANSCRIPT:{meeting.meeting_id}]"
         ),
         evidence=evidence,
         knowledge_readback=True,
-        tool_call_count=2,
+        tool_call_count=1,
     )
 
 
