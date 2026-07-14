@@ -40,6 +40,6 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 RemoveIPC=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-MemoryMax=192M
+MemoryMax=256M
 CPUQuota=35%
 TimeoutStartSec=4min
