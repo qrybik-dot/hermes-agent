@@ -76,4 +76,10 @@ def capture_quick_task(
             idempotency_key=idempotency_key,
             session_id=session_id or None,
         )
+        read_back = conn.execute(
+            "SELECT id FROM tasks WHERE id = ? AND status != 'archived'",
+            (task_id,),
+        ).fetchone()
+        if read_back is None:
+            raise RuntimeError("quick task write was not confirmed by read-back")
     return QuickTaskCaptureResult(existing is None, title, task_id)

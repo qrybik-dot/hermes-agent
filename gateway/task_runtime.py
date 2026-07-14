@@ -52,6 +52,7 @@ from gateway.quick_note_capture import (
     run_quick_save,
 )
 from gateway.quick_task_capture import capture_quick_task
+from gateway.evidence_contract import assess_action_evidence, evidence_mode
 
 _TASK_OUTCOME_RE = re.compile(
     r"(?m)^\s*(?:[-*#>]+\s*)?(?:[^:\n]{0,40}:\s*)?"
@@ -448,7 +449,7 @@ _CALENDAR_EVIDENCE_KEYS = (
 def _calendar_evidence_missing(evidence: dict | None) -> tuple[str, ...]:
     if not isinstance(evidence, dict):
         return ("calendar evidence",)
-    missing: list[str] = []
+    assessment = assess_action_evidence("calendar.event_created", evidence)
     labels = {
         "calendar_id": "calendar ID",
         "event_id": "event ID или штатная ссылка",
@@ -456,16 +457,14 @@ def _calendar_evidence_missing(evidence: dict | None) -> tuple[str, ...]:
         "start": "start/начало",
         "end": "end/окончание",
         "event_link": "event ID или штатная ссылка",
+        "read_back": "подтверждение read-back",
+        "status": "status=created",
     }
-    for key in ("calendar_id", "event_id", "summary", "start", "end", "event_link"):
-        if not evidence.get(key):
-            label = labels[key]
-            if label not in missing:
-                missing.append(label)
-    if evidence.get("read_back") is not True:
-        missing.append("подтверждение read-back")
-    if str(evidence.get("status") or "").lower() != "created":
-        missing.append("status=created")
+    missing: list[str] = []
+    for key in assessment.missing:
+        label = labels.get(key, key)
+        if label not in missing:
+            missing.append(label)
     return tuple(missing)
 
 
@@ -562,7 +561,18 @@ def extract_calendar_evidence_from_tool_result(function_result: object) -> dict 
 def persist_calendar_evidence_from_tool_result(store: TaskStateStore, task_id: str, function_result: object) -> dict | None:
     evidence = extract_calendar_evidence_from_tool_result(function_result)
     if evidence is not None:
-        store.merge_metadata(task_id, calendar_evidence=evidence)
+        changes: dict[str, object] = {"calendar_evidence": evidence}
+        if evidence_mode() != "off":
+            assessment = assess_action_evidence("calendar.event_created", evidence)
+            task = store.get(task_id)
+            assessments = dict(
+                (task.metadata.get("evidence_assessments") or {})
+                if task is not None and isinstance(task.metadata.get("evidence_assessments"), dict)
+                else {}
+            )
+            assessments["calendar.event_created"] = assessment.audit_record()
+            changes["evidence_assessments"] = assessments
+        store.merge_metadata(task_id, **changes)
     return evidence
 
 
@@ -1972,6 +1982,18 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         session_id=session_id,
     )
     if quick_task is not None:
+        quick_assessment = assess_action_evidence(
+            "kanban.task_created",
+            {"task_id": quick_task.task_id, "read_back": True},
+        )
+        quick_diagnostics = {
+            "quick_task_created": quick_task.created,
+            "tool_call_count": 0,
+            "skill_call_count": 0,
+            "response_mode": "deterministic",
+        }
+        if evidence_mode() != "off":
+            quick_diagnostics["evidence_status"] = quick_assessment.status
         return PreparedTaskTurn(
             original,
             None,
@@ -1980,12 +2002,7 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
                 f"Записал задачу «{quick_task.title}».",
                 role="no_llm",
                 reason="deterministic quick Kanban capture",
-                diagnostics={
-                    "quick_task_created": quick_task.created,
-                    "tool_call_count": 0,
-                    "skill_call_count": 0,
-                    "response_mode": "deterministic",
-                },
+                diagnostics=quick_diagnostics,
             ),
             False,
         )

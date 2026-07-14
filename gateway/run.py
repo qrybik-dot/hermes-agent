@@ -10510,6 +10510,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         non-matching command falls through without changing normal routing.
         """
         from gateway.quick_task_capture import capture_quick_task, detect_quick_task
+        from gateway.evidence_contract import assess_action_evidence, evidence_mode
 
         candidate = str(getattr(event, "text", None) or "").strip()
         successful_transcripts: list[str] = []
@@ -10592,6 +10593,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
 
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        quick_assessment = assess_action_evidence(
+            "kanban.task_created",
+            {"task_id": quick_task.task_id, "read_back": True},
+        )
         logger.info(
             "response ready: request_id=%s platform=%s chat=%s time=%.3fs "
             "api_calls=0 response=%d chars",
@@ -10616,6 +10621,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "skill_call_count": 0,
                 "quick_task_created": quick_task.created,
                 "response_mode": "deterministic",
+                **(
+                    {"evidence_status": quick_assessment.status}
+                    if evidence_mode() != "off" else {}
+                ),
             },
         }
         try:

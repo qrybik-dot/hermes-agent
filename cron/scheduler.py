@@ -43,6 +43,12 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
+from cron.notification_policy import (
+    decide_cron_failure,
+    mark_cron_failure_delivered,
+    notification_mode,
+    resolve_cron_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3136,10 +3142,40 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
             should_deliver = False
 
+        notification_decision = None
+        policy_mode = notification_mode()
+        if not success and should_deliver and policy_mode != "off":
+            notification_decision = decide_cron_failure(job, error=error, mode=policy_mode)
+            logger.info(
+                "Job '%s': notification policy mode=%s action=%s reason=%s fingerprint=%s",
+                job["id"], notification_decision.mode, notification_decision.action,
+                notification_decision.reason, notification_decision.fingerprint[:12],
+            )
+            if notification_decision.action == "suppress":
+                should_deliver = False
+        elif success and policy_mode != "off":
+            try:
+                if resolve_cron_failure(job):
+                    logger.info("Job '%s': prior cron failure marked resolved", job["id"])
+            except Exception as state_error:
+                logger.warning("Job '%s': notification resolution state unavailable: %s", job["id"], state_error)
+
         delivery_error = None
         if should_deliver:
             try:
                 delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                if (
+                    not success
+                    and delivery_error is None
+                    and notification_decision is not None
+                ):
+                    try:
+                        mark_cron_failure_delivered(job, error=error)
+                    except Exception as state_error:
+                        logger.warning(
+                            "Job '%s': notification delivery state unavailable: %s",
+                            job["id"], state_error,
+                        )
             except Exception as de:
                 delivery_error = str(de)
                 logger.error("Delivery failed for job %s: %s", job["id"], de)
