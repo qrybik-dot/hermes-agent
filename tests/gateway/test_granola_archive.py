@@ -2,7 +2,7 @@ from pathlib import Path
 
 from gateway.granola_archive import (
     GranolaMeeting, find_match, handle_transcript_reply, load_state,
-    pending_prompt, set_pending, upsert_meeting,
+    pending_prompt, refresh_index, set_pending, upsert_meeting,
 )
 from gateway.granola_sync import parse_meeting_list, parse_summary
 
@@ -35,6 +35,21 @@ def test_dedupe_falls_back_to_title_and_date(monkeypatch, tmp_path):
     match, status = find_match(_meeting(meeting_id="new", title="  СОЗВОН "))
     assert status == "matched"
     assert match["meeting_id"] == "old"
+
+
+def test_index_keeps_header_and_lists_each_card_once(monkeypatch, tmp_path):
+    archive, _ = _configure(monkeypatch, tmp_path)
+    archive.mkdir(parents=True)
+    index = archive / "Индекс встреч Granola.md"
+    index.write_text("# Индекс встреч Granola\n\nСохранённая шапка\n\n- [[old]]\n", encoding="utf-8")
+    upsert_meeting(_meeting(meeting_id="a", title="Первая"))
+    upsert_meeting(_meeting(meeting_id="b", title="Вторая", day="2026-07-15"))
+    refresh_index()
+    text = index.read_text(encoding="utf-8")
+    assert "Сохранённая шапка" in text
+    assert text.count("- [[") == 2
+    assert text.count("Первая") == 1
+    assert text.count("Вторая") == 1
 
 
 def test_ambiguous_candidates_block_write(monkeypatch, tmp_path):

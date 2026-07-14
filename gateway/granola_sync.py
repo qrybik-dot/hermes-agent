@@ -156,8 +156,9 @@ async def synchronize(*, dry_run: bool = False, notify: bool = True, limit: int 
         if notify and not dry_run:
             state = load_state()
             pending = state.get("pending") if isinstance(state.get("pending"), dict) else {}
+            notification_limit = max(1, int(os.environ.get("HERMES_GRANOLA_NOTIFICATION_LIMIT", "1")))
             for meeting_id, record in list(pending.items()):
-                if counters["notified"] >= 3 or not isinstance(record, dict) or bool(record.get("notified")):
+                if counters["notified"] >= notification_limit or not isinstance(record, dict) or bool(record.get("notified")):
                     continue
                 meeting = GranolaMeeting(
                     meeting_id,

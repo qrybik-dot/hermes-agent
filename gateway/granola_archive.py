@@ -142,6 +142,27 @@ def scan_archive(root: Path | None = None) -> list[dict[str, Any]]:
     return records
 
 
+def refresh_index(root: Path | None = None) -> None:
+    base = root or archive_root()
+    index = base / "Индекс встреч Granola.md"
+    try:
+        current = index.read_text(encoding="utf-8")
+    except OSError:
+        current = "# Индекс встреч Granola\n\nИсточник: [[Granola]]\n"
+    first_entry = re.search(r"(?m)^- \[\[", current)
+    prefix = current[: first_entry.start()].rstrip() if first_entry else current.rstrip()
+    if not prefix:
+        prefix = "# Индекс встреч Granola\n\nИсточник: [[Granola]]"
+    entries = [
+        f"- [[{path.stem}]]"
+        for path in sorted(base.glob("*.md"), key=lambda item: item.name.casefold())
+        if path != index
+    ]
+    rendered = prefix + "\n\n" + "\n".join(entries) + "\n"
+    if rendered != current:
+        _atomic_write(index, rendered)
+
+
 def find_match(meeting: GranolaMeeting, root: Path | None = None) -> tuple[dict[str, Any] | None, str]:
     records = scan_archive(root)
     exact: list[dict[str, Any]] = []
@@ -249,6 +270,8 @@ def upsert_meeting(meeting: GranolaMeeting, *, transcript: str | None = None, dr
     duplicate = bool(match and str(match["text"]) == rendered and not attached)
     if not dry_run and not duplicate:
         _atomic_write(path, rendered)
+    if not dry_run:
+        refresh_index(root)
     return ArchiveResult(
         "duplicate" if duplicate else "success",
         str(path),
@@ -391,5 +414,5 @@ def _summary_for_existing(meeting_id: str) -> str:
 __all__ = [
     "ArchiveResult", "GranolaMeeting", "clear_pending", "find_match",
     "handle_transcript_reply", "load_state", "pending_prompt", "save_state",
-    "scan_archive", "semantic_hash", "set_pending", "upsert_meeting",
+    "refresh_index", "scan_archive", "semantic_hash", "set_pending", "upsert_meeting",
 ]
