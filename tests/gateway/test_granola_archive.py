@@ -16,8 +16,12 @@ def _configure(monkeypatch, tmp_path):
     return archive, state
 
 
-def _meeting(meeting_id="m-1", title="Созвон", day="2026-07-14", summary="Краткое самари"):
-    return GranolaMeeting(meeting_id, title, day, summary, "https://notes.granola.ai/t/00000000-0000-0000-0000-000000000001")
+def _meeting(meeting_id="m-1", title="Созвон", day="2026-07-14", summary="Краткое самари", source_url="https://notes.granola.ai/t/00000000-0000-0000-0000-000000000001"):
+    return GranolaMeeting(meeting_id, title, day, summary, source_url)
+
+
+def _cards(archive):
+    return [path for path in archive.glob("*.md") if not path.name.casefold().startswith("индекс")]
 
 
 def test_upsert_is_idempotent_by_granola_id(monkeypatch, tmp_path):
@@ -26,7 +30,7 @@ def test_upsert_is_idempotent_by_granola_id(monkeypatch, tmp_path):
     second = upsert_meeting(_meeting(summary="Изменившееся самари не плодит карточку"))
     assert first.created is True
     assert second.duplicate is True
-    assert len(list(archive.glob("*.md"))) == 1
+    assert len(_cards(archive)) == 1
 
 
 def test_dedupe_falls_back_to_title_and_date(monkeypatch, tmp_path):
@@ -42,8 +46,8 @@ def test_index_keeps_header_and_lists_each_card_once(monkeypatch, tmp_path):
     archive.mkdir(parents=True)
     index = archive / "Индекс встреч Granola.md"
     index.write_text("# Индекс встреч Granola\n\nСохранённая шапка\n\n- [[old]]\n", encoding="utf-8")
-    upsert_meeting(_meeting(meeting_id="a", title="Первая"))
-    upsert_meeting(_meeting(meeting_id="b", title="Вторая", day="2026-07-15"))
+    upsert_meeting(_meeting(meeting_id="a", title="Первая", source_url=""))
+    upsert_meeting(_meeting(meeting_id="b", title="Вторая", day="2026-07-15", source_url=""))
     refresh_index()
     text = index.read_text(encoding="utf-8")
     assert "Сохранённая шапка" in text
@@ -60,7 +64,7 @@ def test_ambiguous_candidates_block_write(monkeypatch, tmp_path):
     (archive / "b.md").write_text(base.format(mid="b"), encoding="utf-8")
     result = upsert_meeting(_meeting(meeting_id="new"))
     assert result.status == "blocked"
-    assert len(list(archive.glob("*.md"))) == 2
+    assert len(_cards(archive)) == 2
 
 
 def test_transcript_reply_updates_same_card_without_second_markdown(monkeypatch, tmp_path):
@@ -75,10 +79,10 @@ def test_transcript_reply_updates_same_card_without_second_markdown(monkeypatch,
     )
     assert result.status == "success"
     assert result.transcript_attached is True
-    assert len(list(archive.glob("*.md"))) == 1
+    assert len(_cards(archive)) == 1
     assert len(list((archive / "Transcripts").glob("*.txt"))) == 1
     assert "m-1" not in load_state().get("pending", {})
-    note = next(archive.glob("*.md")).read_text(encoding="utf-8")
+    note = _cards(archive)[0].read_text(encoding="utf-8")
     assert "transcript_available: true" in note
     assert "## Резюме Granola\n\nКраткое самари" in note
 
@@ -138,7 +142,7 @@ def test_explicit_unmatched_granola_transcript_creates_manual_card(monkeypatch, 
     transcript = "Granola, полный транскрипт новой встречи\n" + ("диалог\n" * 120)
     result = handle_transcript_reply(current_text=transcript)
     assert result.created is True
-    assert len(list(archive.glob("*.md"))) == 1
+    assert len(_cards(archive)) == 1
 
 
 def test_sync_parsers_do_not_need_llm():
