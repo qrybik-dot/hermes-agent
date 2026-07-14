@@ -138,46 +138,104 @@ def render_task_report_html(
         )
     )
     html = f"""<!doctype html>
-<html lang="ru" data-theme="auto">
+<html lang="ru" data-theme="dark" data-report-theme-contract="v2">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="dark light">
   <title>{safe_title}</title>
   <style>
+    /* report-theme:dark */
     :root {{
-      --bg: #f7f8fb; --panel: #ffffff; --text: #14171f; --muted: #647084;
-      --line: #dce2ec; --accent: #476cff; --ready: #0f8f5f; --partial: #b57600; --blocked: #c8353e;
-      --shadow: 0 18px 48px rgba(20, 23, 31, .10);
+      color-scheme: dark;
+      --report-bg: #08131f; --report-surface: #0f2033; --report-surface-raised: #14283d; --report-surface-soft: #0b1928;
+      --report-text: #e8f0f7; --report-muted: #a7b7c7; --report-border: #2d4358; --report-border-strong: #58738d;
+      --report-link: #9fc7ed; --report-code-bg: #07121d; --report-code-text: #d5e2ee; --report-code-border: #38516a;
+      --report-success-bg: #123325; --report-success-text: #8bc9a8; --report-success-border: #3f765a;
+      --report-warning-bg: #352b18; --report-warning-text: #e4c17c; --report-warning-border: #7d6535;
+      --report-danger-bg: #381f25; --report-danger-text: #e6a0a7; --report-danger-border: #81454e;
+      --report-info-bg: #142d45; --report-info-text: #9cc2e6; --report-info-border: #456b8c;
     }}
-    @media (prefers-color-scheme: dark) {{
-      :root {{ --bg: #0d1117; --panel: #151b23; --text: #eef2f8; --muted: #9aa7b8; --line: #2b3442; --accent: #8ea2ff; --shadow: 0 18px 48px rgba(0,0,0,.35); }}
+    /* report-theme:light */
+    html:has(#theme-toggle:checked) {{
+      color-scheme: light;
+      --report-bg: #edf2f6; --report-surface: #f8fafc; --report-surface-raised: #f1f5f8; --report-surface-soft: #e9f0f5;
+      --report-text: #172a3d; --report-muted: #4d6478; --report-border: #b8c6d2; --report-border-strong: #6f879c;
+      --report-link: #245f8e; --report-code-bg: #e5edf3; --report-code-text: #18344f; --report-code-border: #8099ad;
+      --report-success-bg: #e7f3ec; --report-success-text: #226746; --report-success-border: #6d9b7f;
+      --report-warning-bg: #f7efdc; --report-warning-text: #765516; --report-warning-border: #a58a50;
+      --report-danger-bg: #f8e9eb; --report-danger-text: #8b3542; --report-danger-border: #aa7580;
+      --report-info-bg: #e7f1f8; --report-info-text: #245f8e; --report-info-border: #789bb8;
     }}
-    html[data-theme="light"] {{ --bg: #f7f8fb; --panel: #ffffff; --text: #14171f; --muted: #647084; --line: #dce2ec; --accent: #476cff; --shadow: 0 18px 48px rgba(20, 23, 31, .10); }}
-    html[data-theme="dark"] {{ --bg: #0d1117; --panel: #151b23; --text: #eef2f8; --muted: #9aa7b8; --line: #2b3442; --accent: #8ea2ff; --shadow: 0 18px 48px rgba(0,0,0,.35); }}
+    @supports (color: oklch(from red l c h)) {{
+      :root {{
+        --report-bg: oklch(from #08131f l c h); --report-surface: oklch(from #0f2033 l c h);
+        --report-text: oklch(from #e8f0f7 l c h); --report-muted: oklch(from #a7b7c7 l c h); --report-link: oklch(from #9fc7ed l c h);
+      }}
+      html:has(#theme-toggle:checked) {{
+        --report-bg: oklch(from #edf2f6 l c h); --report-surface: oklch(from #f8fafc l c h);
+        --report-text: oklch(from #172a3d l c h); --report-muted: oklch(from #4d6478 l c h); --report-link: oklch(from #245f8e l c h);
+      }}
+    }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }}
-    main {{ width: min(960px, calc(100vw - 32px)); margin: 32px auto; }}
-    .hero, .card {{ background: color-mix(in srgb, var(--panel) 96%, transparent); border: 1px solid var(--line); border-radius: 24px; box-shadow: var(--shadow); }}
-    .hero {{ padding: clamp(20px, 4vw, 40px); display: grid; gap: 16px; }}
-    .eyebrow {{ color: var(--muted); text-transform: uppercase; letter-spacing: .12em; font-size: 12px; font-weight: 700; }}
-    h1 {{ margin: 0; font-size: clamp(30px, 6vw, 58px); line-height: 1; }}
-    .status {{ display: inline-flex; align-items: center; width: fit-content; border-radius: 999px; padding: 8px 14px; color: white; font-weight: 800; letter-spacing: .04em; }}
-    .status.ready {{ background: var(--ready); }} .status.partial {{ background: var(--partial); }} .status.blocked {{ background: var(--blocked); }}
+    html {{ scroll-behavior: smooth; background: var(--report-bg); }}
+    body {{ margin: 0; font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--report-bg); color: var(--report-text); }}
+    a {{ color: var(--report-link); text-underline-offset: .15em; }}
+    :where(a, summary, input):focus-visible {{ outline: 3px solid var(--report-warning-text); outline-offset: 3px; }}
+    main {{ width: min(960px, calc(100vw - 32px)); margin: 20px auto 36px; }}
+    .report-toolbar {{ display: flex; justify-content: flex-end; min-height: 44px; margin-bottom: 10px; }}
+    .theme-control {{ display: none; align-items: center; gap: 9px; min-height: 44px; padding: 7px 12px; border: 1px solid var(--report-border-strong); border-radius: 999px; background: var(--report-surface); color: var(--report-text); cursor: pointer; font-size: .82rem; font-weight: 700; }}
+    .theme-control input {{ width: 1.1rem; height: 1.1rem; margin: 0; accent-color: var(--report-info-text); }}
+    @supports selector(html:has(*)) {{ .theme-control {{ display: inline-flex; }} }}
+    .hero, .card {{ min-width: 0; max-width: 100%; background: var(--report-surface); border: 1px solid var(--report-border); border-radius: 18px; }}
+    .hero {{ padding: 28px; display: grid; gap: 14px; }}
+    .eyebrow {{ color: var(--report-muted); text-transform: uppercase; letter-spacing: .09em; font-size: 12px; font-weight: 700; }}
+    h1 {{ margin: 0; font-size: 2.35rem; line-height: 1.08; text-wrap: balance; overflow-wrap: anywhere; }}
+    .status {{ display: inline-flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; border: 1px solid; border-radius: 999px; padding: 7px 11px; font-weight: 800; letter-spacing: .02em; overflow-wrap: anywhere; }}
+    .status::before {{ content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }}
+    .status.ready {{ color: var(--report-success-text); background: var(--report-success-bg); border-color: var(--report-success-border); }}
+    .status.partial {{ color: var(--report-warning-text); background: var(--report-warning-bg); border-color: var(--report-warning-border); }}
+    .status.blocked {{ color: var(--report-danger-text); background: var(--report-danger-bg); border-color: var(--report-danger-border); }}
     .grid {{ display: grid; grid-template-columns: 1fr 320px; gap: 20px; margin-top: 20px; }}
-    .card {{ padding: clamp(18px, 3vw, 28px); overflow: hidden; }}
-    h2, h3, h4 {{ margin: 1.2em 0 .45em; line-height: 1.15; }}
-    p {{ margin: .7em 0; }} ul {{ padding-left: 1.2rem; }} li {{ margin: .3em 0; }}
-    pre {{ overflow: auto; border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: color-mix(in srgb, var(--bg) 74%, var(--panel)); }}
-    details {{ margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }} summary {{ cursor: pointer; font-weight: 700; }}
+    .card {{ padding: 24px; overflow: hidden; }}
+    h2, h3, h4 {{ margin: 1.2em 0 .45em; line-height: 1.15; overflow-wrap: anywhere; }}
+    p {{ max-width: 72ch; margin: .7em 0; text-wrap: pretty; overflow-wrap: anywhere; }} ul {{ padding-left: 1.2rem; }} li {{ margin: .3em 0; overflow-wrap: anywhere; }}
+    code {{ color: var(--report-code-text); background: var(--report-code-bg); border: 1px solid var(--report-code-border); border-radius: 5px; padding: .16em .42em; overflow-wrap: anywhere; }}
+    pre {{ overflow: auto; border: 1px solid var(--report-code-border); border-radius: 12px; padding: 14px; background: var(--report-code-bg); color: var(--report-code-text); }}
+    pre code {{ border: 0; padding: 0; }}
+    details {{ margin-top: 18px; border-top: 1px solid var(--report-border); padding-top: 14px; }} summary {{ cursor: pointer; font-weight: 700; }}
     dl {{ display: grid; grid-template-columns: minmax(92px, auto) 1fr; gap: 10px 14px; margin: 0; }}
-    dt {{ color: var(--muted); }} dd {{ margin: 0; word-break: break-word; }}
-    .muted {{ color: var(--muted); }}
-    @media (max-width: 760px) {{ main {{ width: min(100vw - 20px, 430px); margin: 10px auto; }} .grid {{ grid-template-columns: 1fr; }} .hero, .card {{ border-radius: 18px; }} dl {{ grid-template-columns: 1fr; gap: 3px; }} }}
+    dt {{ color: var(--report-muted); }} dd {{ margin: 0; word-break: break-word; }}
+    .muted {{ color: var(--report-muted); }}
+    @media (max-width: 760px) {{ main {{ width: min(100vw - 20px, 430px); margin: 10px auto; }} .grid {{ grid-template-columns: 1fr; }} .hero, .card {{ border-radius: 14px; }} dl {{ grid-template-columns: 1fr; gap: 3px; }} }}
+    @media (max-width: 420px) {{ h1 {{ font-size: 1.85rem; }} .hero, .card {{ padding: 18px; }} .status {{ border-radius: 12px; }} }}
+    @media (prefers-reduced-motion: reduce) {{ html {{ scroll-behavior: auto; }} }}
+    @media (prefers-contrast: more) {{ :root {{ --report-border: var(--report-border-strong); }} }}
+    @media (forced-colors: active) {{ .status, .theme-control, .hero, .card {{ border: 1px solid CanvasText; }} }}
+    @media print {{
+      @page {{ size: A4; margin: 12mm; }}
+      /* report-theme:print */
+      html:root, html:root:has(#theme-toggle:checked) {{
+        color-scheme: light;
+        --report-bg: #edf2f6; --report-surface: #f8fafc; --report-surface-raised: #f1f5f8; --report-surface-soft: #e9f0f5;
+        --report-text: #172a3d; --report-muted: #4d6478; --report-border: #b8c6d2; --report-border-strong: #6f879c;
+        --report-link: #245f8e; --report-code-bg: #e5edf3; --report-code-text: #18344f; --report-code-border: #8099ad;
+        --report-success-bg: #e7f3ec; --report-success-text: #226746; --report-success-border: #6d9b7f;
+        --report-warning-bg: #f7efdc; --report-warning-text: #765516; --report-warning-border: #a58a50;
+        --report-danger-bg: #f8e9eb; --report-danger-text: #8b3542; --report-danger-border: #aa7580;
+        --report-info-bg: #e7f1f8; --report-info-text: #245f8e; --report-info-border: #789bb8;
+      }}
+      html, body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+      main {{ width: 100%; margin: 0; }} .report-toolbar {{ display: none; }}
+      .hero {{ break-inside: avoid; }} .card {{ break-inside: auto; }} h2, h3, h4 {{ break-after: avoid; }}
+    }}
   </style>
 </head>
-<body>
+<body><!-- Hermes Report Finalizer -->
   <main>
+    <div class="report-toolbar" aria-label="Настройки отчёта">
+      <label class="theme-control" for="theme-toggle"><input id="theme-toggle" type="checkbox">Светлая тема</label>
+    </div>
     <section class="hero" aria-label="Task report summary">
       <div class="eyebrow">Hermes Report Finalizer</div>
       <h1>{safe_title}</h1>
