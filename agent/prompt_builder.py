@@ -324,8 +324,11 @@ TASK_COMPLETION_GUIDANCE = (
     "directly and try an alternative (different package manager, different "
     "approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) "
-    "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
+    "for results you couldn't actually produce. Never present a command as executed, or quote "
+    "file contents, tool output, identifiers, paths, statuses, or saved state unless they came "
+    "from user-provided context or a tool result in the current turn. If evidence is missing, "
+    "use the available tools or explicitly label the claim unverified. Reporting a blocker "
+    "honestly is always better than inventing a result."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.

@@ -54,6 +54,19 @@ _NON_PLAN_ACTION_RE = re.compile(
     r"синхрониз\w*|отправь|запиши|сохрани|скачай|разверни|примени|удали)\b",
     re.I,
 )
+
+_READBACK_LOOKUP_RE = re.compile(
+    r"\b(?:покажи|прочитай|выведи|открой)\w*\b.{0,120}\b(?:текст|содержим|звонок|запис|файл|лог|статус|сервис|таймер|карточк|knowledge|памят)\w*\b|"
+    r"\b(?:текст|содержим|звонок|запис|файл|лог|статус|сервис|таймер|карточк|knowledge|памят)\w*\b.{0,120}\b(?:покажи|прочитай|выведи|открой)\w*\b",
+    re.I,
+)
+
+_STATE_LOOKUP_RE = re.compile(
+    r"\b(?:сохран[её]н|записан|создан|существует|доступен|работает|активен)\w*\b.{0,100}\b(?:звонок|запись|файл|сервис|таймер|баз[аыу]|knowledge|granola)\w*\b|"
+    r"\b(?:звонок|запись|файл|сервис|таймер|баз[аыу]|knowledge|granola)\w*\b.{0,100}\b(?:сохран[её]н|записан|создан|существует|доступен|работает|активен)\w*\b",
+    re.I,
+)
+
 _TERMINAL_EXECUTION_RE = re.compile(
     r"\b(?:git|vps|systemd|journalctl|sudo|root|ssh|gateway)\b|"
     r"\bсервис(?:а|ы|ов|е|у|ом|ами|ах)?\b|"
@@ -334,7 +347,12 @@ def infer_execution_contract(text: str, role: str, toolsets: Iterable[str]) -> t
     value = text or ""
     reminder_request = is_reminder_request(value)
     plan_only = bool(_PLAN_ONLY_RE.search(value)) and not bool(_NON_PLAN_ACTION_RE.search(value))
-    execution = (bool(_EXECUTION_RE.search(value)) or reminder_request) and not plan_only
+    execution = (
+        bool(_EXECUTION_RE.search(value))
+        or bool(_READBACK_LOOKUP_RE.search(value))
+        or bool(_STATE_LOOKUP_RE.search(value))
+        or reminder_request
+    ) and not plan_only
     required: set[str] = set()
     lowered = (text or "").lower()
     if execution and _TERMINAL_EXECUTION_RE.search(text or ""):

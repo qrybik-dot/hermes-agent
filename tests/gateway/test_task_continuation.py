@@ -2426,3 +2426,19 @@ def test_different_source_reply_resumes_and_upgrades_saved_travel_task(tmp_path,
     assert {"web", "browser", "terminal", "skills"}.issubset(prepared.route.toolsets)
     assert "no_mcp" not in prepared.route.toolsets
     assert "different source/tool path" in prepared.message
+
+
+def test_read_and_live_state_queries_require_execution():
+    cases = [
+        "Покажи текст звонка",
+        "Прочитай сохранённую запись",
+        "Звонок сохранён или нет?",
+        "Granola работает корректно?",
+    ]
+    for text in cases:
+        execution, _ = infer_execution_contract(text, "simple", ["memory", "session_search", "terminal"])
+        assert execution is True, text
+
+    for text in ("Покажи пример письма", "Объясни, как пользоваться find"):
+        execution, _ = infer_execution_contract(text, "simple", ["memory", "session_search", "terminal"])
+        assert execution is False, text

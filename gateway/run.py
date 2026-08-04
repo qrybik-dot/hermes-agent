@@ -18807,11 +18807,32 @@ message_context={
                         _active_task.task_id,
                         _reject_reason,
                     )
-                elif not final_response:
+                elif (
+                    not str(final_response or "").strip()
+                    or str(final_response).strip().lower() in {"(empty)", "[empty]", "null"}
+                ):
+                    final_response = (
+                        "PARTIAL\nМодель не вернула видимый результат после повторов и fallback. "
+                        "Задача не считается выполненной; контекст сохранён для продолжения."
+                    )
+                    result["partial"] = True
+                    result["completed"] = False
+                    _task_store.merge_metadata(
+                        _active_task.task_id,
+                        final_response=final_response,
+                        checkpoint=final_response,
+                        checkpoint_reason="empty_final_response",
+                        tool_call_count=_task_tool_calls,
+                        turn_exit_reason=_turn_exit_reason,
+                    )
                     _task_store.update(
                         _active_task.task_id,
-                        status="blocked",
-                        last_error=str(result.get("error") or "empty final response")[:300],
+                        status="incomplete",
+                        last_error="empty_final_response",
+                    )
+                    logger.warning(
+                        "task completion rejected: task_id=%s reason=empty_final_response",
+                        _active_task.task_id,
                     )
                 else:
                     from gateway.task_runtime import (
