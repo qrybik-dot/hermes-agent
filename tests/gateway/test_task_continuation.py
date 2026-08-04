@@ -80,6 +80,63 @@ def test_pause_progress_and_contract():
     assert plan is False
     assert required_plan == ()
 
+
+
+def test_mixed_plan_and_execution_request_still_requires_execution():
+    execution, required = infer_execution_contract(
+        "Сначала составь план, затем исправь сервис на VPS и проверь результат",
+        "server_debug",
+        ["terminal", "file"],
+    )
+    assert execution is True
+    assert required == ("terminal",)
+
+
+def test_missing_plan_skill_degrades_to_builtin_planning(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    prepared = prepare_task_turn(
+        message="Исправь сервис на VPS. Сначала составь план, затем выполни ремонт и проверь результат.",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="s",
+        session_id="sid",
+        request_id="req-missing-plan",
+        user_config={"agent": {}},
+        platform_toolsets=["terminal", "file", "skills", "delegation", "clarify"],
+    )
+    assert prepared.early_response is None
+    assert prepared.task is not None
+    assert prepared.task.requires_execution is True
+    assert "plan" not in prepared.route.skill_names
+    assert "missing_optional_skills=plan" in prepared.route.reason
+    assert "optional skill(s) unavailable: plan" in prepared.route.operational_context
+    assert "execution_recovery_contract" in prepared.route.reason
+
+
+def test_missing_preferred_capability_uses_available_alternative(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    state_dir = tmp_path / ".hermes"
+    state_dir.mkdir()
+    prepared = prepare_task_turn(
+        message="Исправь сервис на VPS и проверь результат",
+        platform_key="telegram",
+        chat_id="1",
+        session_key="s",
+        session_id="sid",
+        request_id="req-capability-recovery",
+        user_config={"agent": {}},
+        platform_toolsets=["file", "skills", "clarify"],
+    )
+    assert prepared.early_response is None
+    assert prepared.task is not None
+    assert prepared.task.requires_execution is True
+    assert "file" in prepared.route.toolsets
+    assert "missing_preferred_capabilities=terminal" in prepared.route.reason
+    assert "preferred capability unavailable: terminal" in prepared.route.operational_context
+
+
 def test_status_message_persists(tmp_path):
     store = _store(tmp_path)
     task = store.create(platform="telegram", chat_id="1", session_key="s", title="Task",
@@ -615,7 +672,7 @@ def test_completed_task_replays_saved_result_without_model(tmp_path, monkeypatch
     assert "event-123" in prepared.early_response["final_response"]
     assert store.get(task.task_id).status == "completed"
 
-def test_missing_google_workspace_skill_blocks_before_model(tmp_path, monkeypatch):
+def test_missing_google_workspace_skill_degrades_to_available_tools(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".hermes").mkdir()
     monkeypatch.setattr(
@@ -628,10 +685,10 @@ def test_missing_google_workspace_skill_blocks_before_model(tmp_path, monkeypatc
         user_config={"agent": {}},
         platform_toolsets=["terminal", "file", "skills", "memory", "no_mcp"],
     )
-    assert prepared.early_response is not None
-    assert prepared.early_response["model"] == "deterministic"
-    assert prepared.early_response["api_calls"] == 0
-    assert "google-workspace" in prepared.early_response["final_response"]
+    assert prepared.early_response is None
+    assert "google-workspace" not in prepared.route.skill_names
+    assert "missing_optional_skills=google-workspace" in prepared.route.reason
+    assert "optional skill(s) unavailable: google-workspace" in prepared.route.operational_context
 
 def test_execution_without_working_toolsets_explains_missing_capability(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))

@@ -519,24 +519,44 @@ def _deterministic_input_preflight(text: str, route: TaskRoute) -> tuple[list[st
 
 
 def _with_preloaded_skills(route: TaskRoute, task_id: str | None) -> tuple[TaskRoute, tuple[str, ...]]:
+    """Preload available skills without turning optional guidance into a hard gate.
+
+    Auto-routed skills improve execution, but their absence must not prevent the
+    agent from using built-in reasoning and the tools that are actually present.
+    The caller receives missing names for diagnostics while the route continues
+    with only the skills that were successfully loaded.
+    """
     if not route.skill_names:
         return route, ()
     from agent.skill_commands import build_preloaded_skills_prompt
     prompt, loaded, missing = build_preloaded_skills_prompt(list(route.skill_names), task_id=task_id)
-    if missing:
-        return route, tuple(missing)
-    if not prompt.strip():
-        return route, tuple(route.skill_names)
-    combined = (route.operational_context + "\n\n" + prompt).strip()
+    loaded_names = tuple(dict.fromkeys(str(name) for name in loaded if str(name).strip()))
+    missing_names = tuple(dict.fromkeys(str(name) for name in missing if str(name).strip()))
+    context_parts = [route.operational_context]
+    if prompt.strip():
+        context_parts.append(prompt.strip())
+    if missing_names:
+        context_parts.append(
+            "Capability recovery: optional skill(s) unavailable: "
+            + ", ".join(missing_names)
+            + ". Continue with built-in planning/reasoning and the available tools. "
+              "Do not return BLOCKED solely because an optional skill is missing; "
+              "attempt the safest equivalent path and report a blocker only after a real attempt fails."
+        )
+    reason = route.reason
+    if loaded_names:
+        reason += "; preloaded_skills=" + ",".join(loaded_names)
+    if missing_names:
+        reason += "; missing_optional_skills=" + ",".join(missing_names)
     return TaskRoute(
         role=route.role,
-        reason=route.reason + "; preloaded_skills=" + ",".join(loaded),
+        reason=reason,
         toolsets=route.toolsets,
         max_iterations=route.max_iterations,
-        skill_names=route.skill_names,
+        skill_names=loaded_names,
         skip_context_files=route.skip_context_files,
-        operational_context=combined,
-    ), ()
+        operational_context="\n\n".join(part for part in context_parts if part).strip(),
+    ), missing_names
 
 
 @dataclass(frozen=True)
@@ -2143,20 +2163,8 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
         )
 
     route, missing_skills = _with_preloaded_skills(route, task.task_id if task else None)
-    if missing_skills:
-        if task is not None:
-            store.update(task.task_id, status="blocked", last_error="missing skills: " + ",".join(missing_skills))
-        return PreparedTaskTurn(
-            str(message or ""), route, task,
-            early_response(
-                "BLOCKED\nДля выполнения задачи недоступен skill: "
-                + ", ".join(missing_skills)
-                + "\nФактические действия не выполнялись",
-                status="blocked", task_id=task.task_id if task else None,
-                role=route.role, reason="skill preflight blocked",
-            ),
-            continued,
-        )
+    if missing_skills and task is not None:
+        store.merge_metadata(task.task_id, missing_optional_skills=list(missing_skills))
 
     if "google-workspace" in route.skill_names:
         contract = (
@@ -2242,18 +2250,42 @@ def prepare_task_turn(*, message: str, platform_key: str, chat_id: str,
             )
     missing = sorted(set(required) - set(route.toolsets))
     if missing:
+        recovery_note = (
+            "Capability recovery: preferred capability unavailable: "
+            + ", ".join(missing)
+            + ". Start with the available tools and try a safe alternative path. "
+              "Do not claim success without evidence. Return BLOCKED only after an actual attempt "
+              "shows that no available path can reach the requested result; include the attempted "
+              "tool/path and its concrete error."
+        )
+        route = TaskRoute(
+            role=route.role,
+            reason=route.reason + "; missing_preferred_capabilities=" + ",".join(missing),
+            toolsets=route.toolsets,
+            max_iterations=route.max_iterations,
+            skill_names=route.skill_names,
+            skip_context_files=route.skip_context_files,
+            operational_context=(route.operational_context + "\n\n" + recovery_note).strip(),
+        )
         if task is not None:
-            store.update(task.task_id, status="blocked",
-                         last_error="missing capabilities: " + ",".join(missing))
-        return PreparedTaskTurn(
-            str(message or ""), route, task,
-            early_response(
-                "BLOCKED\nДля выполнения задачи недоступны обязательные возможности: "
-                + ", ".join(missing) + "\nФактические действия не выполнялись",
-                status="blocked", task_id=task.task_id if task else None,
-                role=route.role, reason="capability preflight blocked",
-            ),
-            continued,
+            store.merge_metadata(task.task_id, missing_preferred_capabilities=missing)
+
+    if requires_execution:
+        execution_note = (
+            "Execution contract: act now using the available tools. Do not stop at a plan, promise, "
+            "generic INCOMPLETE, or generic BLOCKED. If the preferred route is unavailable, attempt "
+            "the smallest safe alternative. A final BLOCKED is valid only after at least one real "
+            "attempt failed and must name the attempted capability, the concrete error/evidence, and "
+            "the next feasible recovery step."
+        )
+        route = TaskRoute(
+            role=route.role,
+            reason=route.reason + "; execution_recovery_contract",
+            toolsets=route.toolsets,
+            max_iterations=route.max_iterations,
+            skill_names=route.skill_names,
+            skip_context_files=route.skip_context_files,
+            operational_context=(route.operational_context + "\n\n" + execution_note).strip(),
         )
 
     if task is not None:

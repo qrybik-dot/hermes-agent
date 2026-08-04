@@ -3,7 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from ops.deployment.hermes_release import MANIFEST, ReleaseManager
+from ops.deployment.hermes_release import MANIFEST, ReleaseManager, require_managed_transition
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -60,3 +60,16 @@ def test_activate_and_rollback_swap_atomic_links(tmp_path, monkeypatch):
     manager.rollback()
     assert os.readlink(manager.current) == f"releases/{first.name}"
     assert os.readlink(manager.previous) == f"releases/{second.name}"
+
+
+def test_legacy_transition_requires_explicit_emergency_override(monkeypatch):
+    monkeypatch.delenv("HERMES_ALLOW_LEGACY_RELEASE", raising=False)
+    try:
+        require_managed_transition()
+    except PermissionError as exc:
+        assert "canonical managed_deploy" in str(exc)
+    else:
+        raise AssertionError("legacy transition unexpectedly allowed")
+
+    monkeypatch.setenv("HERMES_ALLOW_LEGACY_RELEASE", "1")
+    require_managed_transition()

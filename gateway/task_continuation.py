@@ -48,6 +48,12 @@ _EXECUTION_RE = re.compile(
     r"(?:какие|какой|список|подборк)\w*\s+(?:ещ[её]\s+)?(?:навык|skill)\w*|"
     r"(?:есть|установлен|подключен|доступен)\w*.*(?:навык|skill)\w*", re.I)
 _PLAN_ONLY_RE = re.compile(r"\b(?:составь|подготовь)\s+план\b", re.I)
+_NON_PLAN_ACTION_RE = re.compile(
+    r"\b(?:проверь|найди|создай|добавь|исправь|почини|выполни|запусти|"
+    r"обнови|настрой|установи|расширь|подключи|внедри|доработай|реализуй|"
+    r"синхрониз\w*|отправь|запиши|сохрани|скачай|разверни|примени|удали)\b",
+    re.I,
+)
 _TERMINAL_EXECUTION_RE = re.compile(
     r"\b(?:git|vps|systemd|journalctl|sudo|root|ssh|gateway)\b|"
     r"\bсервис(?:а|ы|ов|е|у|ом|ами|ах)?\b|"
@@ -325,8 +331,10 @@ def is_progress_only(text: str) -> bool:
 
 
 def infer_execution_contract(text: str, role: str, toolsets: Iterable[str]) -> tuple[bool, tuple[str, ...]]:
-    reminder_request = is_reminder_request(text or "")
-    execution = (bool(_EXECUTION_RE.search(text or "")) or reminder_request) and not bool(_PLAN_ONLY_RE.search(text or ""))
+    value = text or ""
+    reminder_request = is_reminder_request(value)
+    plan_only = bool(_PLAN_ONLY_RE.search(value)) and not bool(_NON_PLAN_ACTION_RE.search(value))
+    execution = (bool(_EXECUTION_RE.search(value)) or reminder_request) and not plan_only
     required: set[str] = set()
     lowered = (text or "").lower()
     if execution and _TERMINAL_EXECUTION_RE.search(text or ""):

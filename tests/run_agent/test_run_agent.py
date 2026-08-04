@@ -3984,6 +3984,28 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_execution_text_without_tools_auto_recovers_in_same_turn(self, agent):
+        self._setup_agent(agent)
+        agent._requires_execution_this_turn = True
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        premature = _mock_response(content="I will search now.", finish_reason="stop")
+        tool_response = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        final = _mock_response(content="Verified result", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [premature, tool_response, final]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as mock_tool,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("Find and verify it")
+
+        assert result["final_response"] == "Verified result"
+        assert result["api_calls"] == 3
+        assert mock_tool.call_count == 1
+        assert all(not message.get("_empty_recovery_synthetic") for message in result["messages"])
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -4304,7 +4326,7 @@ class TestRunConversation:
 
         fallback_called = {"called": False}
 
-        def _mock_fallback():
+        def _mock_fallback(reason=None):
             fallback_called["called"] = True
             # Simulate what _try_activate_fallback does: just advance the
             # index and set the flag (the client is already mocked).
@@ -4341,7 +4363,7 @@ class TestRunConversation:
             empty_resp, empty_resp, empty_resp, empty_resp,  # fallback exhausted
         ]
 
-        def _mock_fallback():
+        def _mock_fallback(reason=None):
             if agent._fallback_index >= len(agent._fallback_chain):
                 return False
             agent._fallback_index += 1

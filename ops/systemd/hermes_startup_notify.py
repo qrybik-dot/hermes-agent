@@ -1,151 +1,151 @@
 #!/usr/bin/env python3
-import os
-import sys
-import time
-import subprocess
+"""Send one explicit Telegram notice after a healthy Hermes gateway restart."""
+from __future__ import annotations
+
 import json
-import urllib.request
-import urllib.error
-import socket
+import os
 import random
-from datetime import datetime, timedelta
+import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime
+from pathlib import Path
 
-# Capture exact start time before waiting
-start_time_dt = datetime.now()
-# Format for journalctl (e.g. "2026-06-09 15:30:00")
-start_time_str = start_time_dt.strftime("%Y-%m-%d %H:%M:%S")
+import yaml
 
-# Wait for gateway to settle and initialize
-time.sleep(5)
+PROFILE_DIR = Path(os.environ.get("HERMES_HOME", "/home/hermes/.hermes"))
+PHRASES_FILE = PROFILE_DIR / "status_phrases.yaml"
+STATE_FILE = PROFILE_DIR / "startup-notify-state.json"
+STARTED_AT = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def check_gateway_active():
-    try:
-        subprocess.run(['systemctl', 'is-active', '--quiet', 'hermes-gateway.service'], check=True)
-        return True
-    except subprocess.CalledProcessError:
-        return False
 
-def check_journal_errors(since_time):
-    error_patterns = [
+def _run(*args: str, timeout: int = 12) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def gateway_state() -> tuple[bool, int]:
+    active = _run("systemctl", "is-active", "--quiet", "hermes-gateway.service").returncode == 0
+    result = _run("systemctl", "show", "hermes-gateway.service", "-p", "MainPID", "--value")
+    pid = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
+    return active and pid > 0, pid
+
+
+def journal_errors() -> list[str]:
+    patterns = (
         "telegram failed",
         "no connected platforms",
-        "AttributeError",
-        "UnboundLocalError",
         "Traceback",
-        "ERROR gateway.platforms.telegram"
-    ]
-    
-    try:
-        result = subprocess.run(
-            ['journalctl', '-u', 'hermes-gateway.service', '--since', since_time, '--no-pager', '-n', '250'],
-            capture_output=True, text=True, timeout=12
-        )
-        
-        if result.returncode != 0:
-            return [f"journalctl_failed (exit {result.returncode})"]
-            
-        output = result.stdout + result.stderr
-        found_errors = []
-        for pattern in error_patterns:
-            if pattern in output:
-                found_errors.append(pattern)
-                
-        return found_errors
-    except subprocess.TimeoutExpired:
-        print("journal_check_timeout")
-        return []
-    except Exception as e:
-        print(f"journal_check_error: {type(e).__name__}")
-        return []
+        "ERROR gateway",
+        "failed with result",
+    )
+    result = _run(
+        "journalctl", "-u", "hermes-gateway.service", "--since", STARTED_AT,
+        "--no-pager", "-n", "250",
+    )
+    if result.returncode != 0:
+        return [f"journalctl exit {result.returncode}"]
+    output = (result.stdout + result.stderr).casefold()
+    return [pattern for pattern in patterns if pattern.casefold() in output]
 
-def get_telegram_config():
-    token = None
-    chat_id = None
-    
-    try:
-        # Check environment first (if passed via EnvironmentFile)
-        token = os.environ.get('TELEGRAM_BOT_TOKEN')
-        chat_id = os.environ.get('TELEGRAM_HOME_CHANNEL') or os.environ.get('TELEGRAM_CHAT_ID')
-        
-        # Fallback to parsing .env file safely
-        if not token or not chat_id:
-            env_path = '/home/hermes/.hermes/.env'
-            if os.path.exists(env_path):
-                with open(env_path, 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('TELEGRAM_BOT_TOKEN='):
-                            token = line.split('=', 1)[1].strip().strip('"\'')
-                        elif line.startswith('TELEGRAM_CHAT_ID='):
-                            chat_id = line.split('=', 1)[1].strip().strip('"\'')
-        
-        if token:
-            print("token_present")
-        else:
-            print("token_missing")
-            
-        if chat_id:
-            print("chat_id_present")
-        else:
-            print("chat_id_missing")
-            
-        return token, chat_id
-    except Exception as e:
-        print(f"config_extraction_failed: {e}")
+
+def telegram_config() -> tuple[str | None, str | None]:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_HOME_CHANNEL") or os.environ.get("TELEGRAM_CHAT_ID")
+    env_path = PROFILE_DIR / ".env"
+    if env_path.exists() and (not token or not chat_id):
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip().strip("\"'")
+            if key == "TELEGRAM_BOT_TOKEN" and not token:
+                token = value
+            elif key in {"TELEGRAM_HOME_CHANNEL", "TELEGRAM_CHAT_ID"} and not chat_id:
+                chat_id = value
     return token, chat_id
 
-def send_telegram_message(token, chat_id, text):
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = json.dumps({
-        "chat_id": chat_id,
-        "text": text,
-        "disable_notification": True
-    }).encode('utf-8')
-    
-    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-    try:
-        urllib.request.urlopen(req, timeout=10)
-        print("telegram_send_ok")
-    except urllib.error.HTTPError as e:
-        print(f"telegram_send_failed: http_error (status {e.code})")
-    except urllib.error.URLError as e:
-        if isinstance(e.reason, socket.timeout):
-            print("telegram_send_failed: timeout")
-        else:
-            print(f"telegram_send_failed: url_error ({e.reason})")
-    except socket.timeout:
-        print("telegram_send_failed: timeout")
-    except Exception as e:
-        print(f"telegram_send_failed: other ({type(e).__name__})")
 
-def main():
-    print("startup_notify_started")
-    token, chat_id = get_telegram_config()
-    if not token or not chat_id:
-        print("missing_config_exit")
-        sys.exit(0)
-        
-    is_active = check_gateway_active()
-    print(f"gateway_active={is_active}")
-    
-    errors = check_journal_errors(start_time_str)
-    print(f"journal_errors={len(errors)}")
-    
-    success_messages = [
-        "🟢 Я снова в сети. Ребут был, паники не было.",
-        "🟢 Вернулся. Systemd сделал вид, что так и было.",
-        "🟢 Онлайн. Один ребут, без драм.",
-        "🟢 Дышу. Логи пока не кричат.",
-        "🟢 Поднялся. Можно работать, но аккуратно."
+def already_notified(pid: int) -> bool:
+    try:
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return int(state.get("gateway_pid") or 0) == pid
+
+
+def record_notified(pid: int) -> None:
+    STATE_FILE.write_text(
+        json.dumps({"gateway_pid": pid, "sent_at": datetime.now().isoformat()}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def choose_detail() -> str:
+    fallback = [
+        "Сервис прошёл проверку и готов принимать задачи.",
+        "Gateway active, критических ошибок запуска не найдено.",
+        "Перезапуск завершён, можно продолжать работу.",
     ]
-    
-    if not is_active:
-        send_telegram_message(token, chat_id, "🔴 Gateway down. Сервис не active.")
-    elif errors:
-        cause = errors[0]
-        send_telegram_message(token, chat_id, f"🔴 Gateway поднялся, но обнаружена ошибка в логах: {cause}")
+    try:
+        data = yaml.safe_load(PHRASES_FILE.read_text(encoding="utf-8")) or {}
+        phrases = [str(item).strip() for item in data.get("phrases", []) if str(item).strip()]
+    except Exception:
+        phrases = []
+    detail = random.choice(phrases or fallback)
+    return detail.removeprefix("🟢").strip()
+
+
+def send_message(token: str, chat_id: str, text: str) -> bool:
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=json.dumps({"chat_id": chat_id, "text": text, "disable_notification": True}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout) as exc:
+        print(f"telegram_send_failed:{type(exc).__name__}")
+        return False
+
+
+def main() -> int:
+    time.sleep(5)
+    token, chat_id = telegram_config()
+    if not token or not chat_id:
+        print("startup_notify_skipped:telegram_config_missing")
+        return 0
+
+    active, pid = gateway_state()
+    if not active:
+        send_message(token, chat_id, "🔴 Hermes перезапускался, но Gateway не вышел в active state.")
+        return 1
+    if already_notified(pid):
+        print(f"startup_notify_skipped:already_sent pid={pid}")
+        return 0
+
+    errors = journal_errors()
+    if errors:
+        sent = send_message(
+            token,
+            chat_id,
+            "🟠 Hermes перезапущен, но стартовая проверка обнаружила проблему: " + errors[0],
+        )
     else:
-        send_telegram_message(token, chat_id, random.choice(success_messages))
+        sent = send_message(
+            token,
+            chat_id,
+            "🟢 Hermes перезапущен и снова онлайн. " + choose_detail(),
+        )
+    if sent:
+        record_notified(pid)
+        print(f"startup_notify_sent pid={pid} errors={len(errors)}")
+        return 0
+    return 1
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

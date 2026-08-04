@@ -1,15 +1,17 @@
 [Unit]
 Description=Hermes Gateway startup Telegram notifier
-After=hermes-gateway.service
+After=hermes-gateway.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 User=hermes
 Group=hermes
 SupplementaryGroups=systemd-journal
-WorkingDirectory=/home/hermes/.hermes
-EnvironmentFile=-/home/hermes/.hermes/.env
-ExecStart=/home/hermes/hermes-runtime/shared/venv/bin/python /home/hermes/.hermes/scripts/hermes_startup_notify.py
+WorkingDirectory=/home/hermes/.hermes/profiles/hermes-next-phase1-canary
+Environment="HERMES_HOME=/home/hermes/.hermes/profiles/hermes-next-phase1-canary"
+EnvironmentFile=-/home/hermes/.hermes/profiles/hermes-next-phase1-canary/.env
+ExecStart=/usr/bin/python3 /srv/hermes-memory/bin/hermes_startup_notify.py
 TimeoutStartSec=60
 NoNewPrivileges=true
 PrivateTmp=true

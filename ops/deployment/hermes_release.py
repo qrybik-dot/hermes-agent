@@ -185,6 +185,22 @@ def require_root() -> None:
         raise PermissionError("service activation requires root")
 
 
+def require_managed_transition() -> None:
+    """Prevent legacy deploy/rollback from bypassing canonical change control.
+
+    Staging and status remain available for diagnostics. An explicit emergency
+    override exists for human recovery, but normal production transitions must
+    go through Hermes VPS Admin ``managed_deploy`` so lease, transition state,
+    read-back, and rollback stay atomic.
+    """
+    if os.environ.get("HERMES_ALLOW_LEGACY_RELEASE") == "1":
+        return
+    raise PermissionError(
+        "direct hermes-release deploy/rollback is disabled; use canonical managed_deploy "
+        "or set HERMES_ALLOW_LEGACY_RELEASE=1 only for an authorised emergency recovery"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
@@ -207,6 +223,7 @@ def main() -> int:
         print(release)
         return 0
 
+    require_managed_transition()
     require_root()
     if args.command == "rollback":
         manager.rollback()

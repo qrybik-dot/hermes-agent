@@ -18639,6 +18639,10 @@ message_context={
                     and (_active_task.metadata or {}).get("html_report_requested") is True
                 )
                 agent._suppress_html_report_for_turn = not _turn_html_requested
+                agent._requires_execution_this_turn = bool(
+                    _active_task is not None and _active_task.requires_execution
+                )
+                agent._execution_toolsets_this_turn = tuple(routed_toolsets or ())
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
                 result["html_report_requested"] = _turn_html_requested
                 _conversation_wall_ms = int(
@@ -18659,6 +18663,11 @@ message_context={
                 _emit_task_status("Готовлю итоговый ответ", "deliver")
             finally:
                 reset_turn_search_budget(_search_budget_token)
+                try:
+                    agent._requires_execution_this_turn = False
+                    agent._execution_toolsets_this_turn = ()
+                except Exception:
+                    pass
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
@@ -18703,18 +18712,43 @@ message_context={
                     if _provider_failed_before_tools:
                         _reject_reason = "provider_error_before_tools"
                         _reject_status = "blocked"
+                        _provider_error = str(
+                            result.get("error") or _turn_exit_reason or "provider returned no usable response"
+                        )[:300]
+                        _fallback_attempted = bool(
+                            result.get("fallback_used")
+                            or getattr(agent, "_fallback_activated", False)
+                        )
                         final_response = (
-                            "BLOCKED\nМодель не смогла начать выполнение из-за ошибки провайдера. "
-                            "Диагностика сохранена; задача может быть продолжена через fallback"
+                            "BLOCKED\nПровайдер не позволил начать execution-задачу после автоматических "
+                            "повторов"
+                            + (" и fallback-переключения" if _fallback_attempted else "")
+                            + ". Evidence: provider="
+                            + str(getattr(agent, "provider", "") or _selected_provider or "unknown")
+                            + ", model="
+                            + str(getattr(agent, "model", "") or _selected_model or "unknown")
+                            + ", tool_calls=0, error="
+                            + _provider_error
+                            + ". Следующий шаг: восстановить доступный provider/fallback и повторить эту задачу."
                         )
                     elif _budget_exhausted:
                         _reject_reason = "iteration_budget_exhausted"
                         final_response = _budget_exhausted_response(final_response, _task_tool_calls)
                     else:
-                        _reject_reason = "no_tool_calls"
+                        _reject_reason = "execution_recovery_exhausted_no_tools"
+                        _available_toolsets = ",".join(sorted(set(routed_toolsets or ()))) or "none"
                         final_response = (
-                            "INCOMPLETE\nФактическая работа не была выполнена: обязательные "
-                            "инструменты не запускались. Задача сохранена и может быть продолжена"
+                            "PARTIAL\nHermes дважды автоматически вернул модель к execution-задаче, "
+                            "но она снова завершилась без единого tool call. Evidence: role="
+                            + str(_task_route.role)
+                            + ", provider="
+                            + str(getattr(agent, "provider", "") or _selected_provider or "unknown")
+                            + ", model="
+                            + str(getattr(agent, "model", "") or _selected_model or "unknown")
+                            + ", available_toolsets="
+                            + _available_toolsets
+                            + ", tool_calls=0. Это внутренняя ошибка исполнения, а не внешний блокер; "
+                              "задача не считается выполненной."
                         )
                     result["partial"] = True
                     result["completed"] = False

@@ -603,6 +603,8 @@ def run_conversation(
     interrupted = False
     failed = False
     codex_ack_continuations = 0
+    execution_recovery_continuations = 0
+    turn_tool_call_start = int(getattr(agent, "_executed_tool_call_count", 0) or 0)
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -4919,6 +4921,44 @@ def run_conversation(
                 )
 
                 _ack_mode = intent_ack_continuation_mode(agent)
+                _execution_required = bool(getattr(agent, "_requires_execution_this_turn", False))
+                _turn_tool_calls = max(
+                    0,
+                    int(getattr(agent, "_executed_tool_call_count", 0) or 0) - turn_tool_call_start,
+                )
+                if (
+                    _execution_required
+                    and agent.valid_tool_names
+                    and _turn_tool_calls == 0
+                    and execution_recovery_continuations < 2
+                ):
+                    execution_recovery_continuations += 1
+                    logger.warning(
+                        "Execution task returned text without tool calls; automatic recovery %d/2 "
+                        "model=%s provider=%s",
+                        execution_recovery_continuations,
+                        agent.model,
+                        agent.provider,
+                    )
+                    agent._buffer_status(
+                        "↻ Execution response had no tool calls — continuing with available tools"
+                    )
+                    recovery_assistant = agent._build_assistant_message(assistant_message, "incomplete")
+                    recovery_assistant["_empty_recovery_synthetic"] = True
+                    messages.append(recovery_assistant)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[System: This is an execution task and the previous response made no tool call. "
+                            "Continue now using the available tools. Do not repeat a plan or a generic blocker. "
+                            "If the preferred path is unavailable, attempt the safest alternative. Only report "
+                            "BLOCKED after a real tool attempt fails, with the exact error and evidence.]"
+                        ),
+                        "_empty_recovery_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    continue
+
                 if (
                     _ack_mode != "off"
                     and agent.valid_tool_names
@@ -4972,6 +5012,14 @@ def run_conversation(
                     )
                 ):
                     messages.pop()
+                # Recovery pairs can become buried once the corrected turn
+                # executes tools. They are internal steering, not durable
+                # conversation history, so remove every marked message before
+                # appending/persisting the real final response.
+                messages[:] = [
+                    message for message in messages
+                    if not (isinstance(message, dict) and message.get("_empty_recovery_synthetic"))
+                ]
 
                 try:
                     from agent.verification_stop import (
