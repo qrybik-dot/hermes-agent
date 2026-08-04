@@ -537,6 +537,21 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _gateway_fallback_status_action(message: str) -> Optional[str]:
+    """Return a concise Russian status for provider failover events."""
+    text = str(message or "").strip()
+    lowered = text.casefold()
+    if "fallback" not in lowered:
+        return None
+    switched = re.search(r"switched to fallback:\s*([^\n(]+)", text, re.IGNORECASE)
+    if switched:
+        model = switched.group(1).strip().rstrip(".")
+        return f"Основная модель недоступна. Работаю через резервную: {model}"
+    if "switching to fallback" in lowered or "switching to approved fallback" in lowered:
+        return "Основная модель недоступна. Переключаюсь на резервную модель"
+    return None
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -550,6 +565,9 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    fallback_action = _gateway_fallback_status_action(text)
+    if fallback_action:
+        return fallback_action
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):
@@ -17360,13 +17378,17 @@ message_context={
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
+            fallback_action = _gateway_fallback_status_action(message)
             if task_status_state["enabled"] and not str(event_type).startswith("task:"):
-                logger.debug(
-                    "status_callback suppressed by deterministic task status: %s",
-                    event_type,
-                )
+                if fallback_action:
+                    _emit_task_status(fallback_action, "work", force=True)
+                else:
+                    logger.debug(
+                        "status_callback suppressed by deterministic task status: %s",
+                        event_type,
+                    )
                 return
-            prepared_message = _prepare_gateway_status_message(
+            prepared_message = fallback_action or _prepare_gateway_status_message(
                 source.platform,
                 event_type,
                 message,
@@ -17798,11 +17820,17 @@ message_context={
 
             if _role_fallback_chain:
                 _turn_fallback_model = _role_fallback_chain
-            elif _task_route.role in _quality_locked_roles and _selected_provider == "openai-codex":
+            elif (
+                _task_route.role in _quality_locked_roles
+                and _selected_provider == "openai-codex"
+                and _codex_failure_fallback
+            ):
                 _turn_fallback_model = _codex_failure_fallback
-            elif _simple_no_tools or _prepared_task.continued:
-                _turn_fallback_model = None
             else:
+                # Provider failover is transport reliability, not task complexity.
+                # Simple/no-tool and continued turns must keep the configured
+                # fallback chain; otherwise a primary 429 becomes a user-visible
+                # dead end exactly when the user asks what happened.
                 _turn_fallback_model = self._fallback_model
             logger.info(
                 "fallback routing: role=%s bucket=%s external_safe=%s chain=%s",
@@ -17813,9 +17841,11 @@ message_context={
                 if isinstance(_turn_fallback_model, list) else bool(_turn_fallback_model),
             )
             _empty_retry_limit = 1
+            _working_turn_toolsets = set(routed_toolsets) - {"no_mcp", "clarify"}
             _needs_task_status = bool(
                 _task_route.role in _live_status_roles
                 or (_active_task is not None and _active_task.requires_execution)
+                or _working_turn_toolsets
             )
             if platform_key == "telegram" and _needs_task_status:
                 _title = (_active_task.title if _active_task is not None else None)

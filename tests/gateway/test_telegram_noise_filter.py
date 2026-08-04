@@ -4,6 +4,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import (
+    _gateway_fallback_status_action,
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
@@ -232,3 +233,27 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+def test_gateway_fallback_status_is_immediate_and_localized():
+    assert _gateway_fallback_status_action(
+        "↻ Switched to fallback: nvidia/nemotron-3-super-120b-a12b (custom)"
+    ) == (
+        "Основная модель недоступна. Работаю через резервную: "
+        "nvidia/nemotron-3-super-120b-a12b"
+    )
+    assert _gateway_fallback_status_action(
+        "⚠️ Rate limited — switching to fallback provider..."
+    ) == "Основная модель недоступна. Переключаюсь на резервную модель"
+
+
+def test_telegram_status_translates_successful_fallback_event():
+    status = _prepare_gateway_status_message(
+        Platform.TELEGRAM,
+        "lifecycle",
+        "↻ Switched to fallback: nvidia/nemotron-3-super-120b-a12b (custom)",
+    )
+    assert status == (
+        "Основная модель недоступна. Работаю через резервную: "
+        "nvidia/nemotron-3-super-120b-a12b"
+    )

@@ -98,10 +98,14 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=fbs)
         with patch("agent.auxiliary_client.resolve_provider_client",
                     return_value=(_mock_client(), "gpt-4o")):
-            assert agent._try_activate_fallback() is True
+            with patch.object(agent, "_emit_status") as emit_status:
+                assert agent._try_activate_fallback() is True
             assert agent._fallback_index == 1
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
+            emit_status.assert_called_once_with(
+                "↻ Switched to fallback: gpt-4o (openai)"
+            )
 
     def test_second_fallback_works(self):
         fbs = [

@@ -212,6 +212,9 @@ def test_gateway_run_sync_scoping_regression():
     assert "_emit_task_status(force=True)" in source
     assert "_emit_task_status(0, \"accepted\")" not in source
     assert "task:{_active_task.task_id}" in source
+    assert "_working_turn_toolsets = set(routed_toolsets)" in source
+    assert "elif _simple_no_tools or _prepared_task.continued" not in source
+    assert "_turn_fallback_model = self._fallback_model" in source
 
 
 def test_google_workspace_intents_preload_google_workspace_skill():
