@@ -240,6 +240,58 @@ class TestCheckSystemdTimingAlignment:
         result = sf.check_systemd_timing_alignment(180.0)
         assert result is None
 
+
+    def test_system_slice_queries_system_manager_first(self, monkeypatch):
+        import io
+        from types import SimpleNamespace
+
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/self/cgroup":
+                return io.StringIO("0::/system.slice/hermes-gateway.service\n")
+            return real_open(path, *args, **kwargs)
+
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="TimeoutStopUSec=3min 30s\n", stderr="")
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert calls[0][:2] == ["systemctl", "show"]
+        assert "--user" not in calls[0]
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False
+
+    def test_user_slice_queries_user_manager_first(self, monkeypatch):
+        import io
+        from types import SimpleNamespace
+
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/self/cgroup":
+                return io.StringIO("0::/user.slice/user-1000.slice/hermes-gateway.service\n")
+            return real_open(path, *args, **kwargs)
+
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="TimeoutStopUSec=3min 30s\n", stderr="")
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        sf.check_systemd_timing_alignment(180.0)
+
+        assert calls[0][:3] == ["systemctl", "--user", "show"]
+
     def test_returns_none_when_unit_undeterminable(self, monkeypatch):
         monkeypatch.setenv("INVOCATION_ID", "abc")
         # /proc/self/cgroup likely doesn't end in .service for the test runner
