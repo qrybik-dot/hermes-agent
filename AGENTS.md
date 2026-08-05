@@ -1,5 +1,7 @@
 # Hermes Agent - Development Guide
 
+> **Hermes VPS production:** before any work on Anton’s production, read [`HERMES_PRODUCTION_HANDOFF.md`](HERMES_PRODUCTION_HANDOFF.md). Live VPS state and canonical change-control override stale docs or chat history.
+
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
 **Never give up on the right solution.**
