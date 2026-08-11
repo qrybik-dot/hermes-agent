@@ -4972,6 +4972,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=False, error=safe_error, retryable=True)
             safe_error = _redact_telegram_error_text(e)
+            if "message to edit not found" in err_str:
+                return SendResult(
+                    success=False,
+                    error=safe_error,
+                    error_kind="message_not_found",
+                )
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,

@@ -2283,16 +2283,31 @@ class GatewayStreamConsumer:
                             "Edit failed (strikes=%d), entering fallback mode",
                             self._flood_strikes,
                         )
-                        self._fallback_prefix = self._visible_prefix()
+                        preview_missing = (
+                            getattr(result, "error_kind", None)
+                            == "message_not_found"
+                        )
+                        if preview_missing:
+                            # Telegram confirmed that the preview no longer
+                            # exists (for example the user deleted it while the
+                            # turn was running).  No prefix remains visible, so
+                            # the fallback must commit the complete answer — a
+                            # tail-only continuation would be meaningless.
+                            self._fallback_prefix = ""
+                            self._last_sent_text = ""
+                            self._message_id = None
+                            self._message_created_ts = None
+                        else:
+                            self._fallback_prefix = self._visible_prefix()
                         self._fallback_final_send = True
                         self._edit_supported = False
-                        self._already_sent = True
+                        self._already_sent = not preview_missing
                         # Best-effort: strip the cursor from the last visible
                         # message so the user doesn't see a stuck ▉. A
                         # turn-final Telegram flood skips this cosmetic edit:
                         # another edit would consume the same flood budget and
                         # delay the fallback send that carries the answer.
-                        if not immediate_final_fallback:
+                        if not immediate_final_fallback and not preview_missing:
                             await self._try_strip_cursor()
                         return False
                 else:

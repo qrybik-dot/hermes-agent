@@ -9,6 +9,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from telegram.error import BadRequest
 
 
 def _adapter() -> MagicMock:
@@ -138,4 +139,53 @@ async def test_telegram_long_flood_result_keeps_retry_after():
     assert result.error == "flood_control:30.0"
     assert result.retry_after == 30.0
 
+
+@pytest.mark.asyncio
+async def test_telegram_deleted_preview_is_classified_as_missing():
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._bot = MagicMock()
+    adapter._bot.edit_message_text = AsyncMock(
+        side_effect=BadRequest("Bad Request: message to edit not found")
+    )
+
+    result = await adapter.edit_message(
+        "123", "456", "Completed answer", finalize=False
+    )
+
+    assert result.success is False
+    assert result.error_kind == "message_not_found"
+
+
+@pytest.mark.asyncio
+async def test_deleted_preview_fallback_sends_one_complete_final():
+    """A confirmed-missing preview cannot be treated as a visible prefix."""
+    adapter = _adapter()
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="deleted-preview"),
+        SendResult(success=True, message_id="complete-final"),
+    ]
+    adapter.edit_message.return_value = SendResult(
+        success=False,
+        error="Bad Request: message to edit not found",
+        error_kind="message_not_found",
+    )
+
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-1",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+    )
+    consumer.on_delta("Partial answer")
+    task = __import__("asyncio").create_task(consumer.run())
+    await __import__("asyncio").sleep(0.05)
+    consumer.on_delta(" and completed")
+    consumer.finish()
+    await task
+
+    sent = [call.kwargs["content"] for call in adapter.send.await_args_list]
+    assert sent[0] == "Partial answer ▉"
+    assert sent[1] == "Partial answer and completed"
+    assert len(sent) == 2
+    assert consumer.final_response_sent is True
+    assert consumer.final_content_delivered is True
 
