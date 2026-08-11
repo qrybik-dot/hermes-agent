@@ -894,6 +894,7 @@ class WebhookAdapter(BasePlatformAdapter):
             chat_type="webhook",
             user_id=f"webhook:{route_name}",
             user_name=route_name,
+            message_id=delivery_id,
         )
         if profile and isinstance(profile, str):
             source.profile = profile
