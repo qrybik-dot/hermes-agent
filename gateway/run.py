@@ -14964,6 +14964,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
+
+        if canonical == "tools":
+            return await self._handle_tools_command(event)
         
         if canonical == "profile":
             return await self._handle_profile_command(event)

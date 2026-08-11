@@ -1668,6 +1668,58 @@ class GatewaySlashCommandsMixin:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
+    async def _handle_tools_command(self, event: MessageEvent) -> str:
+        """List the gateway's configured toolsets without mutating config.
+
+        The interactive CLI keeps ``enable``/``disable`` because those actions
+        persist global configuration. Chat surfaces expose only a truthful
+        read-only view; changing the global capability set still requires the
+        operator-controlled CLI.
+        """
+        raw_args = event.get_command_args().strip()
+        action = raw_args.split(None, 1)[0].lower() if raw_args else "list"
+        if action != "list":
+            return (
+                "`/tools` is read-only in the gateway. "
+                f"To change global tool configuration, run `hermes tools {raw_args}` "
+                "on the Hermes host."
+            )
+
+        from gateway.run import _load_gateway_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        config = _load_gateway_config()
+        platform = getattr(getattr(event, "source", None), "platform", None)
+        platform_key = getattr(platform, "value", None) or str(platform or "gateway")
+        enabled = sorted(
+            _get_platform_tools(
+                config,
+                platform_key,
+                include_default_mcp_servers=False,
+            )
+        )
+
+        lines = [f"Configured toolsets for {platform_key}:"]
+        if enabled:
+            lines.extend(f"- `{name}`" for name in enabled)
+        else:
+            lines.append("- none")
+
+        mcp_servers = config.get("mcp_servers") or {}
+        if isinstance(mcp_servers, dict) and mcp_servers:
+            lines.append("")
+            lines.append("Configured MCP servers:")
+            lines.extend(f"- `{name}`" for name in sorted(map(str, mcp_servers)))
+
+        lines.extend(
+            [
+                "",
+                "Actual tool schemas are checked again when a turn starts; "
+                "a toolset with missing credentials is omitted rather than reported as usable.",
+            ]
+        )
+        return "\n".join(lines)
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model.
 

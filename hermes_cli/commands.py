@@ -239,8 +239,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("queue", "steer", "interrupt", "status")),
 
     # Tools & Skills
-    CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
-               args_hint="[list|disable|enable] [name...]", cli_only=True),
+    CommandDef("tools", "List tools; CLI can enable or disable them", "Tools & Skills",
+               args_hint="[list|disable|enable] [name...]"),
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
@@ -1257,7 +1257,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     /hermes update on Slack. Demoted to free the native slot /approvals now
 #     claims — without this entry /approvals tips the registry past the 50-cap
 #     and silently clamps /update off, breaking Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "tools"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
