@@ -4976,7 +4976,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(
                     success=False,
                     error=safe_error,
-                    error_kind="message_not_found",
+                    error_kind="not_found",
                 )
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",

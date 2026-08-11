@@ -2285,7 +2285,7 @@ class GatewayStreamConsumer:
                         )
                         preview_missing = (
                             getattr(result, "error_kind", None)
-                            == "message_not_found"
+                            == "not_found"
                         )
                         if preview_missing:
                             # Telegram confirmed that the preview no longer
@@ -2297,6 +2297,9 @@ class GatewayStreamConsumer:
                             self._last_sent_text = ""
                             self._message_id = None
                             self._message_created_ts = None
+                            self._final_response_sent = False
+                            self._final_content_delivered = False
+                            self._delivered_final_text = None
                         else:
                             self._fallback_prefix = self._visible_prefix()
                         self._fallback_final_send = True

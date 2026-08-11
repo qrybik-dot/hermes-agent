@@ -153,7 +153,7 @@ async def test_telegram_deleted_preview_is_classified_as_missing():
     )
 
     assert result.success is False
-    assert result.error_kind == "message_not_found"
+    assert result.error_kind == "not_found"
 
 
 @pytest.mark.asyncio
@@ -167,7 +167,7 @@ async def test_deleted_preview_fallback_sends_one_complete_final():
     adapter.edit_message.return_value = SendResult(
         success=False,
         error="Bad Request: message to edit not found",
-        error_kind="message_not_found",
+        error_kind="not_found",
     )
 
     consumer = GatewayStreamConsumer(
@@ -189,3 +189,34 @@ async def test_deleted_preview_fallback_sends_one_complete_final():
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
 
+
+@pytest.mark.asyncio
+async def test_deleted_complete_preview_and_failed_resend_stays_unconfirmed():
+    """A vanished full preview must not suppress the gateway fallback."""
+    adapter = _adapter()
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="deleted-preview"),
+        SendResult(success=False, error="confirmed send failure"),
+    ]
+    adapter.edit_message.return_value = SendResult(
+        success=False,
+        error="Bad Request: message to edit not found",
+        error_kind="not_found",
+    )
+
+    final_text = "The complete answer"
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "chat-1",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+    )
+    consumer.on_delta(final_text)
+    task = __import__("asyncio").create_task(consumer.run())
+    await __import__("asyncio").sleep(0.05)
+    consumer.finish()
+    await task
+
+    assert adapter.send.await_count == 2
+    assert consumer.final_response_sent is False
+    assert consumer.final_content_delivered is False
+    assert consumer.delivered_final_matches(final_text) is not True
