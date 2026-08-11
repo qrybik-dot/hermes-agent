@@ -1885,6 +1885,28 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
 
+    def test_thread_fallback_does_not_create_coroutine_before_submit(self):
+        """A rejected/deferred submit must not orphan an unawaited coroutine."""
+        job = {"id": "one-email-job", "deliver": "email:a@example.com"}
+
+        with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new_callable=AsyncMock) as send_mock, \
+             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value = mock_pool
+            failed_future = MagicMock()
+            failed_future.result.side_effect = ConnectionError("connection refused")
+            mock_pool.submit.return_value = failed_future
+
+            _deliver_result(job, "Report content")
+
+        # The first coroutine was handed to asyncio.run and then closed by the
+        # RuntimeError path. The fallback coroutine must be created inside the
+        # worker, not before submit() accepts ownership of the work.
+        assert send_mock.call_count == 1
+
 
 class TestSetCronSessionTitle:
     """Robust cron session titling: #50535/#50536/#50537."""
@@ -1899,5 +1921,4 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
 

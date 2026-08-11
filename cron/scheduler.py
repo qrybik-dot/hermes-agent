@@ -2058,9 +2058,25 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # try/except so a per-target failure is logged and the loop
                 # continues to the next target.
                 try:
+                    # Create the coroutine inside the worker, after submit()
+                    # has accepted ownership. Creating it in the caller before
+                    # submit leaves an unawaited coroutine when the executor is
+                    # shutting down or otherwise rejects/defer-mocks the work.
+                    def _send_in_fresh_loop():
+                        return asyncio.run(
+                            _send_to_platform(
+                                platform,
+                                pconfig,
+                                chat_id,
+                                cleaned_delivery_content,
+                                thread_id=thread_id,
+                                media_files=media_files,
+                            )
+                        )
+
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(_send_in_fresh_loop)
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)
