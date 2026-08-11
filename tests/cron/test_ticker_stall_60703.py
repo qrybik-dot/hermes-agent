@@ -107,6 +107,32 @@ class TestBoundedJobsLock:
         assert time.monotonic() - start < 5
         assert not [r for r in caplog.records if "Timed out" in r.message]
 
+    def test_required_cross_process_lock_fails_closed_on_timeout(self, monkeypatch):
+        jobs_mod.ensure_dirs()
+        lock_path = jobs_mod._jobs_lock_file()
+        lock_path.touch()
+        monkeypatch.setattr(jobs_mod, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.1)
+
+        release = threading.Event()
+        held = threading.Event()
+        holder = threading.Thread(
+            target=_hold_jobs_flock, args=(lock_path, release, held), daemon=True
+        )
+        holder.start()
+        assert held.wait(timeout=10), "test holder failed to take the flock"
+
+        try:
+            with pytest.raises(RuntimeError, match="cross-process"):
+                with _jobs_lock(require_cross_process=True):
+                    pass
+        finally:
+            release.set()
+            holder.join(timeout=10)
+
+        # A failed required acquisition must release its file descriptor/state.
+        with _jobs_lock(require_cross_process=True):
+            pass
+
     def test_reentrant_nesting_still_works(self):
         with _jobs_lock():
             with _jobs_lock():  # must not deadlock or re-flock

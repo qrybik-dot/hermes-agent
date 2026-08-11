@@ -5,6 +5,7 @@ Expose a single compressed action-oriented tool to avoid schema/context bloat.
 Compatibility wrappers remain for direct Python callers and legacy tests.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -336,6 +337,29 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
     return None
+
+
+def _create_request_id_from_env() -> Optional[str]:
+    """Return an opaque stable identity for one inbound gateway message."""
+    from gateway.session_context import get_session_env
+
+    platform = get_session_env("HERMES_SESSION_PLATFORM").strip()
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID").strip()
+    message_id = get_session_env("HERMES_SESSION_MESSAGE_ID").strip()
+    if not platform or not chat_id or not message_id:
+        return None
+    identity = {
+        "version": 1,
+        "profile": get_session_env("HERMES_SESSION_PROFILE").strip() or "default",
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": get_session_env("HERMES_SESSION_THREAD_ID").strip(),
+        "message_id": message_id,
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"gateway-message-v1:{digest}"
 
 
 def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
@@ -731,7 +755,6 @@ def cronjob(
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
-    del task_id  # unused but kept for handler signature compatibility
 
     try:
         normalized = (action or "").strip().lower()
@@ -801,15 +824,25 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                create_request_id=_create_request_id_from_env(),
+                create_attempt_id=task_id or None,
             )
-            _notify_provider_jobs_changed_safe()
-            _create_message = f"Cron job '{job['name']}' created."
+            reconciled = bool(job.pop("_create_reconciled", False))
+            if not reconciled:
+                _notify_provider_jobs_changed_safe()
+            status = "reconciled" if reconciled else "created"
+            _create_message = (
+                f"Cron job '{job['name']}' already existed; replay reconciled."
+                if reconciled
+                else f"Cron job '{job['name']}' created."
+            )
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
                 _create_message = f"{_create_message} {_local_notice}"
             return json.dumps(
                 {
                     "success": True,
+                    "status": status,
                     "job_id": job["id"],
                     "name": job["name"],
                     "skill": job.get("skill"),

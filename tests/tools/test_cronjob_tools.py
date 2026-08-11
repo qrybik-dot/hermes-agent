@@ -1,5 +1,7 @@
 """Tests for tools/cronjob_tools.py — prompt scanning, schedule/list/remove dispatchers."""
 
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 import json
 import pytest
 
@@ -229,6 +231,18 @@ class TestUnifiedCronjobTool:
         monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
         monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
 
+    @staticmethod
+    def _set_gateway_message(message_id="synthetic-message-991"):
+        from gateway.session_context import set_session_vars
+
+        return set_session_vars(
+            platform="telegram",
+            chat_id="synthetic-chat",
+            thread_id="synthetic-thread",
+            message_id=message_id,
+            profile="default",
+        )
+
     def test_create_and_list(self):
         created = json.loads(
             cronjob(
@@ -279,6 +293,407 @@ class TestUnifiedCronjobTool:
         resumed = json.loads(cronjob(action="resume", job_id=job_id))
         assert resumed["success"] is True
         assert resumed["job"]["state"] == "scheduled"
+
+    def test_same_gateway_message_create_is_idempotent(self):
+        from gateway.session_context import clear_session_vars
+
+        tokens = self._set_gateway_message()
+        try:
+            first = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="initial-turn",
+                )
+            )
+            replay = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="replay-turn",
+                )
+            )
+            listing = json.loads(cronjob(action="list"))
+        finally:
+            clear_session_vars(tokens)
+
+        assert first["status"] == "created"
+        assert replay["status"] == "reconciled"
+        assert replay["job_id"] == first["job_id"]
+        assert listing["count"] == 1
+
+    def test_replay_with_new_payload_fails_closed(self):
+        from gateway.session_context import clear_session_vars
+
+        tokens = self._set_gateway_message()
+        try:
+            first = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Reminder A",
+                    schedule="every 1h",
+                    task_id="initial-turn",
+                )
+            )
+            conflict = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Reminder B",
+                    schedule="every 2h",
+                    task_id="replay-turn",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert first["status"] == "created"
+        assert conflict["success"] is False
+        assert "different cron effect" in conflict["error"]
+        assert json.loads(cronjob(action="list"))["count"] == 1
+
+    def test_initial_turn_allows_multiple_effects(self):
+        from gateway.session_context import clear_session_vars
+
+        tokens = self._set_gateway_message()
+        try:
+            first = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Reminder A",
+                    schedule="every 1h",
+                    task_id="initial-turn",
+                )
+            )
+            second = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Reminder B",
+                    schedule="every 2h",
+                    task_id="initial-turn",
+                )
+            )
+            known_replay = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Reminder A",
+                    schedule="every 1h",
+                    task_id="replay-turn",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert first["status"] == "created"
+        assert second["status"] == "created"
+        assert first["job_id"] != second["job_id"]
+        assert known_replay["status"] == "reconciled"
+        assert known_replay["job_id"] == first["job_id"]
+        assert json.loads(cronjob(action="list"))["count"] == 2
+
+    def test_different_gateway_messages_create_distinct_jobs(self):
+        from gateway.session_context import clear_session_vars
+
+        first_tokens = self._set_gateway_message("message-1")
+        try:
+            first = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-1",
+                )
+            )
+        finally:
+            clear_session_vars(first_tokens)
+
+        second_tokens = self._set_gateway_message("message-2")
+        try:
+            second = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-2",
+                )
+            )
+        finally:
+            clear_session_vars(second_tokens)
+
+        assert first["job_id"] != second["job_id"]
+        assert json.loads(cronjob(action="list"))["count"] == 2
+
+    def test_chat_display_name_drift_does_not_break_reconciliation(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        def bind(chat_name):
+            return set_session_vars(
+                platform="telegram",
+                chat_id="synthetic-chat",
+                chat_name=chat_name,
+                thread_id="synthetic-thread",
+                message_id="synthetic-message-991",
+                profile="default",
+            )
+
+        first_tokens = bind("Old display name")
+        try:
+            first = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-1",
+                )
+            )
+        finally:
+            clear_session_vars(first_tokens)
+
+        replay_tokens = bind("New display name")
+        try:
+            replay = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-2",
+                )
+            )
+        finally:
+            clear_session_vars(replay_tokens)
+
+        assert first["status"] == "created"
+        assert replay["status"] == "reconciled"
+        assert replay["job_id"] == first["job_id"]
+        assert json.loads(cronjob(action="list"))["count"] == 1
+
+    def test_calls_without_gateway_message_keep_legacy_create_behavior(self):
+        first = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check inbox",
+                schedule="every 1h",
+                task_id="turn-1",
+            )
+        )
+        second = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check inbox",
+                schedule="every 1h",
+                task_id="turn-2",
+            )
+        )
+
+        assert first["status"] == "created"
+        assert second["status"] == "created"
+        assert first["job_id"] != second["job_id"]
+        assert json.loads(cronjob(action="list"))["count"] == 2
+
+    def test_replay_metadata_is_hashed_and_private(self):
+        from cron.jobs import JOBS_FILE
+        from gateway.session_context import clear_session_vars
+
+        tokens = self._set_gateway_message()
+        try:
+            created = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="initial-turn",
+                )
+            )
+            public_jobs = json.loads(cronjob(action="list"))["jobs"]
+        finally:
+            clear_session_vars(tokens)
+
+        stored_text = JOBS_FILE.read_text(encoding="utf-8")
+        stored = json.loads(stored_text)["jobs"][0]
+        assert created["status"] == "created"
+        assert "synthetic-message-991" not in stored_text
+        assert len(stored["_create_request_id"]) == 64
+        assert len(stored["_create_payload_hash"]) == 64
+        assert len(stored["_create_attempt_id"]) == 64
+        assert all(
+            key not in public_jobs[0]
+            for key in (
+                "_create_request_id",
+                "_create_payload_hash",
+                "_create_attempt_id",
+            )
+        )
+
+    def test_thread_concurrent_replay_creates_one_job(self):
+        from gateway.session_context import clear_session_vars
+
+        def create(attempt):
+            tokens = self._set_gateway_message()
+            try:
+                return json.loads(
+                    cronjob(
+                        action="create",
+                        prompt="Check inbox",
+                        schedule="every 1h",
+                        task_id=attempt,
+                    )
+                )
+            finally:
+                clear_session_vars(tokens)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(create, ("turn-1", "turn-2")))
+
+        assert {result["status"] for result in results} == {
+            "created",
+            "reconciled",
+        }
+        assert len({result["job_id"] for result in results}) == 1
+        assert json.loads(cronjob(action="list"))["count"] == 1
+
+    def test_pre_persist_failure_retry_creates_once(self, monkeypatch):
+        import cron.jobs as jobs_module
+        from gateway.session_context import clear_session_vars
+
+        original_save = jobs_module._save_jobs_unlocked
+        calls = 0
+
+        def fail_once(jobs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("synthetic pre-persist failure")
+            return original_save(jobs)
+
+        monkeypatch.setattr(jobs_module, "_save_jobs_unlocked", fail_once)
+        tokens = self._set_gateway_message()
+        try:
+            failed = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-1",
+                )
+            )
+            retried = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-2",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert failed["success"] is False
+        assert retried["status"] == "created"
+        assert json.loads(cronjob(action="list"))["count"] == 1
+
+    def test_post_persist_response_loss_reconciles(self, monkeypatch):
+        import tools.cronjob_tools as cron_tools
+        from gateway.session_context import clear_session_vars
+
+        original_create = cron_tools.create_job
+        lose_response = True
+
+        def create_then_lose_response(**kwargs):
+            nonlocal lose_response
+            result = original_create(**kwargs)
+            if lose_response:
+                lose_response = False
+                raise OSError("synthetic response loss after persist")
+            return result
+
+        monkeypatch.setattr(cron_tools, "create_job", create_then_lose_response)
+        tokens = self._set_gateway_message()
+        try:
+            lost = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-1",
+                )
+            )
+            retried = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-2",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert lost["success"] is False
+        assert retried["status"] == "reconciled"
+        assert json.loads(cronjob(action="list"))["count"] == 1
+
+    def test_delayed_one_shot_replay_reconciles_after_grace(self, monkeypatch):
+        import cron.jobs as jobs_module
+        from gateway.session_context import clear_session_vars
+
+        initial_now = jobs_module._hermes_now()
+        schedule = (initial_now + timedelta(seconds=30)).isoformat()
+        tokens = self._set_gateway_message()
+        try:
+            created = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule=schedule,
+                    task_id="turn-1",
+                )
+            )
+            monkeypatch.setattr(
+                jobs_module,
+                "_hermes_now",
+                lambda: initial_now + timedelta(seconds=300),
+            )
+            replayed = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule=schedule,
+                    task_id="turn-2",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert created["status"] == "created"
+        assert replayed["status"] == "reconciled"
+        assert replayed["job_id"] == created["job_id"]
+        assert json.loads(cronjob(action="list"))["count"] == 1
+
+    def test_idempotent_create_fails_closed_without_cross_process_lock(
+        self, monkeypatch
+    ):
+        import cron.jobs as jobs_module
+        from gateway.session_context import clear_session_vars
+
+        monkeypatch.setattr(jobs_module, "fcntl", None)
+        monkeypatch.setattr(jobs_module, "msvcrt", None)
+        tokens = self._set_gateway_message()
+        try:
+            result = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check inbox",
+                    schedule="every 1h",
+                    task_id="turn-1",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert result["success"] is False
+        assert "cross-process" in result["error"]
+        assert json.loads(cronjob(action="list"))["count"] == 0
 
 
     @staticmethod

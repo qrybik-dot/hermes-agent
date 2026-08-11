@@ -9,6 +9,7 @@ import contextlib
 import copy
 from contextvars import ContextVar
 from dataclasses import dataclass
+import hashlib
 import json
 import logging
 import shutil
@@ -268,7 +269,7 @@ def _jobs_lock_file() -> Path:
 
 
 @contextlib.contextmanager
-def _jobs_lock():
+def _jobs_lock(*, require_cross_process: bool = False):
     """Serialize a load_jobs→modify→save_jobs critical section.
 
     Combines the in-process threading lock (cheap mutual exclusion between
@@ -289,6 +290,12 @@ def _jobs_lock():
     """
     depth = getattr(_jobs_lock_state, "depth", 0)
     if depth:
+        if require_cross_process and not getattr(
+            _jobs_lock_state, "cross_process", False
+        ):
+            raise RuntimeError(
+                "Cron replay protection requires the cross-process jobs lock."
+            )
         _jobs_lock_state.depth = depth + 1
         try:
             yield
@@ -298,6 +305,7 @@ def _jobs_lock():
 
     with _jobs_file_lock:
         _jobs_lock_state.depth = 1
+        _jobs_lock_state.cross_process = False
         lock_fd = None
         try:
             try:
@@ -323,9 +331,15 @@ def _jobs_lock():
                     while True:
                         try:
                             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            _jobs_lock_state.cross_process = True
                             break
                         except (OSError, IOError):
                             if time.monotonic() >= _deadline:
+                                if require_cross_process:
+                                    raise RuntimeError(
+                                        "Cron replay protection could not acquire "
+                                        "the cross-process jobs lock."
+                                    )
                                 logger.error(
                                     "Timed out after %.0fs waiting for the cron "
                                     "jobs lock (%s) — another process is holding "
@@ -343,7 +357,18 @@ def _jobs_lock():
                             time.sleep(0.1)
                 elif msvcrt is not None:
                     getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+                    _jobs_lock_state.cross_process = True
+                elif require_cross_process:
+                    raise RuntimeError(
+                        "Cron replay protection requires an available "
+                        "cross-process jobs lock."
+                    )
             except (OSError, IOError) as e:
+                if require_cross_process:
+                    raise RuntimeError(
+                        "Cron replay protection could not acquire the "
+                        "cross-process jobs lock."
+                    ) from e
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
@@ -362,7 +387,10 @@ def _jobs_lock():
                     finally:
                         lock_fd.close()
         finally:
+            if lock_fd is not None and not lock_fd.closed:
+                lock_fd.close()
             _jobs_lock_state.depth = 0
+            _jobs_lock_state.cross_process = False
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -445,6 +473,13 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     ensure consumers never crash while formatting or running those records.
     """
     normalized = _apply_skill_fields(job)
+    for private_key in (
+        "_create_request_id",
+        "_create_payload_hash",
+        "_create_attempt_id",
+        "_create_reconciled",
+    ):
+        normalized.pop(private_key, None)
     job_id = _coerce_job_text(normalized.get("id"), "unknown")
     prompt = _coerce_job_text(normalized.get("prompt"))
     normalized["id"] = job_id
@@ -1243,6 +1278,40 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def _reconcile_create_request(
+    jobs: List[Dict[str, Any]],
+    request_hash: str,
+    payload_hash: str,
+    attempt_hash: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Reconcile a gateway-message retry against already persisted effects.
+
+    An exact payload replay returns the original job. Multiple distinct effects
+    are allowed only inside the same agent attempt; a later attempt for the same
+    inbound message may replay known effects but cannot add a drifted one.
+    """
+    request_jobs = [
+        job for job in jobs if job.get("_create_request_id") == request_hash
+    ]
+    for job in request_jobs:
+        if job.get("_create_payload_hash") == payload_hash:
+            reconciled = _normalize_job_record(job)
+            reconciled["_create_reconciled"] = True
+            return reconciled
+
+    if request_jobs:
+        same_attempt = bool(attempt_hash) and all(
+            job.get("_create_attempt_id") == attempt_hash for job in request_jobs
+        )
+        if not same_attempt:
+            raise ValueError(
+                "This gateway request is being replayed with a different cron "
+                "effect; no new job was created. Inspect the existing job(s) "
+                "before retrying."
+            )
+    return None
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1261,6 +1330,8 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    create_request_id: Optional[str] = None,
+    create_attempt_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1305,6 +1376,12 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        create_request_id: Optional opaque stable inbound-request identity.
+                When present, create becomes an atomic lookup-or-create in the
+                existing jobs store.
+        create_attempt_id: Optional active agent-turn identity. Distinct effects
+                are allowed only inside the original turn; later attempts may
+                reconcile known effects but cannot add a drifted one.
 
     Returns:
         The created job dict
@@ -1366,6 +1443,56 @@ def create_job(
     check_gateway_lifecycle(prompt_text, normalized_script)
 
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+
+    request_hash = (
+        hashlib.sha256(create_request_id.encode("utf-8")).hexdigest()
+        if create_request_id
+        else None
+    )
+    attempt_hash = (
+        hashlib.sha256(create_attempt_id.encode("utf-8")).hexdigest()
+        if create_attempt_id
+        else None
+    )
+    payload_hash = None
+    if request_hash:
+        payload = {
+            "prompt": prompt_text,
+            "schedule": str(schedule).strip(),
+            "name": str(name).strip() if name is not None else None,
+            "repeat": repeat,
+            "deliver": deliver,
+            "origin": {
+                key: origin.get(key)
+                for key in ("platform", "chat_id", "thread_id", "user_id")
+                if origin and origin.get(key) is not None
+            },
+            "skills": normalized_skills,
+            "model": normalized_model,
+            "provider": normalized_provider,
+            "base_url": normalized_base_url,
+            "script": normalized_script,
+            "context_from": context_from,
+            "enabled_toolsets": normalized_toolsets,
+            "workdir": normalized_workdir,
+            "no_agent": normalized_no_agent,
+            "attach_to_session": normalized_attach,
+        }
+        payload_hash = hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+        with _jobs_lock(require_cross_process=True):
+            reconciled = _reconcile_create_request(
+                load_jobs(), request_hash, payload_hash, attempt_hash
+            )
+            if reconciled is not None:
+                return reconciled
 
     provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
         provider=normalized_provider,
@@ -1432,13 +1559,29 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    if request_hash and payload_hash:
+        job["_create_request_id"] = request_hash
+        job["_create_payload_hash"] = payload_hash
+        if attempt_hash:
+            job["_create_attempt_id"] = attempt_hash
 
-    with _jobs_lock():
+    lock_context = (
+        _jobs_lock(require_cross_process=True) if request_hash else _jobs_lock()
+    )
+    with lock_context:
         jobs = load_jobs()
+        if request_hash and payload_hash:
+            reconciled = _reconcile_create_request(
+                jobs, request_hash, payload_hash, attempt_hash
+            )
+            if reconciled is not None:
+                return reconciled
         jobs.append(job)
         save_jobs(jobs)
 
-    return job
+    created = _normalize_job_record(job)
+    created["_create_reconciled"] = False
+    return created
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
