@@ -5898,7 +5898,11 @@ def resolve_provider_client(
         if raw_codex:
             # Return the raw OpenAI client for callers that need direct
             # access to responses.stream() (e.g., the main agent loop).
-            codex_token = _read_codex_access_token()
+            # A profile-scoped fallback may pass its already-resolved OAuth
+            # token explicitly.  Prefer it to the process-global auth store;
+            # otherwise multiplexed/isolated runtimes incorrectly report the
+            # configured fallback as unavailable.
+            codex_token = (explicit_api_key or "").strip() or _read_codex_access_token()
             if not codex_token:
                 logger.warning("resolve_provider_client: openai-codex requested "
                                "but no Codex OAuth token found (run: hermes model)")

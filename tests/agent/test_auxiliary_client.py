@@ -524,6 +524,36 @@ class TestReadCodexAccessToken:
         assert result == "tok-123"
 
 
+    def test_raw_codex_prefers_explicit_profile_scoped_token(self):
+        """Main-agent fallback must not require a global auth-store token."""
+        import agent.auxiliary_client as aux
+
+        raw_client = MagicMock()
+        raw_client.api_key = "profile-scoped-token"
+        raw_client.base_url = "https://chatgpt.com/backend-api/codex"
+
+        with (
+            patch.object(
+                aux,
+                "_read_codex_access_token",
+                side_effect=AssertionError("global auth must not be consulted"),
+            ),
+            patch.object(
+                aux, "_create_openai_client", return_value=raw_client
+            ) as build,
+        ):
+            client, model = aux.resolve_provider_client(
+                "openai-codex",
+                model="gpt-5.6-terra",
+                raw_codex=True,
+                explicit_api_key="profile-scoped-token",
+            )
+
+        assert client is raw_client
+        assert model == "gpt-5.6-terra"
+        assert build.call_args.kwargs["api_key"] == "profile-scoped-token"
+
+
 
 
 
