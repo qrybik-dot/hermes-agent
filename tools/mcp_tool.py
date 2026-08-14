@@ -2577,6 +2577,13 @@ class MCPServerTask:
                             # Nothing left to reap — drop the pgid entry so
                             # PID-reuse can't surface stale pgroup state later.
                             _stdio_pgids.pop(pid, None)
+            # Idle recycle runs inside a long-lived gateway. Merely marking a
+            # surviving child as orphaned leaves its resident memory behind
+            # until another MCP spawn or final gateway shutdown. Reuse the
+            # existing scoped reaper immediately after the SDK context exits;
+            # it cannot touch active processes owned by other MCP servers.
+            if new_pids:
+                await asyncio.to_thread(_kill_orphaned_mcp_children, server_name=self.name)
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not
