@@ -27,6 +27,9 @@ Telegram / approved webhook / cron
  native Codex fallback (Terra)
 
  control plane --> lease / immutable current+previous / rollback / manifest
+
+ source control: upstream = vendor; origin/prod/hermes-autonomous-core = our
+                 canonical backup; VPS legacy checkout = staging only
 ```
 
 | Component | Owns | Must not own |
@@ -41,4 +44,3 @@ Telegram / approved webhook / cron
 No edge in this map permits a tool, proxy or domain service to become a second
 Hermes. New capabilities attach at the native tool boundary and must remain
 removable without rewriting the core.
-
