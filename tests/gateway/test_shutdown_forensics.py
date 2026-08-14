@@ -7,7 +7,9 @@ import os
 import signal
 import sys
 import time
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,6 +135,54 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 
 class TestCheckSystemdTimingAlignment:
+
+    def test_system_cgroup_queries_only_system_manager(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda *args, **kwargs: StringIO(
+                "0::/system.slice/hermes-gateway.service\n"
+            ),
+        )
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return SimpleNamespace(returncode=0, stdout="TimeoutStopUSec=3min 30s\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["mismatch"] is False
+        assert calls == [[
+            "systemctl", "show", "hermes-gateway.service",
+            "--property=TimeoutStopUSec",
+        ]]
+
+    def test_user_cgroup_queries_only_user_manager(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda *args, **kwargs: StringIO(
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n"
+            ),
+        )
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return SimpleNamespace(returncode=0, stdout="TimeoutStopUSec=3min 30s\n")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["mismatch"] is False
+        assert calls == [[
+            "systemctl", "--user", "show", "hermes-gateway.service",
+            "--property=TimeoutStopUSec",
+        ]]
 
     def test_returns_none_when_unit_undeterminable(self, monkeypatch):
         monkeypatch.setenv("INVOCATION_ID", "abc")
