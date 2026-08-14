@@ -2994,6 +2994,33 @@ def _strip_optional_systemd_directives(text: str) -> str:
     return "\n".join(filtered)
 
 
+def _systemd_unit_is_release_manager_owned(text: str) -> bool:
+    """Return whether an external immutable-release manager owns the unit.
+
+    ``HERMES_RUNTIME_ROOT`` is the explicit ownership marker used by managed
+    deployments.  Those units intentionally pin a shared venv, release
+    symlink, and resource controls that the standalone CLI generator does not
+    know about.  The CLI must therefore leave their lifecycle to the release
+    manager instead of treating the intentional difference as staleness and
+    overwriting the unit during ``gateway restart``.
+
+    Parse only active ``Environment=`` directives.  A marker in a comment must
+    not disable normal stale-unit detection.
+    """
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or not line.startswith("Environment="):
+            continue
+        payload = line.split("=", 1)[1]
+        try:
+            assignments = shlex.split(payload)
+        except ValueError:
+            continue
+        if any(item.startswith("HERMES_RUNTIME_ROOT=") for item in assignments):
+            return True
+    return False
+
+
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
     """Normalize launchd plist text for staleness checks.
 
@@ -3037,6 +3064,10 @@ def systemd_unit_is_current(system: bool = False) -> bool:
         return False
 
     installed = unit_path.read_text(encoding="utf-8")
+    if _systemd_unit_is_release_manager_owned(installed):
+        # "Current" here means "must not be auto-refreshed by this CLI".
+        # The external release manager owns validation and replacement.
+        return True
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Normalize out directives that older systemd versions silently drop
