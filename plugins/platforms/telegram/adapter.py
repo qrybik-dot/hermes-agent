@@ -8769,6 +8769,49 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _try_handle_mosreg_totp_reply(self, msg: Message) -> bool:
+        """Consume six-digit Mosreg replies before they reach the model."""
+        text = str(getattr(msg, "text", "") or "").strip()
+        if not re.fullmatch(r"\d{6}", text):
+            return False
+        reply = getattr(msg, "reply_to_message", None)
+        if reply is None:
+            return False
+        reply_user = getattr(reply, "from_user", None)
+        if reply_user is not None and not bool(getattr(reply_user, "is_bot", False)):
+            return False
+        chat = getattr(msg, "chat", None)
+        user = getattr(msg, "from_user", None)
+        if chat is None or user is None:
+            return False
+        try:
+            from gateway.mosreg_totp_bridge import TotpBridgeStore
+            result = TotpBridgeStore().put_reply_value({
+                "telegram_user_id": str(getattr(user, "id", "")),
+                "chat_id": str(getattr(chat, "id", "")),
+                "reply_to_message_id": str(getattr(reply, "message_id", "")),
+                "value_kind": "totp",
+                "value": text,
+            })
+        except Exception:
+            logger.warning("[%s] Mosreg TOTP bridge rejected reply", self.name)
+            result = {"ok": False}
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        response = "Код принят. Продолжаю вход." if result.get("ok") else "Код не принят или истёк. Запросите вход заново."
+        try:
+            await self._send_message_with_thread_fallback(
+                chat_id=chat.id,
+                text=response,
+                reply_to_message_id=getattr(reply, "message_id", None),
+                **self._notification_kwargs(None),
+            )
+        except Exception:
+            pass
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -8789,6 +8832,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
+            return
+        if await self._try_handle_mosreg_totp_reply(msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
