@@ -18,6 +18,7 @@ SSH_KEY = "/home/hermes/.ssh/hermes_mac_mosreg"
 MAC_TARGET = "skyeng@100.112.5.120"
 GUI_UID = "502"
 GUI_LABEL = "com.hermes.mosreg.auth-probe"
+GUI_BROKER = "/Users/skyeng/.config/mosreg/runtime/mosreg_auth_broker.py"
 GUI_REQUEST = "/Users/skyeng/.config/mosreg/auth.gui.request.json"
 GUI_RESULT = "/Users/skyeng/.config/mosreg/auth.gui.result.json"
 AUTH_LIVE_STATUS = "/Users/skyeng/.config/mosreg/auth.live.status.json"
@@ -53,9 +54,14 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "suggested_actions": ["Проверить, что Mac включён и Tailscale Connected; затем повторить запрос."],
     },
     "GUI_REQUEST_WRITE_FAILED": {
-        "stage": "mac_dispatch", "retryable": True,
-        "diagnosis": "Не удалось атомарно передать запрос GUI worker на Mac.",
-        "suggested_actions": ["Повторить запрос один раз; при повторе проверить GUI broker на Mac."],
+        "stage": "mac_dispatch", "retryable": False,
+        "diagnosis": "SSH до Mac ответил, но fixed GUI broker не подтвердил атомарную постановку запроса в очередь.",
+        "suggested_actions": ["Проверить broker_status/ssh_exit_code; не диагностировать сеть Mac, если mac_ssh_reached=true."],
+    },
+    "GUI_REQUEST_INVALID": {
+        "stage": "mac_dispatch", "retryable": False,
+        "diagnosis": "GUI broker отклонил внутренний формат запроса до запуска browser worker.",
+        "suggested_actions": ["Проверить контракт native tool ↔ GUI broker; новый 2FA-код не требуется."],
     },
     "GUI_KICKSTART_FAILED": {
         "stage": "mac_dispatch", "retryable": True,
@@ -323,18 +329,20 @@ async def _ssh(argv: list[str], *, timeout: float, stdin_text: str | None = None
     return proc.returncode or 0, out_b.decode("utf-8", "replace"), err_b.decode("utf-8", "replace")
 
 
-async def _write_gui_request(payload: dict[str, Any]) -> tuple[int, str]:
-    script = (
-        "import os,sys; p=sys.argv[1]; raw=sys.stdin.buffer.read(); "
-        "tmp=p+\".tmp\"; f=open(tmp,\"wb\"); f.write(raw); f.flush(); os.fsync(f.fileno()); f.close(); "
-        "os.chmod(tmp,0o600); os.replace(tmp,p)"
-    )
-    rc, _, stderr = await _ssh(
-        ["/usr/bin/python3", "-c", script, GUI_REQUEST],
+async def _write_gui_request(payload: dict[str, Any]) -> tuple[int, str, dict[str, Any]]:
+    rc, stdout, stderr = await _ssh(
+        ["/usr/bin/python3", GUI_BROKER, "--enqueue-gui-request"],
         timeout=12,
         stdin_text=json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
     )
-    return rc, stderr
+    ack: dict[str, Any] = {}
+    try:
+        parsed = json.loads(stdout)
+        if isinstance(parsed, dict):
+            ack = parsed
+    except Exception:
+        pass
+    return rc, stderr, ack
 
 
 async def _read_json(path: str, *, timeout: float = 6) -> dict[str, Any] | None:
@@ -367,10 +375,29 @@ async def _run_gui_worker(user_id: str, chat_id: str, reply_to: str, pconfig: An
         "created_at": int(time.time()),
         "expires_at": int(time.time()) + 240,
     }
-    write_rc, write_err = await _write_gui_request(payload)
-    if write_rc != 0:
-        code = "MAC_UNAVAILABLE" if write_rc in {124, 255} else "GUI_REQUEST_WRITE_FAILED"
-        return _failure(code, evidence={"ssh_exit_code": write_rc, "stderr_present": bool(write_err.strip())}), False
+    write_rc, write_err, write_ack = await _write_gui_request(payload)
+    ack_ok = (
+        write_rc == 0
+        and write_ack.get("ok") is True
+        and write_ack.get("status") == "queued"
+        and str(write_ack.get("request_id")) == request_id
+    )
+    if not ack_ok:
+        broker_status = str(write_ack.get("status") or "missing_ack")[:40]
+        if write_rc in {124, 255}:
+            code = "MAC_UNAVAILABLE"
+        elif write_rc == 75 or broker_status == "busy":
+            code = "MOSREG_BUSY"
+        elif write_rc == 64 or broker_status == "invalid_request":
+            code = "GUI_REQUEST_INVALID"
+        else:
+            code = "GUI_REQUEST_WRITE_FAILED"
+        return _failure(code, evidence={
+            "ssh_exit_code": write_rc,
+            "mac_ssh_reached": write_rc not in {124, 255},
+            "broker_status": broker_status,
+            "stderr_present": bool(write_err.strip()),
+        }), False
     rc, _, stderr = await _ssh(
         ["/bin/launchctl", "kickstart", "-k", f"gui/{GUI_UID}/{GUI_LABEL}"], timeout=15
     )
