@@ -1,0 +1,9 @@
+name: mosreg
+version: 1.0.0
+description: "Native read-only Mosreg/Zdrav appointment refresh via the authorized Mac GUI worker and Telegram-bound one-time ЕСИА code flow."
+author: Hermes Homelander
+kind: backend
+provides_tools:
+  - mosreg_refresh
+hooks:
+  - pre_tool_call
