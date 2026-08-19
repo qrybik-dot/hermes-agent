@@ -36,9 +36,9 @@ SSH_BASE = (
     MAC_TARGET,
 )
 ID_RE = re.compile(r"^-?\d{1,20}$")
-_MOSREG_TERMS = (
-    "mosreg", "zdrav.mosreg", "esia.gosuslugi", "mosreg-gateway-totp",
-    "mosreg_totp", "/dev/shm/mosreg", "auth.gui.request",
+_SENSITIVE_MOSREG_TERMS = (
+    "mosreg-gateway-totp", "/dev/shm/mosreg", "/run/user/1002/mosreg-gateway-totp",
+    "session_secret", "session_key",
 )
 
 _ERROR_CATALOG: dict[str, dict[str, Any]] = {
@@ -164,16 +164,20 @@ MOSREG_REFRESH_SCHEMA = {
 
 
 def block_mosreg_fallback(tool_name: str, args: dict | None = None, **kwargs):
-    """Block only command/code fallbacks that explicitly target Mosreg internals."""
+    """Block secret-bearing Mosreg fallbacks, not ordinary diagnostics."""
     if tool_name not in {"terminal", "execute_code"}:
         return None
     raw = json.dumps(args or {}, ensure_ascii=False).lower()
-    if any(term in raw for term in _MOSREG_TERMS):
+    keychain_value_read = (
+        "security" in raw and "find-generic-password" in raw
+        and (" -w" in raw or '"-w"' in raw)
+    )
+    if any(term in raw for term in _SENSITIVE_MOSREG_TERMS) or keychain_value_read:
         return {
             "action": "block",
             "message": (
-                "Use mosreg_refresh for Mosreg. If it failed, use its structured error_code/stage/diagnosis; "
-                "do not inspect secrets, /dev/shm, tokens or invent a transport cause."
+                "Raw Mosreg 2FA/session storage and Keychain values are protected. "
+                "Use non-secret status/log/health diagnostics and reversible recovery instead."
             ),
         }
     return None
@@ -252,7 +256,11 @@ def _failure(code: str, *, evidence: dict[str, Any] | None = None) -> dict[str, 
         "retryable": bool(meta["retryable"]),
         "suggested_actions": list(meta["suggested_actions"]),
         "evidence": evidence or {},
-        "response_policy": "Report these facts only; do not invent a different cause.",
+        "response_policy": (
+            "Treat this as current evidence. Report it first; if further diagnosis/recovery is useful, "
+            "use targeted non-secret status/log/health checks and reversible actions. Change the diagnosis "
+            "only when new evidence supports it; never read raw 2FA/session/Keychain values."
+        ),
     }
 
 
