@@ -1,5 +1,8 @@
 import json
 
+import pytest
+
+from plugins.mosreg import tool as mosreg_tool
 from plugins.mosreg.tool import _failure, _normalise_code, _sanitize_current, block_mosreg_fallback
 
 
@@ -68,3 +71,42 @@ def test_error_aliases_and_schema_response_policy():
     assert "targeted non-secret" in desc
     assert "reversible recovery" in desc
     assert "only when new evidence supports it" in desc
+
+
+@pytest.mark.asyncio
+async def test_gui_request_uses_fixed_broker_stdin_not_inline_code(monkeypatch):
+    captured = {}
+
+    async def fake_ssh(argv, *, timeout, stdin_text=None):
+        captured["argv"] = list(argv)
+        captured["timeout"] = timeout
+        captured["stdin_text"] = stdin_text
+        return 0, '{"ok":true,"status":"queued","request_id":"native_test"}', ""
+
+    monkeypatch.setattr(mosreg_tool, "_ssh", fake_ssh)
+    payload = {
+        "schema": 1,
+        "request_id": "native_test",
+        "mode": "synthetic",
+        "expires_at": 9999999999,
+    }
+    rc, stderr, ack = await mosreg_tool._write_gui_request(payload)
+    assert rc == 0
+    assert stderr == ""
+    assert ack["status"] == "queued"
+    assert captured["argv"] == [
+        "/usr/bin/python3", mosreg_tool.GUI_BROKER, "--enqueue-gui-request"
+    ]
+    assert "-c" not in captured["argv"]
+    assert json.loads(captured["stdin_text"]) == payload
+
+
+def test_gui_write_failure_is_not_blindly_retried():
+    result = _failure("GUI_REQUEST_WRITE_FAILED", evidence={
+        "ssh_exit_code": 2,
+        "mac_ssh_reached": True,
+        "broker_status": "missing_ack",
+    })
+    assert result["retryable"] is False
+    assert result["stage"] == "mac_dispatch"
+    assert result["evidence"]["mac_ssh_reached"] is True
