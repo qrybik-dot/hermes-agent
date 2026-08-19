@@ -201,29 +201,38 @@ class TotpBridgeStore:
         chat_id = str(data.get("chat_id", ""))
         reply_to = str(data.get("reply_to_message_id", ""))
         matched: dict[str, Any] | None = None
+        active_for_chat = False
         for path in self.sessions.glob("*.json"):
             try:
                 session = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
             if now > int(session.get("expires_at", 0)):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
+                task_id = str(session.get("task_id", ""))
+                for stale in (path, self.values / f"{task_id}.json"):
+                    try:
+                        stale.unlink()
+                    except (FileNotFoundError, OSError):
+                        pass
                 continue
-            if (
+            same_actor = (
                 str(session.get("telegram_user_id", "")) == user_id
                 and str(session.get("chat_id", "")) == chat_id
-                and str(session.get("reply_to_message_id", "")) == reply_to
-            ):
-                matched = session
-                break
+            )
+            if same_actor:
+                active_for_chat = True
+                if str(session.get("reply_to_message_id", "")) == reply_to:
+                    matched = session
+                    break
         if not matched:
-            return safe_response(False, "rejected")
+            return safe_response(False, "wrong_reply_target" if active_for_chat else "no_active_challenge")
         item = dict(data)
-        item["task_id"] = str(matched.get("task_id", ""))
-        return self.put_value(item, now=now)
+        task_id = str(matched.get("task_id", ""))
+        item["task_id"] = task_id
+        result = self.put_value(item, now=now)
+        if result.get("ok") is not True and self._value_path(task_id).exists():
+            return safe_response(False, "already_submitted")
+        return result
 
     def pop_value(self, data: dict[str, Any], now: int | None = None) -> dict[str, Any]:
         now = now_ts() if now is None else now

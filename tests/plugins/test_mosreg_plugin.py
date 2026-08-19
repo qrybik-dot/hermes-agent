@@ -1,6 +1,6 @@
 import json
 
-from plugins.mosreg.tool import _sanitize_current, block_mosreg_fallback
+from plugins.mosreg.tool import _failure, _normalise_code, _sanitize_current, block_mosreg_fallback
 
 
 def test_blocks_mosreg_terminal_fallback_only():
@@ -42,3 +42,22 @@ def test_manifest_and_schema_are_narrow():
     params = MOSREG_REFRESH_SCHEMA["parameters"]
     assert set(params["properties"]) == {"scope"}
     assert params["additionalProperties"] is False
+
+
+def test_structured_failure_is_specific_and_non_hallucinatory():
+    result = _failure("KEYCHAIN_ACCESS_DENIED", evidence={"state": "FAILED"})
+    assert result["success"] is False
+    assert result["error_code"] == "KEYCHAIN_ACCESS_DENIED"
+    assert result["stage"] == "credentials"
+    assert result["retryable"] is False
+    assert "Keychain" in result["diagnosis"]
+    assert "do not invent" in result["response_policy"].lower()
+
+
+def test_error_aliases_and_schema_response_policy():
+    from plugins.mosreg.tool import MOSREG_REFRESH_SCHEMA
+    assert _normalise_code("keychain_item_missing") == "KEYCHAIN_ITEM_MISSING"
+    assert _normalise_code("FAILED") == "MOSREG_WORKER_FAILED"
+    desc = MOSREG_REFRESH_SCHEMA["description"]
+    assert "Do NOT tell the user that 2FA is required" in desc
+    assert "error_code/stage/diagnosis" in desc

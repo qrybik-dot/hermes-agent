@@ -8785,37 +8785,45 @@ class TelegramAdapter(BasePlatformAdapter):
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
     async def _try_handle_mosreg_totp_reply(self, msg: Message) -> bool:
-        """Consume six-digit Mosreg replies before they reach the model."""
+        """Consume Mosreg 2FA only when a real active challenge exists."""
         text = str(getattr(msg, "text", "") or "").strip()
         if not re.fullmatch(r"\d{6}", text):
-            return False
-        reply = getattr(msg, "reply_to_message", None)
-        if reply is None:
-            return False
-        reply_user = getattr(reply, "from_user", None)
-        if reply_user is not None and not bool(getattr(reply_user, "is_bot", False)):
             return False
         chat = getattr(msg, "chat", None)
         user = getattr(msg, "from_user", None)
         if chat is None or user is None:
             return False
+        reply = getattr(msg, "reply_to_message", None)
+        reply_to = str(getattr(reply, "message_id", "")) if reply is not None else ""
         try:
             from gateway.mosreg_totp_bridge import TotpBridgeStore
             result = TotpBridgeStore().put_reply_value({
                 "telegram_user_id": str(getattr(user, "id", "")),
                 "chat_id": str(getattr(chat, "id", "")),
-                "reply_to_message_id": str(getattr(reply, "message_id", "")),
+                "reply_to_message_id": reply_to,
                 "value_kind": "totp",
                 "value": text,
             })
         except Exception:
             logger.warning("[%s] Mosreg TOTP bridge rejected reply", self.name)
-            result = {"ok": False}
+            result = {"ok": False, "status": "bridge_error"}
+
+        status = str(result.get("status") or "rejected")
+        if reply is None and status == "no_active_challenge":
+            return False
         try:
             await msg.delete()
         except Exception:
             pass
-        response = "Код принят. Продолжаю вход." if result.get("ok") else "Код не принят или истёк. Запросите вход заново."
+        responses = {
+            "stored": "Код принят для текущего запроса ЕСИА. Продолжаю вход.",
+            "already_submitted": "Код для этого запроса уже получен. Ожидаю завершения входа.",
+            "wrong_reply_target": "Код не принят: ответьте Reply именно на актуальное сообщение ЕСИА с запросом кода.",
+            "no_active_challenge": "Сейчас нет активного запроса 2FA. Запустите обновление Мосрег заново.",
+            "bridge_error": "Не удалось проверить текущий 2FA challenge. Код не передан.",
+            "rejected": "Код не принят текущим 2FA challenge. Запустите новый запрос.",
+        }
+        response = responses.get(status, responses["rejected"])
         try:
             await self._send_message_with_thread_fallback(
                 chat_id=chat.id,
