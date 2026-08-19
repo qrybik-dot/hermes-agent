@@ -64,4 +64,7 @@ def test_error_aliases_and_schema_response_policy():
     assert _normalise_code("FAILED") == "MOSREG_WORKER_FAILED"
     desc = MOSREG_REFRESH_SCHEMA["description"]
     assert "Do NOT tell the user that 2FA is required" in desc
-    assert "error_code/stage/diagnosis" in desc
+    assert "error_code/stage/diagnosis/evidence" in desc
+    assert "targeted non-secret" in desc
+    assert "reversible recovery" in desc
+    assert "only when new evidence supports it" in desc
