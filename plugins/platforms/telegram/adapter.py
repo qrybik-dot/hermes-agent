@@ -4109,9 +4109,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # updates. Best-effort: a transient Bot API network error here
                 # must not fail gateway startup — degrade to background polling
                 # recovery instead.
+                logger.warning("[%s] Telegram clearing stale webhook…", self.name)
                 await self._delete_webhook_best_effort(
                     require_success=not is_reconnect
                 )
+                logger.warning("[%s] Telegram webhook stage complete; preparing polling…", self.name)
 
                 loop = asyncio.get_running_loop()
 
@@ -4143,6 +4145,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
 
+                logger.warning("[%s] Telegram starting polling readiness gate…", self.name)
                 polling_started = await self._start_polling_resilient(
                     # On a cold first boot drop the stale Bot API queue; on a
                     # watcher reconnect after an outage preserve it so messages
@@ -4151,6 +4154,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     error_callback=_polling_error_callback,
                     require_progress=not is_reconnect,
                 )
+                logger.warning("[%s] Telegram polling readiness returned: %s", self.name, polling_started)
                 if not polling_started:
                     logger.warning(
                         "[%s] Connected in degraded Telegram mode: gateway is alive, "
