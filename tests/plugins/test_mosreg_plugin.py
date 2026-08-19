@@ -3,12 +3,15 @@ import json
 from plugins.mosreg.tool import _failure, _normalise_code, _sanitize_current, block_mosreg_fallback
 
 
-def test_blocks_mosreg_terminal_fallback_only():
+def test_blocks_only_sensitive_mosreg_fallbacks():
     blocked = block_mosreg_fallback("terminal", {"command": "find /dev/shm -name mosreg-gateway-totp*"})
     assert blocked and blocked["action"] == "block"
-    assert block_mosreg_fallback("execute_code", {"code": "open(/tmp/mosreg_state)"})["action"] == "block"
+    keychain = block_mosreg_fallback("terminal", {"command": "security find-generic-password -w -s mosreg-auth"})
+    assert keychain and keychain["action"] == "block"
+    assert block_mosreg_fallback("terminal", {"command": "cat ~/.config/mosreg/auth.live.status.json"}) is None
+    assert block_mosreg_fallback("terminal", {"command": "launchctl print gui/502/com.hermes.mosreg.auth-probe"}) is None
+    assert block_mosreg_fallback("execute_code", {"code": "print('mosreg health')"}) is None
     assert block_mosreg_fallback("terminal", {"command": "git status"}) is None
-    assert block_mosreg_fallback("read_file", {"path": "/tmp/mosreg"}) is None
 
 
 def test_sanitize_family_and_self():
@@ -51,7 +54,8 @@ def test_structured_failure_is_specific_and_non_hallucinatory():
     assert result["stage"] == "credentials"
     assert result["retryable"] is False
     assert "Keychain" in result["diagnosis"]
-    assert "do not invent" in result["response_policy"].lower()
+    assert "current evidence" in result["response_policy"].lower()
+    assert "non-secret" in result["response_policy"].lower()
 
 
 def test_error_aliases_and_schema_response_policy():
