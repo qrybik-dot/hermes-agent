@@ -4010,7 +4010,18 @@ class TelegramAdapter(BasePlatformAdapter):
                             await _shutdown_abandoned_app(old_app)
                         except Exception:
                             pass
-            await self._app.start()
+            logger.warning("[%s] Telegram application initialized; starting PTB application…", self.name)
+            try:
+                await _await_with_thread_deadline(
+                    self._app.start(),
+                    timeout=_UPDATER_START_TIMEOUT,
+                    on_abandon=lambda app=self._app: _shutdown_abandoned_app(app),
+                )
+            except asyncio.TimeoutError as exc:
+                raise OSError(
+                    f"Telegram Application.start() timed out after {_UPDATER_START_TIMEOUT:.0f}s"
+                ) from exc
+            logger.warning("[%s] Telegram PTB application started; configuring update transport…", self.name)
 
             # Decide between webhook and polling mode
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
