@@ -144,9 +144,11 @@ MOSREG_REFRESH_SCHEMA = {
     "description": (
         "Refresh current read-only Mosreg/Zdrav appointments using the authorized Mac GUI worker. "
         "Call this tool immediately when fresh Mosreg data is requested. Do NOT tell the user that 2FA is required "
-        "before this tool itself creates and displays a real Telegram Reply challenge. On failure, report only the "
-        "returned error_code/stage/diagnosis and current evidence; never infer tunnel, token, password or expiry causes. "
-        "Retry automatically at most once and only when retryable=true. scope=family includes linked children."
+        "before this tool itself creates and displays a real Telegram Reply challenge. On failure, treat the returned "
+        "error_code/stage/diagnosis/evidence as the current starting point. If useful, perform targeted non-secret "
+        "status/log/health diagnostics or reversible recovery, then update the diagnosis only when new evidence supports it. "
+        "Never inspect raw 2FA/session/Keychain values. Retry automatically at most once and only when retryable=true. "
+        "scope=family includes linked children."
     ),
     "parameters": {
         "type": "object",
