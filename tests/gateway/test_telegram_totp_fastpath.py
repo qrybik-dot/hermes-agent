@@ -7,12 +7,12 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class FakeMessage:
-    def __init__(self, text="123456", with_reply=True):
+    def __init__(self, text="123456", with_reply=True, reply_id=99):
         self.text = text
         self.chat = SimpleNamespace(id=42)
         self.from_user = SimpleNamespace(id=7)
         self.reply_to_message = (
-            SimpleNamespace(message_id=99, from_user=SimpleNamespace(is_bot=True))
+            SimpleNamespace(message_id=reply_id, from_user=SimpleNamespace(is_bot=True))
             if with_reply else None
         )
         self.deleted = False
@@ -21,15 +21,7 @@ class FakeMessage:
         self.deleted = True
 
 
-@pytest.mark.asyncio
-async def test_totp_reply_is_consumed_before_model(monkeypatch):
-    captured = {}
-
-    def fake_put(_self, payload):
-        captured.update(payload)
-        return {"ok": True}
-
-    monkeypatch.setattr(TotpBridgeStore, "put_reply_value", fake_put)
+def _adapter():
     adapter = TelegramAdapter.__new__(TelegramAdapter)
     adapter._notification_kwargs = lambda _metadata: {}
     sent = []
@@ -38,6 +30,19 @@ async def test_totp_reply_is_consumed_before_model(monkeypatch):
         sent.append(kwargs)
 
     adapter._send_message_with_thread_fallback = fake_send
+    return adapter, sent
+
+
+@pytest.mark.asyncio
+async def test_totp_reply_is_consumed_before_model(monkeypatch):
+    captured = {}
+
+    def fake_put(_self, payload):
+        captured.update(payload)
+        return {"ok": True, "status": "stored"}
+
+    monkeypatch.setattr(TotpBridgeStore, "put_reply_value", fake_put)
+    adapter, sent = _adapter()
     message = FakeMessage()
 
     assert await adapter._try_handle_mosreg_totp_reply(message) is True
@@ -48,6 +53,39 @@ async def test_totp_reply_is_consumed_before_model(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unrelated_six_digits_without_reply_reach_normal_flow():
-    adapter = TelegramAdapter.__new__(TelegramAdapter)
-    assert await adapter._try_handle_mosreg_totp_reply(FakeMessage(with_reply=False)) is False
+async def test_six_digits_without_active_challenge_reach_normal_flow(monkeypatch):
+    monkeypatch.setattr(
+        TotpBridgeStore, "put_reply_value",
+        lambda _self, _payload: {"ok": False, "status": "no_active_challenge"},
+    )
+    adapter, sent = _adapter()
+    message = FakeMessage(with_reply=False)
+    assert await adapter._try_handle_mosreg_totp_reply(message) is False
+    assert message.deleted is False
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_six_digits_without_reply_during_active_challenge_are_consumed(monkeypatch):
+    monkeypatch.setattr(
+        TotpBridgeStore, "put_reply_value",
+        lambda _self, _payload: {"ok": False, "status": "wrong_reply_target"},
+    )
+    adapter, sent = _adapter()
+    message = FakeMessage(with_reply=False)
+    assert await adapter._try_handle_mosreg_totp_reply(message) is True
+    assert message.deleted is True
+    assert "Reply" in sent[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_stale_replied_code_gets_exact_no_active_challenge_message(monkeypatch):
+    monkeypatch.setattr(
+        TotpBridgeStore, "put_reply_value",
+        lambda _self, _payload: {"ok": False, "status": "no_active_challenge"},
+    )
+    adapter, sent = _adapter()
+    message = FakeMessage(with_reply=True)
+    assert await adapter._try_handle_mosreg_totp_reply(message) is True
+    assert message.deleted is True
+    assert "нет активного запроса 2FA" in sent[0]["text"]
