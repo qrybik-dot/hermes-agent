@@ -94,14 +94,34 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "suggested_actions": ["Проверить Mac tunnel supervisor и VPS bridge 127.0.0.1:9119."],
     },
     "TOTP_TIMEOUT": {
-        "stage": "totp", "retryable": True,
-        "diagnosis": "Реальный 2FA challenge был создан, но код не поступил в его окно действия.",
-        "suggested_actions": ["Запустить новый refresh и ответить Reply только на новое сообщение challenge."],
+        "stage": "totp", "retryable": False,
+        "diagnosis": "Реальный 2FA challenge был создан, но worker не получил код в его окно действия.",
+        "suggested_actions": ["Новый refresh запускается только явным запросом пользователя; Reply — только на новый challenge."],
     },
     "TOTP_LIMIT": {
-        "stage": "totp", "retryable": True,
-        "diagnosis": "ЕСИА не приняла код либо исчерпан лимит попыток текущего challenge.",
-        "suggested_actions": ["Запустить новую сессию входа и использовать новый код."],
+        "stage": "totp", "retryable": False,
+        "diagnosis": "Legacy-код 2FA timeout/limit; он не доказывает, что ЕСИА отклонила код.",
+        "suggested_actions": ["Не повторять автоматически; новый refresh только по явному запросу пользователя."],
+    },
+    "TOTP_INPUT_NOT_FOUND": {
+        "stage": "totp_submit", "retryable": False,
+        "diagnosis": "Код получен bridge, но browser worker не нашёл видимое поле 2FA на текущей странице ЕСИА.",
+        "suggested_actions": ["Проверить безопасный DOM/state текущего шага ЕСИА; не запрашивать новый код автоматически."],
+    },
+    "TOTP_SUBMIT_FAILED": {
+        "stage": "totp_submit", "retryable": False,
+        "diagnosis": "Код получен bridge, но browser worker завершился во время ввода/подтверждения 2FA.",
+        "suggested_actions": ["Использовать last_state/host и безопасную browser-диагностику; новый challenge только по явному запросу пользователя."],
+    },
+    "TOTP_REJECTED": {
+        "stage": "totp_submit", "retryable": False,
+        "diagnosis": "ЕСИА явно показала, что введённый код не принят.",
+        "suggested_actions": ["Новый refresh и новый код только по явному запросу пользователя."],
+    },
+    "TOTP_POST_SUBMIT_TIMEOUT": {
+        "stage": "totp_submit", "retryable": False,
+        "diagnosis": "Код был введён, но ЕСИА не перешла к следующему подтверждённому состоянию за окно проверки.",
+        "suggested_actions": ["Проверить безопасное состояние страницы; не запускать второй challenge автоматически."],
     },
     "CAPTCHA_REQUIRED": {
         "stage": "esia", "retryable": False,
@@ -154,6 +174,7 @@ MOSREG_REFRESH_SCHEMA = {
         "error_code/stage/diagnosis/evidence as the current starting point. If useful, perform targeted non-secret "
         "status/log/health diagnostics or reversible recovery, then update the diagnosis only when new evidence supports it. "
         "Never inspect raw 2FA/session/Keychain values. Retry automatically at most once and only when retryable=true. "
+        "Never auto-retry after challenge_created=true; a new 2FA challenge requires an explicit new user request. "
         "scope=family includes linked children."
     ),
     "parameters": {
@@ -246,6 +267,12 @@ def _normalise_code(raw: Any) -> str:
     if re.fullmatch(r"[A-Z][A-Z0-9_]{2,79}", value):
         return value
     return "MOSREG_WORKER_FAILED"
+
+
+def _refine_worker_code(code: str, status: dict[str, Any], prompted: bool) -> str:
+    if prompted and code == "MOSREG_WORKER_FAILED" and str(status.get("last_state")) == "SUBMITTING_TOTP":
+        return "TOTP_SUBMIT_FAILED"
+    return code
 
 
 def _failure(code: str, *, evidence: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -435,6 +462,7 @@ async def _run_gui_worker(user_id: str, chat_id: str, reply_to: str, pconfig: An
         or last_result.get("error") or nested.get("auth_state")
     )
     code = _normalise_code(raw_code)
+    code = _refine_worker_code(code, status, prompted)
     evidence = {
         "challenge_created": prompted,
         "worker_exit_code": last_result.get("exit_code"),

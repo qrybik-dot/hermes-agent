@@ -258,6 +258,13 @@ class TotpBridgeStore:
         value = item.get("value")
         if not isinstance(value, str) or not VALUE_RE.fullmatch(value):
             return safe_response(False, "empty")
+        # A successful pop is the single consumption point for this challenge.
+        # Close the session immediately so a late/repeated Telegram Reply cannot
+        # be reported as accepted after the browser worker already consumed it.
+        try:
+            self._session_path(task_id).unlink()
+        except FileNotFoundError:
+            pass
         return safe_response(True, "popped", value=value, value_kind=item.get("value_kind", "totp"))
 
     def health(self) -> dict[str, Any]:
