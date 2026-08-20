@@ -3,7 +3,7 @@ import json
 import pytest
 
 from plugins.mosreg import tool as mosreg_tool
-from plugins.mosreg.tool import _failure, _normalise_code, _sanitize_current, block_mosreg_fallback
+from plugins.mosreg.tool import _failure, _normalise_code, _refine_worker_code, _sanitize_current, block_mosreg_fallback
 
 
 def test_blocks_only_sensitive_mosreg_fallbacks():
@@ -110,3 +110,17 @@ def test_gui_write_failure_is_not_blindly_retried():
     assert result["retryable"] is False
     assert result["stage"] == "mac_dispatch"
     assert result["evidence"]["mac_ssh_reached"] is True
+
+
+def test_totp_failures_require_explicit_user_restart():
+    for code in ("TOTP_TIMEOUT", "TOTP_LIMIT", "TOTP_INPUT_NOT_FOUND", "TOTP_SUBMIT_FAILED", "TOTP_REJECTED", "TOTP_POST_SUBMIT_TIMEOUT"):
+        result = _failure(code)
+        assert result["retryable"] is False, code
+    from plugins.mosreg.tool import MOSREG_REFRESH_SCHEMA
+    assert "Never auto-retry after challenge_created=true" in MOSREG_REFRESH_SCHEMA["description"]
+
+
+def test_generic_failure_after_code_consumption_is_refined():
+    assert _refine_worker_code("MOSREG_WORKER_FAILED", {"last_state": "SUBMITTING_TOTP"}, True) == "TOTP_SUBMIT_FAILED"
+    assert _refine_worker_code("MOSREG_WORKER_FAILED", {"last_state": "AWAITING_TOTP"}, True) == "MOSREG_WORKER_FAILED"
+    assert _refine_worker_code("MOSREG_WORKER_FAILED", {"last_state": "SUBMITTING_TOTP"}, False) == "MOSREG_WORKER_FAILED"

@@ -51,3 +51,31 @@ def test_expired_reply_is_no_active_challenge(tmp_path):
         "value_kind": "totp", "value": "123456",
     }, now=161)
     assert result == {"ok": False, "status": "no_active_challenge"}
+
+
+def test_successful_pop_closes_challenge_and_rejects_late_reply(tmp_path):
+    store = TotpBridgeStore(root=tmp_path / "bridge")
+    assert _register(store)["status"] == "registered"
+    stored = store.put_reply_value({
+        "telegram_user_id": "7", "chat_id": "42", "reply_to_message_id": "99",
+        "value_kind": "totp", "value": "123456",
+    }, now=101)
+    assert stored == {"ok": True, "status": "stored"}
+
+    popped = store.pop_value({
+        "task_id": "task_mosreg_1234", "session_secret": "A" * 43,
+    }, now=102)
+    assert popped["ok"] is True
+    assert popped["status"] == "popped"
+    assert popped["value"] == "123456"
+
+    late = store.put_reply_value({
+        "telegram_user_id": "7", "chat_id": "42", "reply_to_message_id": "99",
+        "value_kind": "totp", "value": "654321",
+    }, now=103)
+    assert late == {"ok": False, "status": "no_active_challenge"}
+
+    second_pop = store.pop_value({
+        "task_id": "task_mosreg_1234", "session_secret": "A" * 43,
+    }, now=103)
+    assert second_pop == {"ok": False, "status": "empty"}
