@@ -37,6 +37,7 @@ SSH_BASE = (
     MAC_TARGET,
 )
 ID_RE = re.compile(r"^-?\d{1,20}$")
+_LAST_REFRESH_MESSAGE: dict[tuple[str, str], str] = {}
 _SENSITIVE_MOSREG_TERMS = (
     "mosreg-gateway-totp", "/dev/shm/mosreg", "/run/user/1002/mosreg-gateway-totp",
     "session_secret", "session_key",
@@ -47,6 +48,11 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "stage": "coordination", "retryable": True,
         "diagnosis": "Уже выполняется другой запрос Мосрег.",
         "suggested_actions": ["Дождаться завершения текущего запроса и повторить один раз."],
+    },
+    "MOSREG_DUPLICATE_CALL": {
+        "stage": "coordination", "retryable": False,
+        "diagnosis": "Этот запрос Мосрег уже запускался для текущего входящего сообщения.",
+        "suggested_actions": ["Не повторять автоматически; новый запуск только после нового сообщения пользователя."],
     },
     "MAC_UNAVAILABLE": {
         "stage": "mac_transport", "retryable": True,
@@ -221,6 +227,19 @@ def _session_identity() -> tuple[str, str]:
     if not ID_RE.fullmatch(chat_id) or not ID_RE.fullmatch(user_id):
         raise RuntimeError("TELEGRAM_IDENTITY_UNAVAILABLE")
     return user_id, chat_id
+
+
+
+
+def _claim_refresh_message(user_id: str, chat_id: str) -> bool:
+    message_id = str(get_session_env("HERMES_SESSION_MESSAGE_ID", "") or "").strip()
+    if not message_id:
+        return True
+    key = (user_id, chat_id)
+    if _LAST_REFRESH_MESSAGE.get(key) == message_id:
+        return False
+    _LAST_REFRESH_MESSAGE[key] = message_id
+    return True
 
 
 def _binding_active(user_id: str, chat_id: str, reply_to: str) -> bool:
@@ -520,6 +539,8 @@ async def handle_mosreg_refresh(args: dict, **kwargs) -> str:
             pconfig, message_id = await _send_status(chat_id, "Проверяю Мосрег и состояние авторизации…")
         except Exception as exc:
             return tool_result(_failure(str(exc)))
+        if not _claim_refresh_message(user_id, chat_id):
+            return tool_result(_failure("MOSREG_DUPLICATE_CALL", evidence={"same_user_message": True}))
 
         outcome, prompted = await _run_gui_worker(user_id, chat_id, message_id, pconfig)
         if outcome.get("success") is not True:
