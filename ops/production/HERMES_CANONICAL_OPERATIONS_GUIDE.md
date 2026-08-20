@@ -89,6 +89,18 @@ Hermes и как продолжать работу без повторного �
   Подготовить отдельный candidate на tag `v2026.8.18`; прямой production
   `hermes update` не запускать.
 
+### Текущий gate autonomous core
+
+- Архитектура и граница полномочий приняты: native `AIAgent` остаётся
+  владельцем смысла, а gateway больше не имеет `sudo`, Docker или доступа к
+  Money Agent.
+- Полный статус остаётся `PARTIAL / FINAL_CANDIDATE_ROUTE_NO_GO`: proxy Gemini,
+  direct Gemini и Codex сейчас ограничены квотами; proxy Grok не связан с
+  provider; direct `agy` слишком тяжёл для VPS 1 GB; NVIDIA не авторизован.
+- Production routing не менялся. Следующий gate — один восстановившийся
+  primary и максимум один pre-effect fallback, затем полный непрерывный
+  `J01-J20` на одном profile. Два чистых окна сами по себе не дают `READY`.
+
 ## 3. Память и Knowledge
 
 Целевая схема без второго «мозга»:
@@ -99,9 +111,19 @@ Hermes и как продолжать работу без повторного �
 3. Canonical Knowledge Markdown — подтверждённая долговременная база знаний.
 4. SQLite FTS5 Knowledge — лёгкий производный индекс для быстрого поиска.
 
+Визуализация не требует отдельной graph DB:
+
+- текущий Hermes уже имеет native `journey` / `/journey` для временной карты
+  собственных memories и skills;
+- Knowledge остаётся Markdown, а связи задаются проверяемыми `[[wikilinks]]` и
+  минимальным frontmatter; Obsidian строит локальный offline-граф прямо из них;
+- Graphify допустим только как удаляемая on-demand проекция для доказанных
+  multi-hop задач, которых не закрывают FTS и Markdown-ссылки.
+
 Knowledge FTS полезен и нужен: текущий `knowledge_search()` читает именно его,
 поэтому устаревший индекс означает, что новая сохранённая запись может не
-находиться. Но старый unit сломан и не включается вслепую.
+находиться. 2026-08-20 старый сломанный unit заменён versioned extension вне
+core: 185/185 документов, inventory/integrity/resource/rollback PASS.
 
 Минимальный repair:
 
@@ -114,13 +136,23 @@ Knowledge FTS полезен и нужен: текущий `knowledge_search()` 
 - Graphify, embeddings и внешний memory-provider остаются выключенными, пока
   реальные evals не докажут недостаточность FTS.
 
+Не подключать сейчас memU, Graphiti, OpenViking, Hy-Memory, Mem0 или иной
+provider в production. Полезные идеи берём без нового runtime: provenance,
+`valid_from/valid_to`, `supersedes`, progressive disclosure `summary -> body`.
+Внешний provider допускается только в изолированном shadow-пилоте после
+измеренного провала FTS/Markdown и не получает право писать canonical Knowledge.
+
+Каноническое решение и критерии:
+`reports/Hermes_Memory_Architecture_Decision_2026-08-20.md`.
+
 ## 4. Текущие расширения
 
 | Расширение | Статус | Решение |
 |---|---|---|
 | Granola | `READY_ON_DEMAND` | Старый рабочий transport; разовый sync, timer off |
-| Knowledge FTS | `REPAIR_REQUIRED` | Следующий узкий versioned extension |
-| Knowledge publication | `PAUSED` | Включать после FTS repair; Graphify отделить |
+| Knowledge FTS | `CANDIDATE` | 185/185 и rollback PASS; natural recall пока 5/25, timer off |
+| Knowledge publication | `PAUSED / PARTIAL` | После 25 natural cases; Graphify отделить |
+| Obsidian/Syncthing | `READY_ON_DEMAND` | VPS send-only sync-window; Mac receive-only/offline; daemon off |
 | NotebookLM | `PAUSED / NO-GO` | Нужны auth и RAM qualification |
 | Calls | `PAUSED / NO-GO` | Нужны provider и E2E proof |
 | Oracle retry | `PAUSED` | Пользователь отложил |
@@ -133,7 +165,10 @@ Knowledge FTS полезен и нужен: текущий `knowledge_search()` 
 Корень: `/Users/skyeng/Documents/oracle`
 
 - Этот индекс: `HERMES_CANONICAL_OPERATIONS_GUIDE.md`.
-- Core handoff: `reports/Hermes_Autonomous_Core_Final_Candidate_Handoff_2026-08-20.md`.
+- Текущий full-DoD handoff:
+  `reports/handoff-hermes-autonomous-core-full-dod-20260820.json`.
+- Предыдущий narrative core handoff (история кандидата, не текущий verdict):
+  `reports/Hermes_Autonomous_Core_Final_Candidate_Handoff_2026-08-20.md`.
 - Core report: `reports/Hermes_Autonomous_Core_Final_Report_2026-08-20.html`.
 - Extensions handoff:
   `reports/handoff-hermes-extensions-reconciliation-20260820.json`.
@@ -141,6 +176,10 @@ Knowledge FTS полезен и нужен: текущий `knowledge_search()` 
 - Legacy obligations: `reports/Hermes_Legacy_Tasks_Reconciliation_2026-08-20.md`.
 - Optional readiness:
   `reports/Hermes_Optional_Extensions_Readiness_2026-08-20.md`.
+- Memory/FTS candidate result:
+  `reports/Hermes_Knowledge_FTS_Candidate_Result_2026-08-20.md`.
+- Obsidian offline replica:
+  `reports/Hermes_Memory_Obsidian_Replica_Result_2026-08-20.md`.
 - Money Agent task packet: `reports/Money_Agent_T3_Launch_Packet_2026-08-20.md`.
 
 GPT с MacBook connector сначала читает этот файл, затем только относящийся к
@@ -151,7 +190,9 @@ GPT с MacBook connector сначала читает этот файл, зате
 Корень: `/home/hermes/.hermes/ops/change-control`
 
 - `HERMES_CANONICAL_OPERATIONS_GUIDE.md` — копия этого индекса.
-- `handoff-hermes-autonomous-core-final-candidate-20260820.json` — core.
+- `handoff-hermes-autonomous-core-full-dod-20260820.json` — текущий core verdict.
+- `handoff-hermes-autonomous-core-final-candidate-20260820.json` — предыдущий
+  candidate snapshot; не использовать для объявления `READY`.
 - `handoff-hermes-extensions-reconciliation-20260820.json` — extensions.
 - `production-lease.json`, transition и runtime manifest — динамическое
   change-control состояние; его всегда проверяют заново.
@@ -174,8 +215,9 @@ GPT с MacBook connector сначала читает этот файл, зате
 - старые коннекторы, если upstream уже имеет зрелый native-вариант.
 
 Напоминание, ранее ошибочно названное «о номерах», на самом деле было старым
-повторяющимся напоминанием **«подкрутить пластину» раз в пять дней**. Оно не
-активировано: назначение и новая опорная дата не подтверждены.
+повторяющимся напоминанием **«подкрутить пластину» раз в пять дней** для
+ортодонтической пластинки Веры. 2026-08-20 дублирующая legacy-задача удалена;
+источник напоминания теперь только существующее событие Google Calendar.
 
 ## 7. Продолжение при смене агента или лимите
 
