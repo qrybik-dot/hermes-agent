@@ -158,7 +158,7 @@ provider в production. Полезные идеи берём без нового
 
 | Расширение | Статус | Решение |
 |---|---|---|
-| Granola | `READY_ON_DEMAND` | Старый рабочий transport; разовый sync, timer off |
+| Granola | `READY_ON_DEMAND / SELF-SERVICE PARTIAL` | One-shot доказан через change-control; узкая команда Hermes ещё не добавлена |
 | Knowledge FTS | `CANDIDATE` | 185/185 и rollback PASS; natural recall пока 5/25, timer off |
 | Knowledge publication | `PAUSED / PARTIAL` | После 25 natural cases; Graphify отделить |
 | Obsidian/Syncthing | `READY_ON_DEMAND` | VPS send-only sync-window; Mac receive-only/offline; daemon off |
@@ -166,6 +166,14 @@ provider в production. Полезные идеи берём без нового
 | Calls | `PAUSED / NO-GO` | Нужны provider и E2E proof |
 | Oracle retry | `PAUSED` | Пользователь отложил |
 | Money Agent | `SEPARATE T3 / NO-GO` | Новый большой task до commercial loop |
+
+Удаление ambient `sudo` у gateway является принятой security-границей. Поэтому
+«готово технически» не равно «Hermes уже может включить это одной фразой».
+Существующий Admin MCP пока не allowlist-ит Granola/FTS и не должен превращаться
+в общий root-controller. После полного core gate добавляется ровно одна typed
+one-shot операция Granola с result read-back; FTS — только после natural recall
+gate. Для неготовых NotebookLM, calls, Oracle и Money Agent self-service кнопку
+не добавлять.
 
 ## 4.1 Очистка provider-артефактов
 

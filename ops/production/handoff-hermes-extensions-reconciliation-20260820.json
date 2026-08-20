@@ -1,0 +1,187 @@
+{
+  "schema": "hermes-handoff/v1",
+  "created_at": "2026-08-20T17:17:00Z",
+  "updated_at": "2026-08-20T18:57:00Z",
+  "actor": "codex",
+  "task": "hermes-extensions-reconciliation-20260820",
+  "status": "PRODUCTION_ACTIVE",
+  "verdict": "GRANOLA_READY_ON_DEMAND_FTS_MANAGED_CANDIDATE_EXTENSIONS_PARTIAL",
+  "publication_authority": "none",
+  "core": {
+    "architecture_changed": false,
+    "routing_changed": false,
+    "current_release": "5aa2dc4d940bb595fbaf18f26edfc24c48b6952f",
+    "previous_release": "17a0262375b4e449f974fc0ba26c72fa247ff4dc",
+    "acceptance": "PARTIAL_FINAL_CANDIDATE_ROUTE_NO_GO",
+    "open_gate": "Recover one provider route, freeze one profile, pass full J01-J20 and 95-90-85 with telemetry and exercised rollback, then collect natural Telegram outcomes; two clean windows alone are insufficient"
+  },
+  "granola": {
+    "mode": "existing_saved_token_transport",
+    "profile": "/home/hermes/.hermes/profiles/hermes-granola-sync",
+    "profile_config_sha256": "5c15971d93979c9d136a5782a94173852f2920f3d0c82016d9cf716bea333d6a",
+    "systemd_dropin": "/etc/systemd/system/hermes-granola-sync.service.d/95-granola-extension-profile.conf",
+    "systemd_dropin_sha256": "b5bccc36f92ce6b50085ed348346abb0d6bd9706883c462bb0eba10c3f59bc81",
+    "scope": "last_30_days",
+    "mcp_test": "PASS",
+    "dry_run": {
+      "listed": 2,
+      "duplicate": 2,
+      "created": 0,
+      "updated": 0,
+      "pending": 2,
+      "transcripts": 0,
+      "blocked": 0,
+      "rate_limited": 0,
+      "status": "ok"
+    },
+    "apply": {
+      "listed": 2,
+      "duplicate": 2,
+      "created": 0,
+      "updated": 0,
+      "pending": 2,
+      "transcripts": 0,
+      "blocked": 0,
+      "rate_limited": 0,
+      "status": "ok"
+    },
+    "readback": {
+      "cards": 10,
+      "private_cards": 10,
+      "v2_cards": 10,
+      "duplicate_ids": 0,
+      "duplicate_urls": 0,
+      "fts_granola_docs": 11,
+      "fts_integrity": "ok",
+      "transcript_files": 0,
+      "last_run_status": "ok"
+    },
+    "service": "inactive_after_successful_oneshot",
+    "timer": "disabled_and_inactive",
+    "user_command_activation": "PARTIAL_CHANGE_CONTROL_ONESHOT_READY_BUT_NO_TYPED_HERMES_START_TOOL",
+    "backup": "/home/hermes/.hermes/ops/change-control/backups/granola-gap-sync-20260820T1415Z",
+    "verdict": "READY_ON_DEMAND_LAST_30_DAYS_RECONCILED",
+    "limitation": "official Granola MCP exposed summaries but no full transcripts for the two listed meetings"
+  },
+  "legacy_tasks": {
+    "backup": "/home/hermes/.hermes/ops/change-control/backups/legacy-task-reconciliation-20260820T1430Z",
+    "migrated": [
+      {
+        "id": "260ef61c5f3a",
+        "name": "ГТО Крылатское — за неделю",
+        "run_at": "2026-09-05T10:00:00+03:00",
+        "state": "scheduled",
+        "enabled": true,
+        "delivery": "telegram"
+      }
+    ],
+    "preserved_not_activated": [
+      "three Kanban tasks pending short human review"
+    ],
+    "deleted_duplicates": [
+      "legacy recurring orthodontic plate reminder; Google Calendar remains the sole schedule source"
+    ],
+    "not_migrated": "expired, test and orphaned reminder state"
+  },
+  "optional_extensions": {
+    "notebooklm": "OFF; authentication and resource qualification not proven",
+    "calls": "OFF; provider and end-to-end proof missing",
+    "memory_fts_index": "MANAGED_CANDIDATE; 185/185, integrity/resource/rollback PASS, natural retrieval 5/25, timer OFF",
+    "knowledge_publication_pipeline": "OFF; enable only promoter -> FTS -> read-back after natural recall gate; Graphify remains separated",
+    "oracle_retry": "OFF by user decision",
+    "money_agent": "NO_GO_ON_ENABLE; live marker exists, commercial state machine and payout proof absent"
+  },
+  "self_service_boundary": {
+    "core_os_authority": "PASS_NO_SUDO_NO_DOCKER_NO_MONEY_AGENT_GROUP",
+    "existing_admin_mcp": "ACTIVE_BUT_ALLOWLIST_HAS_NO_GRANOLA_OR_FTS_AND_ONLY_EXPOSES_CONFIRMED_RESTART",
+    "granola": "OPERATIONALLY_READY_ON_DEMAND_VIA_CHANGE_CONTROL_NOT_YET_ONE_PHRASE_SELF_SERVICE",
+    "memory_fts": "ONE_SHOT_BUILDER_READY_BUT_AUTOMATION_BLOCKED_BY_NATURAL_RECALL_GATE",
+    "notebooklm_calls_oracle_money": "NOT_READY_DO_NOT_MASK_WITH_GENERIC_ENABLE_TOOL",
+    "decision": "DO_NOT_RESTORE_AMBIENT_ROOT_OR_ADD_GENERIC_OPS_CONTROLLER; ADD_ONE_TYPED_EXTENSION_ACTION_ONLY_AFTER_EACH_EXTENSION_PASSES_ITS_GATE"
+  },
+  "service_readback": {
+    "hermes_gateway": "active",
+    "hermes_knowledge_mcp": "active",
+    "cli_proxy_api": "active",
+    "failed_units": 0,
+    "granola_sync_service": "inactive",
+    "granola_sync_timer": "disabled_and_inactive",
+    "memory_pressure": {
+      "mem_available_kib": 321328,
+      "psi_memory_some_avg10": 0.0,
+      "psi_memory_full_avg10": 0.0,
+      "host_si": 0,
+      "host_so": 0
+    },
+    "knowledge_fts": {
+      "extension_commit": "cab6c94fc5b4e1a6eadf998ad66a9ddee1787772",
+      "document_count": 185,
+      "previous_document_count": 181,
+      "inventory_match": true,
+      "domain_leakage": 0,
+      "sqlite_integrity": "ok",
+      "fts5_integrity": "ok",
+      "peak_rss_kib": 29580,
+      "reader_p95_ms": 88.145,
+      "natural_cases": 5,
+      "natural_rank1_pass": 5,
+      "required_natural_cases": 25,
+      "rollback_drill": "PASS",
+      "lease_corrected_repeat_drill": "PASS",
+      "current_database_sha256": "d0ab09cac12644e1f05e5aafe62708d77d46b7626d4665e6e257a6e0481ebcb3",
+      "previous_database_sha256": "1eaf6651f2413a39d958d9036818693d184b91a314c3588af4042578301461b8",
+      "systemd_unit_sha256": "b1b09a0e37a52383146fd80c5486d751b02407f1afc8cd09b00ddb846e9c68c9",
+      "backup": "/home/hermes/.hermes/ops/change-control/backups/hermes-knowledge-fts-managed-20260820T165441Z",
+      "timer": "disabled_and_inactive",
+      "verdict": "CANDIDATE_NOT_READY"
+    },
+    "memory_replica": {
+      "source": "/srv/hermes-memory/vault",
+      "mac_replica": "/Users/skyeng/Documents/Hermes Vault",
+      "vps_folder_type": "sendonly",
+      "mac_folder_type": "receiveonly",
+      "markdown_count": 185,
+      "manifest_sha256": "c3af2384c841ebbccfa1c34fbf298e223a0efa1033425fa2862101104fc43d3e",
+      "ignore_sha256": "f72756cb2b00e4a1797f2898d6689a0bd3249b40f79d154162303792060375fe",
+      "domain_leakage": 0,
+      "conflicts": 0,
+      "receive_only_canary": "PASS",
+      "snapshot_restore": "PASS_BOTH_SIDES",
+      "obsidian_offline_graph_search": "PASS",
+      "vps_syncthing": "inactive_and_disabled_after_sync_window",
+      "calls_folder": "paused",
+      "verdict": "READY_ON_DEMAND"
+    }
+  },
+  "reports": {
+    "granola": {
+      "path": "/Users/skyeng/Documents/oracle/reports/Hermes_Granola_Gap_Sync_Result_2026-08-20.md",
+      "sha256": "14f5edccebb0884e98c483277f4e5ed1aae32544b2a4cc1db3cc4e96972911c4"
+    },
+    "optional_extensions": {
+      "path": "/Users/skyeng/Documents/oracle/reports/Hermes_Optional_Extensions_Readiness_2026-08-20.md",
+      "sha256": "6589e4b485d6e0098c10404fac25a0209748610374c81f536c7633115f92fefc"
+    },
+    "legacy_tasks": {
+      "path": "/Users/skyeng/Documents/oracle/reports/Hermes_Legacy_Tasks_Reconciliation_2026-08-20.md",
+      "sha256": "f59cc065ee38ba050c69c6832c7fb8598ed900dc2bb1a8cac51ffaa8bb1c553d"
+    },
+    "money_agent": {
+      "path": "/Users/skyeng/Documents/oracle/reports/Money_Agent_T3_Launch_Packet_2026-08-20.md",
+      "sha256": "81a9f456bb1f2d8de142ad4cae250e32e66f6147238379c6d8b1973b923ec2fd"
+    },
+    "memory_architecture": {
+      "path": "/Users/skyeng/Documents/oracle/reports/Hermes_Memory_Architecture_Decision_2026-08-20.md",
+      "sha256": "71d40f20a2bede039f5eced9ee693e7397b700912dc9d3ba7bfd6d9e1e13dba7"
+    },
+    "knowledge_fts": {
+      "path": "/Users/skyeng/Documents/oracle/reports/Hermes_Knowledge_FTS_Candidate_Result_2026-08-20.md",
+      "sha256": "0bdd0a7119749428f351aeb38e679494de0366600199cc135f83dd70657362c6"
+    },
+    "memory_replica": {
+      "path": "/Users/skyeng/Documents/oracle/reports/Hermes_Memory_Obsidian_Replica_Result_2026-08-20.md",
+      "sha256": "155fac106ce050f75f9f1ba877a3ec30a7e840fc53000877b2367ba793235d0a"
+    }
+  },
+  "next_action": "Keep extensions paused while the full core route gate is open. In parallel collect 25 natural Knowledge retrieval cases without synthetic substitution. After core READY, add one narrow typed Granola one-shot action, then qualify promoter -> FTS -> read-back; do not add a generic root controller. Money Agent remains a separate final T3 task."
+}
