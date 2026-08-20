@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.mosreg_totp_bridge import TotpBridgeStore
+from plugins.mosreg.totp_bridge import TotpBridgeStore
+from plugins.mosreg import totp_bridge as mosreg_totp_bridge
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -42,6 +43,7 @@ async def test_totp_reply_is_consumed_before_model(monkeypatch):
         return {"ok": True, "status": "stored"}
 
     monkeypatch.setattr(TotpBridgeStore, "put_reply_value", fake_put)
+    monkeypatch.setattr(mosreg_totp_bridge, "global_bridge_running", lambda: True)
     adapter, sent = _adapter()
     message = FakeMessage()
 
@@ -54,6 +56,7 @@ async def test_totp_reply_is_consumed_before_model(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_six_digits_without_active_challenge_reach_normal_flow(monkeypatch):
+    monkeypatch.setattr(mosreg_totp_bridge, "global_bridge_running", lambda: True)
     monkeypatch.setattr(
         TotpBridgeStore, "put_reply_value",
         lambda _self, _payload: {"ok": False, "status": "no_active_challenge"},
@@ -67,6 +70,7 @@ async def test_six_digits_without_active_challenge_reach_normal_flow(monkeypatch
 
 @pytest.mark.asyncio
 async def test_six_digits_without_reply_during_active_challenge_are_consumed(monkeypatch):
+    monkeypatch.setattr(mosreg_totp_bridge, "global_bridge_running", lambda: True)
     monkeypatch.setattr(
         TotpBridgeStore, "put_reply_value",
         lambda _self, _payload: {"ok": False, "status": "wrong_reply_target"},
@@ -80,6 +84,7 @@ async def test_six_digits_without_reply_during_active_challenge_are_consumed(mon
 
 @pytest.mark.asyncio
 async def test_stale_replied_code_gets_exact_no_active_challenge_message(monkeypatch):
+    monkeypatch.setattr(mosreg_totp_bridge, "global_bridge_running", lambda: True)
     monkeypatch.setattr(
         TotpBridgeStore, "put_reply_value",
         lambda _self, _payload: {"ok": False, "status": "no_active_challenge"},
@@ -89,3 +94,19 @@ async def test_stale_replied_code_gets_exact_no_active_challenge_message(monkeyp
     assert await adapter._try_handle_mosreg_totp_reply(message) is True
     assert message.deleted is True
     assert "нет активного запроса 2FA" in sent[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_six_digits_are_not_consumed_when_mosreg_bridge_is_inactive(monkeypatch):
+    monkeypatch.setattr(mosreg_totp_bridge, "global_bridge_running", lambda: False)
+    monkeypatch.setattr(
+        TotpBridgeStore,
+        "put_reply_value",
+        lambda _self, _payload: pytest.fail("inactive extension must not inspect the reply"),
+    )
+    adapter, sent = _adapter()
+    message = FakeMessage(with_reply=True)
+
+    assert await adapter._try_handle_mosreg_totp_reply(message) is False
+    assert message.deleted is False
+    assert sent == []

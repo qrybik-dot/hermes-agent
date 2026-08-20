@@ -8796,7 +8796,12 @@ class TelegramAdapter(BasePlatformAdapter):
         reply = getattr(msg, "reply_to_message", None)
         reply_to = str(getattr(reply, "message_id", "")) if reply is not None else ""
         try:
-            from gateway.mosreg_totp_bridge import TotpBridgeStore
+            from plugins.mosreg.totp_bridge import TotpBridgeStore, global_bridge_running
+            if not global_bridge_running():
+                return False
+        except Exception:
+            return False
+        try:
             result = TotpBridgeStore().put_reply_value({
                 "telegram_user_id": str(getattr(user, "id", "")),
                 "chat_id": str(getattr(chat, "id", "")),

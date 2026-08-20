@@ -10,7 +10,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from gateway.mosreg_totp_bridge import TotpBridgeStore
+from plugins.mosreg.totp_bridge import (
+    TotpBridgeStore,
+    start_global_bridge,
+    stop_global_bridge,
+)
 from gateway.session_context import get_session_env
 from tools.registry import tool_result
 
@@ -530,7 +534,14 @@ async def handle_mosreg_refresh(args: dict, **kwargs) -> str:
     run_lock = _acquire_run_lock()
     if run_lock is None:
         return tool_result(_failure("MOSREG_BUSY"))
+    bridge_started = False
     try:
+        try:
+            bridge_started = start_global_bridge()
+        except Exception:
+            bridge_started = False
+        if not bridge_started:
+            return tool_result(_failure("TOTP_BRIDGE_UNAVAILABLE"))
         try:
             user_id, chat_id = _session_identity()
         except Exception as exc:
@@ -579,6 +590,10 @@ async def handle_mosreg_refresh(args: dict, **kwargs) -> str:
         })
     finally:
         try:
-            fcntl.flock(run_lock.fileno(), fcntl.LOCK_UN)
+            if bridge_started:
+                stop_global_bridge()
         finally:
-            run_lock.close()
+            try:
+                fcntl.flock(run_lock.fileno(), fcntl.LOCK_UN)
+            finally:
+                run_lock.close()

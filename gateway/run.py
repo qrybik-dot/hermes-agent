@@ -26666,13 +26666,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     housekeeping_thread.start()
 
-    # Mosreg TOTP bridge embedded listener (loopback 127.0.0.1:9119)
-    try:
-        from gateway.mosreg_totp_bridge import start_global_bridge
-        start_global_bridge()
-    except Exception as exc:
-        logger.error("[Gateway] Mosreg TOTP bridge startup failed: %s", exc)
-
     # READY is emitted only after adapters, cron, and housekeeping have all
     # reached their running boundary. Missing config/systemd runtime state
     # leaves the watchdog disabled without changing gateway behavior.
@@ -26695,12 +26688,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
     
-    try:
-        from gateway.mosreg_totp_bridge import stop_global_bridge
-        stop_global_bridge()
-    except Exception as exc:
-        logger.warning("[Gateway] Mosreg TOTP bridge shutdown error: %s", exc)
-
     # Stop cron scheduler + housekeeping cleanly.
     #
     # These MUST be awaited cooperatively, not join()ed. A cron delivery in

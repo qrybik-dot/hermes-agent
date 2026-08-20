@@ -131,3 +131,21 @@ def test_one_refresh_per_incoming_message(monkeypatch):
     monkeypatch.setattr(mosreg_tool, "get_session_env", lambda name, default="": "777" if name == "HERMES_SESSION_MESSAGE_ID" else default)
     assert mosreg_tool._claim_refresh_message("7", "42") is True
     assert mosreg_tool._claim_refresh_message("7", "42") is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_owns_bridge_only_for_tool_lifecycle(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setattr(mosreg_tool, "RUN_LOCK", tmp_path / "mosreg.lock")
+    monkeypatch.setattr(mosreg_tool, "start_global_bridge", lambda: events.append("start") or True)
+    monkeypatch.setattr(mosreg_tool, "stop_global_bridge", lambda: events.append("stop"))
+    monkeypatch.setattr(
+        mosreg_tool,
+        "_session_identity",
+        lambda: (_ for _ in ()).throw(RuntimeError("TELEGRAM_SESSION_REQUIRED")),
+    )
+
+    result = json.loads(await mosreg_tool.handle_mosreg_refresh({"scope": "family"}))
+
+    assert result["error_code"] == "TELEGRAM_SESSION_REQUIRED"
+    assert events == ["start", "stop"]

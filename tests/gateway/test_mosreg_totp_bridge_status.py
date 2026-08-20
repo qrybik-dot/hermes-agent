@@ -1,4 +1,4 @@
-from gateway.mosreg_totp_bridge import TotpBridgeStore
+from plugins.mosreg.totp_bridge import TotpBridgeStore
 
 
 def _register(store, now=100):

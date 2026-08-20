@@ -394,6 +394,11 @@ def start_global_bridge(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, root
     return False
 
 
+def global_bridge_running() -> bool:
+    """Return whether the in-process Mosreg bridge currently owns its listener."""
+    return _global_bridge_server is not None and _global_bridge_server._is_running
+
+
 def stop_global_bridge() -> None:
     global _global_bridge_server
     if _global_bridge_server is not None:
