@@ -100,6 +100,15 @@ Hermes и как продолжать работу без повторного �
 - Production routing не менялся. Следующий gate — один восстановившийся
   primary и максимум один pre-effect fallback, затем полный непрерывный
   `J01-J20` на одном profile. Два чистых окна сами по себе не дают `READY`.
+- Текущий CLIProxy использует ровно один isolated Antigravity OAuth; прежняя
+  гипотеза о смешении credentials для текущей конфигурации опровергнута.
+  Однако его auth-contract обязательно project-bound, а официальный `agy`
+  использует отдельную consumer-сессию Google Pro. Официального import/loader
+  consumer credential в CLIProxy нет, поэтому ручной token bridge запрещён.
+- CLIProxy `7.2.137` новее установленного `7.2.112` и содержит полезные
+  Antigravity transport/schema/tool-call исправления, но не закрывает этот
+  auth-contract. Обновление допустимо только отдельным sidecar-candidate, не
+  прямой заменой production.
 
 ## 3. Память и Knowledge
 
@@ -158,6 +167,18 @@ provider в production. Полезные идеи берём без нового
 | Oracle retry | `PAUSED` | Пользователь отложил |
 | Money Agent | `SEPARATE T3 / NO-GO` | Новый большой task до commercial loop |
 
+## 4.1 Очистка provider-артефактов
+
+2026-08-20 удалено `1,071,791,375` bytes superseded CLIProxy qualification,
+upgrade, inactive auth/config и Antigravity staging artifacts. Сохранены только
+current CLIProxy binary/config, один active Antigravity credential, текущий
+`agy` и один proxy rollback binary. Сервисы не перезапускались; Gateway,
+CLIProxyAPI и Knowledge остались active, failed units — 0. Старые credential
+копии намеренно не восстанавливаются.
+
+Receipt:
+`reports/Hermes_VPS_Provider_Artifacts_Cleanup_2026-08-20.md`.
+
 ## 5. Канонические handoff и отчёты
 
 ### На MacBook — полный рабочий набор
@@ -181,6 +202,8 @@ provider в production. Полезные идеи берём без нового
 - Obsidian offline replica:
   `reports/Hermes_Memory_Obsidian_Replica_Result_2026-08-20.md`.
 - Money Agent task packet: `reports/Money_Agent_T3_Launch_Packet_2026-08-20.md`.
+- Provider cleanup receipt:
+  `reports/Hermes_VPS_Provider_Artifacts_Cleanup_2026-08-20.md`.
 
 GPT с MacBook connector сначала читает этот файл, затем только относящийся к
 задаче handoff. Не нужно загружать все старые отчёты в контекст.

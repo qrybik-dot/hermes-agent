@@ -3,7 +3,7 @@
   "task": "hermes-autonomous-core-full-dod-20260820",
   "owner": "codex",
   "created_at": "2026-08-20T18:25:35Z",
-  "updated_at": "2026-08-20T18:30:01Z",
+  "updated_at": "2026-08-20T18:52:00Z",
   "status": "FINAL_CANDIDATE_ROUTE_NO_GO",
   "verdict": "PARTIAL",
   "publication_authority": "none",
@@ -59,6 +59,18 @@
       "model": "gpt-5.6-terra",
       "reasoning_effort": "low"
     },
+    "transport_diagnosis": {
+      "current_proxy_credentials": "ONE_ISOLATED_ANTIGRAVITY_OAUTH",
+      "mixed_credentials_hypothesis": "FALSIFIED_FOR_CURRENT_CONFIG",
+      "proxy_auth_contract": "PROJECT_BOUND_ACCESS_REFRESH_TOKEN_PLUS_REQUIRED_PROJECT_ID",
+      "direct_agy_auth_contract": "SEPARATE_OFFICIAL_CONSUMER_SESSION",
+      "consumer_token_import_to_proxy": "NO_GO_UNSUPPORTED_NO_OFFICIAL_IMPORT_CONTRACT",
+      "localization": "TRANSPORT_AUTH_ENTITLEMENT_NOT_HERMES_CORE",
+      "production_action": "NONE",
+      "cliproxy_installed": "7.2.112",
+      "cliproxy_latest_observed": "7.2.137",
+      "cliproxy_update_decision": "PREPARE_SEPARATE_CANDIDATE_ONLY_NO_DIRECT_UPDATE"
+    },
     "qualification": {
       "proxy_gemini": "NO_GO_429_RESOURCE_EXHAUSTED",
       "proxy_grok": "NO_GO_502_UNKNOWN_PROVIDER",
@@ -113,6 +125,16 @@
     "oracle_retry": "OFF",
     "money_agent": "NO_GO_SEPARATE_T3_TASK",
     "syncthing": "INACTIVE_AFTER_CONTROLLED_REPLICA_WINDOW"
+  },
+  "cleanup": {
+    "status": "PASS",
+    "removed_bytes": 1071791375,
+    "removed": "SUPERSEDED_CLIPROXY_QUALIFICATION_UPGRADE_AUTH_CONFIG_AND_ANTIGRAVITY_STAGING_ARTIFACTS",
+    "retained": "CURRENT_CLIPROXY_CONFIG_SINGLE_ACTIVE_AUTH_CURRENT_AGY_AND_ONE_PROXY_ROLLBACK_BINARY",
+    "services_restarted": false,
+    "gateway_proxy_knowledge_active": true,
+    "failed_units": 0,
+    "receipt": "/Users/skyeng/Documents/oracle/reports/Hermes_VPS_Provider_Artifacts_Cleanup_2026-08-20.md"
   },
   "continuation": {
     "do_not_change_native_core_without_falsifier": true,
