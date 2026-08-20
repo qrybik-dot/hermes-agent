@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "task": "hermes-autonomous-core-full-dod-20260820",
+  "owner": "codex",
+  "created_at": "2026-08-20T18:25:35Z",
+  "updated_at": "2026-08-20T18:30:01Z",
+  "status": "FINAL_CANDIDATE_ROUTE_NO_GO",
+  "verdict": "PARTIAL",
+  "publication_authority": "none",
+  "frozen": {
+    "current_release": "5aa2dc4d940bb595fbaf18f26edfc24c48b6952f",
+    "previous_release": "17a0262375b4e449f974fc0ba26c72fa247ff4dc",
+    "origin_branch": "prod/hermes-autonomous-core",
+    "origin_sha": "5aa2dc4d940bb595fbaf18f26edfc24c48b6952f",
+    "profile_sha256": "a3081cda8b44a9bf8341eb572777138128ea7692c2bedbfaef31fc59abba8372",
+    "proxy_config_sha256": "2aba82e73da223cc12b79b4bdd99398017f2216c21db2937dc1db79de99faa26",
+    "dropins": [
+      "85-memory-pressure.conf",
+      "90-hermes-next-profile.conf",
+      "timeout.conf"
+    ]
+  },
+  "architecture": {
+    "native_aia_agent_is_semantic_owner": true,
+    "second_runtime": false,
+    "core_falsifier_found": false,
+    "observed_failures_localized_to": [
+      "provider",
+      "transport",
+      "quota",
+      "resource"
+    ],
+    "authority_boundary": "PASS"
+  },
+  "authority_boundary": {
+    "removed_ambient_sudo": true,
+    "removed_groups": [
+      "sudo",
+      "docker",
+      "money-agent"
+    ],
+    "gateway_sudo_denied": true,
+    "gateway_docker_denied": true,
+    "gateway_core_read_access": true,
+    "backup": "/home/hermes/.hermes/ops/change-control/backups/hermes-core-authority-boundary-20260820T1738Z",
+    "runtime_release_unchanged": true,
+    "profile_hash_unchanged": true,
+    "proxy_hash_unchanged": true
+  },
+  "routing": {
+    "production_change": "none",
+    "decision": "fail_closed_keep_frozen_profile_until_one_route_passes_full_gate",
+    "current_primary": {
+      "provider": "custom:hermes-cli-proxy",
+      "model": "gemini-3.6-flash-high"
+    },
+    "current_fallback": {
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "low"
+    },
+    "qualification": {
+      "proxy_gemini": "NO_GO_429_RESOURCE_EXHAUSTED",
+      "proxy_grok": "NO_GO_502_UNKNOWN_PROVIDER",
+      "direct_gemini": "QUALITY_PARTIAL_AVAILABILITY_FAIL_FREE_QUOTA_429",
+      "terra_low": "QUALITY_PARTIAL_12_OF_13_J12_MINIMALITY_FAIL",
+      "terra_medium": "J12_PASS_AVAILABILITY_FAIL_CODEX_USAGE_LIMIT_429",
+      "direct_agy": "FUNCTIONAL_PASS_RESOURCE_FAIL_RSS_PSI_IO",
+      "nvidia": "NO_GO_LOGGED_OUT"
+    }
+  },
+  "full_dod": {
+    "ready": false,
+    "governing_spec": "/Users/skyeng/Documents/oracle/reports/Hermes_Autonomous_Core_Rebuild_Handoff_2026-08-11.md",
+    "task_card": "/Users/skyeng/Documents/oracle/reports/Hermes_TC04_Native_Autonomy_Task_Card_2026-08-11.md",
+    "required_one_immutable_candidate": true,
+    "critical_required": "10/10",
+    "ordinary_required": "10/10",
+    "ordinary_no_prompt_required": ">=9/10",
+    "recoverable_required": ">=9/10",
+    "false_success_required": 0,
+    "duplicate_effects_required": 0,
+    "deterministic_validation": {
+      "exact_release": "5aa2dc4d940bb595fbaf18f26edfc24c48b6952f",
+      "fresh_frozen_build": "PASS",
+      "offline_j01_reminder": "PASS",
+      "offline_j02_cross_process_replay": "PASS",
+      "offline_j06_malformed_result_recovery": "PASS",
+      "focused_cron_tool_search_recovery_telegram_corpus": "637_passed_1_environment_skip",
+      "ruff_current_delta_and_eval_harness": "PASS",
+      "worktree_clean": true
+    },
+    "unproven": [
+      "one_frozen_production_route_passes_J01_J20",
+      "exact_95_90_85_denominators",
+      "cost_model_latency_fallback_telemetry_for_every_journey",
+      "managed_rollback_exercised_from_5aa2dc4d_to_17a02623_with_compatible_profile",
+      "natural_telegram_outcomes_on_current_release_and_same_qualified_profile"
+    ]
+  },
+  "natural_observation": {
+    "current_release_created_at": "2026-08-20T11:56:20Z",
+    "telegram_turns_after_current_release": 0,
+    "synthetic_substitution_allowed": false,
+    "status": "OPEN"
+  },
+  "optional_extensions": {
+    "granola": "READY_ON_DEMAND_LAST_30_DAYS_RECONCILED_TIMER_OFF",
+    "memory_fts": "MANAGED_CANDIDATE_185_OF_185_TIMER_OFF_NATURAL_RETRIEVAL_5_OF_25",
+    "knowledge_publication": "OFF",
+    "notebooklm": "OFF",
+    "calls": "OFF",
+    "oracle_retry": "OFF",
+    "money_agent": "NO_GO_SEPARATE_T3_TASK",
+    "syncthing": "INACTIVE_AFTER_CONTROLLED_REPLICA_WINDOW"
+  },
+  "continuation": {
+    "do_not_change_native_core_without_falsifier": true,
+    "do_not_enable_extensions_during_core_route_gate": true,
+    "next_gate": "after_provider_capacity_or_credential_recovers_freeze_one_primary_and_at_most_one_pre_effect_fallback_then_run_J01_J20_continuously",
+    "after_full_eval": "controlled_switch_exercised_rollback_then_natural_telegram_observation",
+    "extensions_order": "one_by_one_money_agent_last"
+  }
+}
