@@ -124,3 +124,10 @@ def test_generic_failure_after_code_consumption_is_refined():
     assert _refine_worker_code("MOSREG_WORKER_FAILED", {"last_state": "SUBMITTING_TOTP"}, True) == "TOTP_SUBMIT_FAILED"
     assert _refine_worker_code("MOSREG_WORKER_FAILED", {"last_state": "AWAITING_TOTP"}, True) == "MOSREG_WORKER_FAILED"
     assert _refine_worker_code("MOSREG_WORKER_FAILED", {"last_state": "SUBMITTING_TOTP"}, False) == "MOSREG_WORKER_FAILED"
+
+
+def test_one_refresh_per_incoming_message(monkeypatch):
+    mosreg_tool._LAST_REFRESH_MESSAGE.clear()
+    monkeypatch.setattr(mosreg_tool, "get_session_env", lambda name, default="": "777" if name == "HERMES_SESSION_MESSAGE_ID" else default)
+    assert mosreg_tool._claim_refresh_message("7", "42") is True
+    assert mosreg_tool._claim_refresh_message("7", "42") is False
