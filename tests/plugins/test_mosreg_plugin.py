@@ -61,6 +61,44 @@ def test_structured_failure_is_specific_and_non_hallucinatory():
     assert "non-secret" in result["response_policy"].lower()
 
 
+def test_browser_read_failure_does_not_claim_authentication_succeeded():
+    result = _failure("BROWSER_READ_FAILED", evidence={
+        "source_status": "source_unavailable",
+        "authorization_status": "unknown",
+        "http_statuses": [503],
+    })
+    assert "Авторизация прошла" not in result["diagnosis"]
+    assert "authorization_status" in result["diagnosis"]
+    assert "unless evidence.authorization_status is valid or partial" in result["response_policy"]
+
+
+def test_authentication_required_is_explicit_and_not_retryable():
+    result = _failure("AUTHENTICATION_REQUIRED", evidence={"authorization_status": "expired"})
+    assert result["stage"] == "auth_check"
+    assert result["retryable"] is False
+    assert "сессия Мосрег истекла" in result["diagnosis"]
+
+
+@pytest.mark.asyncio
+async def test_mac_status_summary_keeps_safe_auth_and_http_evidence(monkeypatch):
+    async def fake_read_json(_path, *, timeout=6):
+        return {
+            "state": "FAILED",
+            "source_status": "source_unavailable",
+            "authorization_status": "unknown",
+            "diagnostics": [
+                {"member": "adult", "diagnostics": [{"http_status": 400}]},
+                {"member": "child_1", "diagnostics": [{"http_status": 400}, {"http_status": None}]},
+            ],
+        }
+
+    monkeypatch.setattr(mosreg_tool, "_read_json", fake_read_json)
+    summary = await mosreg_tool._mac_status_summary()
+    assert summary["authorization_status"] == "unknown"
+    assert summary["http_statuses"] == [400]
+    assert "diagnostics" not in summary
+
+
 def test_error_aliases_and_schema_response_policy():
     from plugins.mosreg.tool import MOSREG_REFRESH_SCHEMA
     assert _normalise_code("keychain_item_missing") == "KEYCHAIN_ITEM_MISSING"

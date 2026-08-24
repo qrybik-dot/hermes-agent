@@ -145,8 +145,13 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
     },
     "BROWSER_READ_FAILED": {
         "stage": "mosreg_read", "retryable": True,
-        "diagnosis": "Авторизация прошла, но read-only извлечение данных Мосрег не завершилось.",
-        "suggested_actions": ["Повторить один раз; при повторе диагностировать текущую страницу/API schema."],
+        "diagnosis": "Read-only извлечение данных Мосрег не завершилось; состояние авторизации подтверждается только полем evidence.authorization_status.",
+        "suggested_actions": ["Повторить один раз; при повторе использовать source_status, authorization_status и HTTP evidence без предположений."],
+    },
+    "AUTHENTICATION_REQUIRED": {
+        "stage": "auth_check", "retryable": False,
+        "diagnosis": "Read-only проверка подтвердила, что сессия Мосрег истекла; новый вход запускается только обычным refresh.",
+        "suggested_actions": ["Запустить обычный refresh; запрашивать 2FA только если ЕСИА действительно создаст challenge."],
     },
     "BROWSER_TIMEOUT": {
         "stage": "browser", "retryable": True,
@@ -317,7 +322,8 @@ def _failure(code: str, *, evidence: dict[str, Any] | None = None) -> dict[str, 
         "response_policy": (
             "Treat this as current evidence. Report it first; if further diagnosis/recovery is useful, "
             "use targeted non-secret status/log/health checks and reversible actions. Change the diagnosis "
-            "only when new evidence supports it; never read raw 2FA/session/Keychain values."
+            "only when new evidence supports it. Never state that authentication succeeded unless "
+            "evidence.authorization_status is valid or partial; never read raw 2FA/session/Keychain values."
         ),
     }
 
@@ -410,7 +416,27 @@ async def _mac_status_summary() -> dict[str, Any]:
     data = await _read_json(AUTH_LIVE_STATUS)
     if not data:
         return {}
-    return {k: data.get(k) for k in ("state", "last_state", "error_code", "host", "source_status") if data.get(k) not in (None, "")}
+    summary = {
+        k: data.get(k)
+        for k in (
+            "state", "last_state", "error_code", "host", "source_status",
+            "authorization_status",
+        )
+        if data.get(k) not in (None, "")
+    }
+    http_statuses: set[int] = set()
+    for member in data.get("diagnostics") or []:
+        if not isinstance(member, dict):
+            continue
+        for diagnostic in member.get("diagnostics") or []:
+            if not isinstance(diagnostic, dict):
+                continue
+            value = diagnostic.get("http_status")
+            if isinstance(value, int) and 100 <= value <= 599:
+                http_statuses.add(value)
+    if http_statuses:
+        summary["http_statuses"] = sorted(http_statuses)
+    return summary
 
 
 async def _run_gui_worker(user_id: str, chat_id: str, reply_to: str, pconfig: Any) -> tuple[dict[str, Any], bool]:
