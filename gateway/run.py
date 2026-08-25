@@ -23928,17 +23928,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
                     exit_code = int(exit_code_raw)
                     if exit_code == 0:
-                        await adapter.send(
-                            chat_id,
-                            "✅ Hermes update finished.",
-                            metadata=_non_conversational_metadata(metadata, platform=platform),
-                        )
+                        final_message = "✅ Hermes safe update finished."
+                    elif exit_code == 10:
+                        final_message = "⏹ Hermes update cancelled; production unchanged."
+                    elif exit_code == 20:
+                        final_message = "⛔ Hermes update blocked safely. See the verified details above."
+                    elif exit_code == 124:
+                        final_message = "⏱ Hermes update timed out; no unverified success was accepted."
                     else:
-                        await adapter.send(
-                            chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
-                            metadata=_non_conversational_metadata(metadata, platform=platform),
-                        )
+                        final_message = f"❌ Hermes safe update failed (exit code {exit_code})."
+                    await adapter.send(
+                        chat_id,
+                        final_message,
+                        metadata=_non_conversational_metadata(metadata, platform=platform),
+                    )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
@@ -24133,17 +24136,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Strip ANSI escape codes for clean display
                 from tools.ansi_strip import strip_ansi
                 output = strip_ansi(output).strip()
+                if exit_code == 0:
+                    status_line = "✅ Hermes safe update finished."
+                elif exit_code == 10:
+                    status_line = "⏹ Hermes update cancelled; production unchanged."
+                elif exit_code == 20:
+                    status_line = "⛔ Hermes update blocked safely."
+                elif exit_code == 124:
+                    status_line = "⏱ Hermes update timed out safely."
+                else:
+                    status_line = f"❌ Hermes safe update failed (exit code {exit_code})."
                 if output:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
-                    if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
-                    else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
-                elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                    msg = f"{status_line}\n\n```\n{output}\n```"
                 else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    msg = status_line
                 await adapter.send(
                     chat_id,
                     msg,
