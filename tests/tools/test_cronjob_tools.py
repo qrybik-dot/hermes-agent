@@ -559,12 +559,12 @@ class TestUnifiedCronjobTool:
         original_save = jobs_module._save_jobs_unlocked
         calls = 0
 
-        def fail_once(jobs):
+        def fail_once(jobs, *args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
                 raise OSError("synthetic pre-persist failure")
-            return original_save(jobs)
+            return original_save(jobs, *args, **kwargs)
 
         monkeypatch.setattr(jobs_module, "_save_jobs_unlocked", fail_once)
         tokens = self._set_gateway_message()
