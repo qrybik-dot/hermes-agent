@@ -75,3 +75,50 @@ Consequences:
 - Regression coverage exercises the real production path
   (`set_hermes_home_override()`) rather than only the env-var path, and
   includes a dedicated relative-import leak test.
+
+## 2026-09-01: Universal media download is one native transactional tool
+
+Status: Accepted for candidate qualification
+
+Baseline: `3d344e217cab846fd5c80738aa8e794e97618be3`
+
+Context:
+Telegram requests such as `пришли видео` were handled as free-form agent
+research. A production incident installed downloaders ad hoc, waited 181.62
+seconds on a 429 retry loop, tried unrelated fallbacks, exposed technical
+errors, and left a downloaded file on disk. The user contract is one public
+URL in and one delivered Telegram video out, with bounded failure and cleanup.
+
+Decision:
+- Add one `media_download` tool that owns URL validation, pinned yt-dlp
+  execution, timeout/retry policy, truthful delayed progress, current-chat
+  Telegram delivery, message-id confirmation, and `finally` cleanup.
+- Add one thin `media-download` skill that routes explicit download intent and
+  bare Telegram video URLs to that tool and forbids terminal/browser/service
+  fallback exploration.
+- Keep authentication, cookies, proxies, DRM bypass, a new daemon, and a local
+  Bot API server out of this candidate. The official Bot API remains capped at
+  50 MB; oversized files fail before send. A separate approved slice may add a
+  local Bot API only if real usage demonstrates that need.
+- Pin `yt-dlp==2026.8.19` as an opt-in dependency. Do not enable broad runtime
+  package installation; production must install the exact pin through the
+  managed environment before activation.
+
+Options considered:
+1. Do nothing: rejected because the observed retry/fallback/cleanup incident
+   remains reproducible.
+2. Skill-only instructions: rejected because the model would still own the
+   unsafe multi-step transaction and cleanup.
+3. Native tool plus thin skill: selected as the smallest deterministic repair.
+4. Separate downloader service, proxy pool, or browser worker: rejected as
+   unnecessary operational and security scope.
+
+Consequences:
+- Supported public yt-dlp sources share one bounded path; site-specific access
+  limits become short classified failures rather than open-ended research.
+- Download progress uses only downloader bytes; Telegram upload shows a stage
+  label because the current adapter does not expose byte progress.
+- Temporary files are private and deleted after confirmed send or failure;
+  stale tool-owned request directories are reaped on the next invocation.
+- Readiness still requires pinned-dependency installation, focused tests,
+  managed deploy, actual Telegram smoke, cleanup read-back, and rollback proof.

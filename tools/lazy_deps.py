@@ -287,6 +287,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.3.0",),
+    # Universal public-media download fast path. The package is opt-in and
+    # exact-pinned; callers never accept package names, indexes, URLs, or
+    # update channels from model input.
+    "tool.media_download": ("yt-dlp==2026.8.19",),
     # Document-to-Markdown extraction for read_file (firecrawl-anydoc, Rust
     # core, imports as `anydoc`). Widens read_file's auto-extraction beyond
     # the stdlib .ipynb/.docx/.xlsx to PDF, legacy Office (.doc/.ppt/.xls),
