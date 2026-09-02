@@ -7909,6 +7909,10 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._micro_compact_last_failure_cursor = -1
         self._proactive_prune_rearm_tokens = 0
 
+        # Shared causal-boundary contract: compaction output must not begin
+        # with an assistant tool-call exchange before its summary/user anchor.
+        from agent.agent_runtime_helpers import repair_leading_tool_exchange
+        repair_leading_tool_exchange(compressed)
         return compressed
 
 

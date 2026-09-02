@@ -9,11 +9,139 @@ providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
 
+import copy
+
 from run_agent import AIAgent
+from agent.agent_runtime_helpers import (
+    repair_leading_tool_exchange,
+    sanitize_api_messages,
+)
+from agent.context_compressor import (
+    SUMMARY_PREFIX,
+    _SUMMARY_END_MARKER,
+    _template_visible_role,
+)
 
 
 def _bare_agent():
     return AIAgent.__new__(AIAgent)
+
+
+def test_repair_anchors_leading_tool_exchange_without_reordering_summary():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "function": {"name": "search", "arguments": "{}"}},
+            {"id": "c2", "function": {"name": "read", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "result1"},
+        {"role": "tool", "tool_call_id": "c2", "content": "result2"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c3", "function": {"name": "read", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "c3", "content": "result3"},
+        {
+            "role": "user",
+            "content": (
+                SUMMARY_PREFIX
+                + " prior work "
+                + _SUMMARY_END_MARKER
+                + " real user remainder"
+            ),
+        },
+    ]
+    repair_leading_tool_exchange(messages)
+    assert [m["role"] for m in messages] == [
+        "system", "user", "assistant", "tool", "tool",
+        "assistant", "tool", "assistant", "user",
+    ]
+    assert messages[8]["content"].startswith(SUMMARY_PREFIX)
+    assert [messages[i]["tool_call_id"] for i in (3, 4, 6)] == ["c1", "c2", "c3"]
+    assert [_template_visible_role(m) for m in messages[1:]] == [
+        "user", None, None, None, None, None, "assistant", "user",
+    ]
+
+
+def test_repair_does_not_move_late_real_user_before_tool_exchange():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "function": {"name": "search", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        {"role": "user", "content": "Continue"},
+    ]
+    assert repair_leading_tool_exchange(messages) == 2
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant", "user"]
+
+
+def test_wire_guard_adds_request_local_boundary_without_mutating_durable_input():
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "search", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+    ]
+    repaired = list(messages)
+    assert repair_leading_tool_exchange(repaired) == 1
+    assert repaired[0]["role"] == "user"
+    assert messages[0]["role"] == "assistant"
+
+
+def test_repair_is_idempotent_once_boundaries_exist():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        {"role": "user", "content": "Continue"},
+    ]
+    assert repair_leading_tool_exchange(messages) == 2
+    once = copy.deepcopy(messages)
+    assert repair_leading_tool_exchange(messages) == 0
+    assert messages == once
+
+
+def test_sanitize_repairs_persisted_summary_shape_request_locally():
+    durable = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "search", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        {
+            "role": "user",
+            "content": (
+                SUMMARY_PREFIX
+                + " prior work "
+                + _SUMMARY_END_MARKER
+                + " real user remainder"
+            ),
+        },
+    ]
+    before = copy.deepcopy(durable)
+
+    out = sanitize_api_messages(copy.deepcopy(durable))
+
+    assert durable == before
+    assert [message["role"] for message in out] == [
+        "user", "assistant", "tool", "assistant", "user",
+    ]
+    assert [
+        role
+        for message in out
+        if (role := _template_visible_role(message)) not in (None, "system")
+    ] == ["user", "assistant", "user"]
+    assert out[2]["tool_call_id"] == "c1"
+    assert out[-1]["content"] == durable[-1]["content"]
 
 
 # ── _drop_trailing_empty_response_scaffolding ──────────────────────────────

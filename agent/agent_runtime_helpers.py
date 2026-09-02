@@ -22,7 +22,6 @@ Methods covered:
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import re
@@ -545,6 +544,79 @@ def note_turn_persisted(agent):
             with _INFLIGHT_TURNS_LOCK:
                 _INFLIGHT_TURNS_BY_SESSION.pop(session_id, None)
     agent._inflight_turn_session_id = None
+
+
+def repair_leading_tool_exchange(messages: List[Dict]) -> int:
+    """Add deterministic causal boundaries around a leading tool exchange.
+
+    The list is the compactor's new output or an already request-local wire
+    copy. Existing messages are never reordered or rewritten.
+    """
+    if not messages:
+        return 0
+    first = next(
+        (i for i, message in enumerate(messages) if message.get("role") != "system"),
+        None,
+    )
+    if (
+        first is None
+        or messages[first].get("role") != "assistant"
+        or not messages[first].get("tool_calls")
+    ):
+        return 0
+    if first + 1 >= len(messages) or messages[first + 1].get("role") != "tool":
+        return 0
+    expected = {}
+    for tc in messages[first].get("tool_calls", []):
+        if isinstance(tc, dict):
+            aliases = {str(tc[key]) for key in ("id", "call_id") if tc.get(key)}
+            for alias in aliases:
+                expected[alias] = aliases
+    idx = first + 1
+    while True:
+        while idx < len(messages) and messages[idx].get("role") == "tool":
+            aliases = expected.pop(str(messages[idx].get("tool_call_id") or ""), set())
+            for alias in aliases:
+                expected.pop(alias, None)
+            idx += 1
+        if expected or idx >= len(messages) or messages[idx].get("role") != "assistant":
+            break
+        expected = {}
+        for tc in messages[idx].get("tool_calls", []):
+            if isinstance(tc, dict):
+                aliases = {str(tc[key]) for key in ("id", "call_id") if tc.get(key)}
+                for alias in aliases:
+                    expected[alias] = aliases
+        idx += 1
+    if expected:
+        return 0
+    messages.insert(
+        first,
+        {
+            "role": "user",
+            "content": "[Previous tool exchange continued.]",
+            "_synthetic_tool_boundary": True,
+        },
+    )
+    repairs = 1
+    visible_assistant = False
+    for pos in range(first + 2, len(messages)):
+        msg = messages[pos]
+        if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+            visible_assistant = True
+        elif msg.get("role") == "user":
+            if not visible_assistant:
+                messages.insert(
+                    pos,
+                    {
+                        "role": "assistant",
+                        "content": "[Previous tool exchange completed.]",
+                        "_synthetic_tool_boundary": True,
+                    },
+                )
+                repairs += 1
+            break
+    return repairs
 
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
@@ -3803,6 +3875,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+    repair_leading_tool_exchange(messages)
     return messages
 
 
