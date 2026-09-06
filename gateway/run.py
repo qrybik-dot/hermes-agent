@@ -4302,10 +4302,35 @@ class TurnRunner:
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        from gateway.telegram_execution_progress import ExecutionProgress
+        self._execution_progress = ExecutionProgress()
+
+    def _telegram_snapshot_enabled(self):
+        ctx = self._ctx
+        return (
+            getattr(ctx.source.platform, "value", ctx.source.platform) == "telegram"
+            and ((getattr(ctx, "user_config", None) or {}).get("display", {}).get("platforms", {}).get("telegram", {}).get("execution_progress") is True)
+            and ctx.progress_grouping == "accumulate"
+            and ctx.progress_mode == "all"
+            and ctx.tool_progress_enabled
+            and ctx.progress_queue is not None
+        )
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        _telegram_snapshot_mode = self._telegram_snapshot_enabled()
+        if _telegram_snapshot_mode and tool_name != "_thinking":
+            agent = ctx.agent_holder[0] if ctx.agent_holder else None
+            if not ctx._run_still_current() or getattr(agent, "is_interrupted", False):
+                return
+            snapshot = self._execution_progress.update(
+                event_type, tool_name, result=kwargs.get("result"),
+                is_error=kwargs.get("is_error", False),
+            )
+            if snapshot:
+                ctx.progress_queue.put(("__snapshot__", _redact_gateway_user_facing_secrets(snapshot)))
+            return
         # Live status line (Slack's assistant status): stash the current
         # tool phrase on the adapter; the _keep_typing refresh renders it
         # within a couple of seconds. Handled before every other gate
@@ -4332,6 +4357,10 @@ class TurnRunner:
                     ctx._live_status_adapter.set_status_text(ctx.source.chat_id, None)
             except Exception as _ls_err:
                 logger.debug("live status update failed: %s", _ls_err)
+        # The snapshot already represents this lifecycle event; don't append
+        # the legacy name-correlated line as a duplicate Telegram stage.
+        if _telegram_snapshot_mode and tool_name != "_thinking":
+            return
         # "log" mode: append tool.started lines to the log queue and stay
         # silent in chat. Handled before the progress_queue guard because
         # log mode runs without a chat progress queue.
@@ -4801,6 +4830,7 @@ class TurnRunner:
             return
 
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
+        snapshot_mode = self._telegram_snapshot_enabled()
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
@@ -4970,12 +5000,17 @@ class TurnRunner:
                     pass
 
                 # Handle dedup messages: update last line with repeat counter
-                if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                if isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__snapshot__":
+                    msg = raw[1]
+                    progress_lines = [msg]
+                elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
                     if progress_lines:
                         progress_lines[-1] = f"{base_msg} (×{count + 1})"
                     msg = progress_lines[-1] if progress_lines else base_msg
                 elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                    if snapshot_mode:
+                        continue
                     # Content bubble just landed on the platform — close off
                     # the current tool-progress bubble so the next tool
                     # starts a fresh bubble below the content. Without this,
@@ -5011,7 +5046,8 @@ class TurnRunner:
                     # drain any additional queued messages before sending
                     # a single batched edit.
                     await asyncio.sleep(_remaining)
-                    continue
+                    if not snapshot_mode:
+                        continue
 
                 if not ctx._run_still_current():
                     return
@@ -5041,6 +5077,8 @@ class TurnRunner:
                                 adapter.name,
                             )
                             _last_edit_ts = time.monotonic()
+                            if snapshot_mode:
+                                continue
                         else:
                             can_edit = False
                         _flood_result = await adapter.send(
@@ -5092,12 +5130,16 @@ class TurnRunner:
                 while not ctx.progress_queue.empty():
                     try:
                         raw = ctx.progress_queue.get_nowait()
-                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                        if isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__snapshot__":
+                            progress_lines = [raw[1]]
+                        elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                             _, base_msg, count = raw
                             if progress_lines:
                                 progress_lines[-1] = f"{base_msg} (×{count + 1})"
                                 await _roll_progress_overflow_if_needed()
                         elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                            if snapshot_mode:
+                                continue
                             # Content-bubble marker during drain: close off
                             # the current progress bubble and start a fresh
                             # one for any tool lines that arrived after.
@@ -5118,6 +5160,13 @@ class TurnRunner:
                     except Exception:
                         break
                 # Final edit with all remaining tools (only if editing works)
+                if snapshot_mode:
+                    agent = ctx.agent_holder[0] if ctx.agent_holder else None
+                    if not ctx._run_still_current() or getattr(agent, "is_interrupted", False):
+                        return
+                    final_progress = self._execution_progress.render(final=True)
+                    if final_progress:
+                        progress_lines = [_redact_gateway_user_facing_secrets(final_progress)]
                 if can_edit and progress_lines and progress_msg_id:
                     await _roll_progress_overflow_if_needed()
                 if can_edit and progress_lines and progress_msg_id:
