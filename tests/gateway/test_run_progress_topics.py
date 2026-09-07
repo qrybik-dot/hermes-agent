@@ -822,9 +822,12 @@ class SlowCommentaryAgent(CommentaryAgent):
 
 
 class AlreadyStreamedCommentaryAgent:
+    saw_stream_delta_callback = None
+
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        type(self).saw_stream_delta_callback = self.stream_delta_callback is not None
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
@@ -832,7 +835,10 @@ class AlreadyStreamedCommentaryAgent:
         if self.stream_delta_callback:
             self.stream_delta_callback(commentary)
         if self.interim_assistant_callback:
-            self.interim_assistant_callback(commentary, already_streamed=True)
+            self.interim_assistant_callback(
+                commentary,
+                already_streamed=self.stream_delta_callback is not None,
+            )
         time.sleep(0.6)
         if self.stream_delta_callback:
             self.stream_delta_callback("done")
@@ -1238,7 +1244,7 @@ async def test_telegram_snapshot_absorbs_unstreamed_commentary(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_already_streamed_commentary_keeps_boundary_without_snapshot_duplicate(
+async def test_telegram_snapshot_is_single_owner_for_provider_stream_commentary(
     monkeypatch, tmp_path,
 ):
     adapter, result = await _run_with_agent(
@@ -1259,9 +1265,12 @@ async def test_already_streamed_commentary_keeps_boundary_without_snapshot_dupli
     )
 
     assert result["final_response"] == "I'll inspect the repo first.done"
+    assert AlreadyStreamedCommentaryAgent.saw_stream_delta_callback is False
     visible = [call["content"] for call in adapter.sent + adapter.edits]
     assert visible
-    assert all("🧭 Работаю" not in text for text in visible)
+    assert any("🧭 Работаю" in text for text in visible)
+    assert any("Сейчас: I'll inspect the repo first." in text for text in visible)
+    assert all(text != "I'll inspect the repo first." for text in visible)
 
 
 class TransformedStreamAgent:

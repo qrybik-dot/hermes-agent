@@ -5533,9 +5533,19 @@ class TurnRunner:
             if _plat_streaming is None
             else bool(_plat_streaming)
         )
-        _want_stream_deltas = _streaming_enabled
+        # Telegram execution progress owns the only live-edited bubble for the
+        # turn. Letting the ordinary stream consumer receive provider deltas
+        # in parallel makes Codex commentary visible once as a streamed reply
+        # and again as progress semantics. In snapshot mode we therefore keep
+        # token streaming out of the content consumer; commentary is projected
+        # by ``progress_commentary`` and the completed answer keeps the normal
+        # one-shot final-delivery path.
+        _telegram_snapshot_mode = self._telegram_snapshot_enabled()
+        _want_stream_deltas = _streaming_enabled and not _telegram_snapshot_mode
         _want_interim_messages = ctx.interim_assistant_messages_enabled
-        _want_interim_consumer = _want_interim_messages
+        _want_interim_consumer = (
+            _want_interim_messages and not _telegram_snapshot_mode
+        )
         if _want_stream_deltas or _want_interim_consumer:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -5582,6 +5592,13 @@ class TurnRunner:
 
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
+                return
+            # Snapshot mode is the sole owner of mid-turn Telegram prose. Its
+            # stream consumer is intentionally absent, so even a defensive
+            # provider ``already_streamed=True`` signal cannot create or keep a
+            # second commentary bubble.
+            if _telegram_snapshot_mode:
+                self.progress_commentary(text)
                 return
             # Preserve the stream boundary for text that is already visible.
             # Structured Codex commentary arrives with already_streamed=False

@@ -87,3 +87,18 @@ Grill B acceptance: independent review must challenge truthful stage labels, non
 Release: clean worktree from base, focused static/unit/integration tests, isolated real component smoke, managed release under codex-autonomy lease, native Telegram DM smoke/read-back and memory measurement. Config backup remains private on VPS and rollback restores exact bytes before managed baseline deploy. No raw config in Git. Retain current and previous releases; no cleanup/push.
 
 Readiness boundaries: configuration/source tests alone do not prove real incoming Telegram DM or actual buyer payment. Report unresolved live checks honestly. Board phase has a separate credential decision and lease; no Board credential migration or publication in this phase.
+
+## V3 live correction — single mid-turn writer
+
+The first production smoke exposed a provider path missing from the candidate
+tests: Codex commentary deltas reached the ordinary content stream before the
+interim callback projected the completed commentary into the execution
+snapshot. The result was a truthful progress bar plus a second prose bubble.
+
+Decision: while Telegram execution snapshot mode is active, it is the sole
+mid-turn writer. The parallel content stream consumer is not created for that
+turn; structured commentary updates the existing snapshot and the completed
+answer uses the normal one-shot final-delivery path. Other platforms and
+Telegram turns without execution progress retain their streaming behavior.
+This is narrower than adding a second controller or changing provider event
+semantics, and it makes the one-bubble invariant directly testable.
