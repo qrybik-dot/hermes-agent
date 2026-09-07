@@ -1,32 +1,116 @@
-"""Telegram projection of native tool events; no execution or durable state."""
+"""Truthful Telegram projection of native todo, tool, and commentary events."""
+
 import json
 import time
 
 
 class ExecutionProgress:
+    """Small presentation-only state machine for one editable progress bubble."""
+
+    _TEXT_LIMIT = 220
+
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.started = clock()
         self.plan = None
-        self.stage = "Обрабатываю задачу"
+        self.current = "Обрабатываю задачу"
+        self.finding = None
+        self.finding_label = "Найдено"
+        self.next = None
         self.seen = False
+        self._last_tool_event = None
+
+    @classmethod
+    def _short_text(cls, value):
+        text = " ".join(str(value or "").split()).strip(" -*•\t")
+        if len(text) > cls._TEXT_LIMIT:
+            text = text[: cls._TEXT_LIMIT - 1].rstrip() + "…"
+        return text
 
     def update(self, event, name, *, result=None, is_error=False):
-        if name in {None, "clarify", "_thinking"} or event not in {"tool.started", "tool.completed"}:
+        if name in {None, "clarify", "_thinking"} or event not in {
+            "tool.started", "tool.completed",
+        }:
+            return None
+
+        self.seen = True
+        self._last_tool_event = event
+        if event == "tool.started":
+            fallback = {
+                "terminal": "Проверяю через команду",
+                "todo": "Уточняю план",
+                "web_search": "Ищу источники",
+                "web_extract": "Проверяю источник",
+                "read_file": "Проверяю файл",
+                "delegate_task": "Проверяю подзадачи",
+            }.get(name, "Выполняю следующий шаг")
+            active = self.plan[2] if self.plan else ""
+            self.current = active or fallback
+            return self.render()
+
+        if is_error:
+            self.finding_label = "Результат"
+            self.finding = "Действие завершилось ошибкой"
+            # The last todo snapshot may now be stale. Drop its percentage
+            # rather than imply that the failed step still advances the plan.
+            self.plan = None
+            self.next = None
+            return self.render()
+
+        if name != "todo":
+            # Successful tool completion is not a semantic state transition.
+            # Keep the useful current step until todo or commentary advances it.
+            return None
+
+        self.plan = self._plan(result)
+        if self.plan:
+            _, _, active, next_step = self.plan
+            self.current = active or "Завершаю ответ"
+            self.next = next_step or None
+        else:
+            self.next = None
+        return self.render()
+
+    def update_commentary(self, text):
+        """Project completed user-facing commentary, never raw reasoning."""
+        labels = (
+            ("сейчас:", "current", None),
+            ("найдено:", "finding", "Найдено"),
+            ("результат:", "finding", "Результат"),
+            ("дальше:", "next", None),
+            ("следом:", "next", None),
+        )
+        labelled = False
+        for raw_line in str(text or "").splitlines():
+            value = self._short_text(raw_line)
+            lowered = value.casefold()
+            for prefix, field, label in labels:
+                if lowered.startswith(prefix):
+                    payload = self._short_text(value[len(prefix):])
+                    if payload:
+                        setattr(self, field, payload)
+                        if label:
+                            self.finding_label = label
+                        labelled = True
+                    break
+        if labelled:
+            self.seen = True
+            return self.render()
+
+        value = self._short_text(text)
+        if not value:
             return None
         self.seen = True
-        if event == "tool.started":
-            self.stage = {
-                "terminal": "Выполняю команду", "todo": "Обновляю план",
-                "web_search": "Ищу источники", "web_extract": "Читаю источники",
-                "read_file": "Читаю файл", "delegate_task": "Выполняю подзадачи",
-            }.get(name, "Выполняю действие")
+        lowered = value.casefold()
+        finding_prefixes = (
+            "нашёл ", "нашел ", "нашла ", "обнаружил ", "обнаружила ",
+            "выяснил ", "выяснила ", "готово ", "результат ",
+        )
+        if lowered.startswith(finding_prefixes):
+            self.finding_label = "Найдено"
+            self.finding = value
         else:
-            self.stage = "Получена ошибка инструмента" if is_error else "Обрабатываю результат"
-            if is_error:
-                self.plan = None
-            if name == "todo":
-                self.plan = None if is_error else self._plan(result)
+            self.current = value
         return self.render()
 
     @staticmethod
@@ -49,20 +133,77 @@ class ExecutionProgress:
                 return None
             if any(t["status"] == "cancelled" for t in todos):
                 return None
-            active = next((t["content"] for t in todos if t["status"] == "in_progress"), "")
-            return done, total, " ".join(active.split())[:140]
+            if sum(t["status"] == "in_progress" for t in todos) > 1:
+                return None
+            active_index = next(
+                (i for i, item in enumerate(todos) if item["status"] == "in_progress"),
+                None,
+            )
+            active = todos[active_index]["content"] if active_index is not None else ""
+            pending = [
+                item["content"] for i, item in enumerate(todos)
+                if item["status"] == "pending" and (active_index is None or i > active_index)
+            ]
+            if not pending:
+                pending = [item["content"] for item in todos if item["status"] == "pending"]
+            if active_index is None and pending:
+                current, following = pending[0], pending[1:]
+            else:
+                current, following = active, pending
+            clean_current = ExecutionProgress._short_text(current)
+            clean_next = ExecutionProgress._short_text(following[0]) if following else ""
+            return done, total, clean_current, clean_next
         except (ValueError, TypeError):
             return None
 
-    def render(self, *, final=False):
+    def _elapsed(self):
+        seconds = max(0, int(self.clock() - self.started))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+    def render(self, *, final=False, outcome=None):
         if not self.seen:
             return None
-        lines = ["Обработка завершена" if final else self.stage]
+
+        lines = []
         if self.plan:
-            done, total, active = self.plan
-            lines.append(f"По отметкам плана: {done}/{total} · {done * 100 // total}%")
-            if active and not final:
-                lines.append(f"Текущий этап: {active}")
-        if final:
-            lines.append(f"Время обработки: {max(0, self.clock() - self.started):.1f} с")
+            done, total, _, _ = self.plan
+            percent = done * 100 // total
+            if final and outcome == "success" and done == total:
+                lines.append("✅ Готово · 100%")
+            elif final and outcome == "success":
+                lines.append(f"✅ Ответ готов · {percent}% по плану")
+            elif final and outcome == "failed":
+                lines.append(f"⚠️ Не завершено · {percent}% по плану")
+            elif final and outcome == "interrupted":
+                lines.append(f"⏹ Остановлено · {percent}% по плану")
+            elif final:
+                lines.append(f"⏹ Статус завершения неизвестен · {percent}% по плану")
+            else:
+                lines.append(f"🧭 Работаю · {percent}%")
+            filled = percent * 10 // 100
+            lines.append(f"{'█' * filled}{'░' * (10 - filled)} {done}/{total}")
+        else:
+            if not final:
+                lines.append("🧭 Работаю")
+            elif outcome == "success":
+                lines.append("✅ Ответ готов")
+            elif outcome == "failed":
+                lines.append("⚠️ Не завершено")
+            elif outcome == "interrupted":
+                lines.append("⏹ Остановлено")
+            else:
+                lines.append("⏹ Статус завершения неизвестен")
+
+        semantic = []
+        if self.current and not final:
+            semantic.append(f"Сейчас: {self.current}")
+        if self.finding:
+            semantic.append(f"{self.finding_label}: {self.finding}")
+        if self.next and not final:
+            semantic.append(f"Дальше: {self.next}")
+        if semantic:
+            lines.extend(["", *semantic])
+        lines.extend(["", f"⏱ {self._elapsed()}"])
         return "\n".join(lines)

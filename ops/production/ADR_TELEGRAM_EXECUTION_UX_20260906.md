@@ -1,4 +1,66 @@
-# ADR: Telegram execution UX, candidate v1
+# ADR: Telegram execution UX
+
+## V3 semantic progress amendment — 2026-09-07
+
+Status: frozen candidate. Baseline and installed release:
+`d8c8b7f41d23d1f99237bb44f435901f5c201dfb`.
+
+Objective: one editable Telegram progress bubble reports real todo progress,
+the current semantic step, a short user-facing finding, the next plan step,
+and elapsed processing time. Percentages exist only for a fully validated
+native todo snapshot. Raw reasoning, tool arguments, and tool results remain
+hidden.
+
+Verified root cause: `ExecutionProgress.update()` replaced every successful
+tool completion with `Обрабатываю результат`; the interim assistant callback
+routed completed commentary through `GatewayStreamConsumer`, which renders a
+separate message. Production also keeps Telegram interim messages disabled.
+The todo denominator, editable snapshot queue, redaction rail, and commentary
+callback already exist, so a new controller or state store is unnecessary.
+
+Options considered:
+
+1. No change/config only: keeps generic stages and separate commentary.
+2. Minimal repair: extend the existing presentation-only state machine and
+   route its existing interim callback into `__snapshot__` for Telegram.
+3. Structural streaming redesign: typed-event convergence across platforms.
+
+Decision: option 2. Successful tool completion no longer changes visible
+semantic state. Todo supplies `completed/total`, active step, and next pending
+step. Completed user-facing commentary is bounded to 220 characters and
+updates current/finding/next; `_thinking` never enters this route. The existing
+redactor still runs before queueing. Production enables only the existing
+Telegram `interim_assistant_messages` leaf after source qualification.
+
+Tradeoffs: commentary classification is intentionally shallow and
+presentation-only; explicit `Сейчас/Найдено/Результат/Дальше` labels win, while
+unlabelled commentary after a completed tool is a finding. This improves
+readability without parsing or persisting reasoning. A failed tool drops the
+possibly stale percentage. A model that never creates todo gets honest status
+without a bar.
+
+Validation/falsifiers: fail the candidate if malformed/cancelled/inconsistent
+todo produces a percentage, `_thinking` becomes visible, commentary creates a
+second progress bubble, a successful tool completion restores the generic
+phrase, topic metadata is lost, or transient edit recovery regresses.
+
+Rollout/recovery: focused and adjacent gateway suites, static checks, managed
+immutable deploy under the scoped lease, real Telegram DM smoke/read-back,
+then managed rollback and reapply if the live path passes. Config uses a
+private exact-byte backup and a one-key semantic-delta assertion. No push,
+new dependency, scheduler, memory write, or public message.
+
+Independent Grill B initially rejected the candidate on four probes: an
+`already_streamed` boundary duplicate, the alternate `_thinking` callback,
+pending-only todo semantics, and green final copy without a known turn outcome.
+All four are now explicit regressions. Streamed text retains its existing
+content boundary and is not duplicated into progress; structured Codex
+commentary (`already_streamed=False`) is absorbed into the snapshot. Final copy
+is derived from `result_holder` and remains neutral or negative for unknown,
+failed, and interrupted outcomes. The second read-only review returned READY
+for controlled live verification, with production-provider path, single-final
+read-back, timeout/interrupt, and transient edit recovery retained as live
+acceptance checks.
 
 Status: frozen v2, 2026-09-06 03:08 UTC. Base c23f80da9548e1b0dfc2008192fb66d5d6f6ebb7.
 

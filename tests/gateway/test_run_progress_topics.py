@@ -796,6 +796,8 @@ def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_p
 
 
 class CommentaryAgent:
+    delay = 0.1
+
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -805,11 +807,38 @@ class CommentaryAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None):
         if self.interim_assistant_callback:
             self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
-        time.sleep(0.1)
+        time.sleep(self.delay)
         if self.stream_delta_callback:
             self.stream_delta_callback("done")
         return {
             "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class SlowCommentaryAgent(CommentaryAgent):
+    delay = 0.6
+
+
+class AlreadyStreamedCommentaryAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        commentary = "I'll inspect the repo first."
+        if self.stream_delta_callback:
+            self.stream_delta_callback(commentary)
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback(commentary, already_streamed=True)
+        time.sleep(0.6)
+        if self.stream_delta_callback:
+            self.stream_delta_callback("done")
+        return {
+            "final_response": commentary + "done",
+            "response_previewed": True,
             "messages": [],
             "api_calls": 1,
         }
@@ -1181,6 +1210,58 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
+async def test_telegram_snapshot_absorbs_unstreamed_commentary(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SlowCommentaryAgent,
+        session_id="sess-telegram-snapshot-commentary",
+        config_data={
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {"telegram": {
+                    "execution_progress": True,
+                    "tool_progress": "all",
+                }},
+            },
+            "streaming": {"enabled": False},
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    assert "Сейчас: I'll inspect the repo first." in adapter.sent[0]["content"]
+    assert adapter.sent[0]["content"] != "I'll inspect the repo first."
+
+
+@pytest.mark.asyncio
+async def test_already_streamed_commentary_keeps_boundary_without_snapshot_duplicate(
+    monkeypatch, tmp_path,
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        AlreadyStreamedCommentaryAgent,
+        session_id="sess-telegram-streamed-commentary-boundary",
+        config_data={
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {"telegram": {
+                    "execution_progress": True,
+                    "tool_progress": "all",
+                }},
+            },
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+    )
+
+    assert result["final_response"] == "I'll inspect the repo first.done"
+    visible = [call["content"] for call in adapter.sent + adapter.edits]
+    assert visible
+    assert all("🧭 Работаю" not in text for text in visible)
 
 
 class TransformedStreamAgent:

@@ -4316,10 +4316,29 @@ class TurnRunner:
             and ctx.progress_queue is not None
         )
 
+    def progress_commentary(self, text: str) -> bool:
+        """Route safe interim assistant commentary into the Telegram snapshot."""
+        ctx = self._ctx
+        if not self._telegram_snapshot_enabled():
+            return False
+        agent = ctx.agent_holder[0] if ctx.agent_holder else None
+        if not ctx._run_still_current() or getattr(agent, "is_interrupted", False):
+            return True
+        snapshot = self._execution_progress.update_commentary(text)
+        if snapshot:
+            ctx.progress_queue.put(
+                ("__snapshot__", _redact_gateway_user_facing_secrets(snapshot))
+            )
+        return True
+
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
         _telegram_snapshot_mode = self._telegram_snapshot_enabled()
+        if _telegram_snapshot_mode and (
+            event_type == "_thinking" or tool_name == "_thinking"
+        ):
+            return
         if _telegram_snapshot_mode and tool_name != "_thinking":
             agent = ctx.agent_holder[0] if ctx.agent_holder else None
             if not ctx._run_still_current() or getattr(agent, "is_interrupted", False):
@@ -5164,7 +5183,27 @@ class TurnRunner:
                     agent = ctx.agent_holder[0] if ctx.agent_holder else None
                     if not ctx._run_still_current() or getattr(agent, "is_interrupted", False):
                         return
-                    final_progress = self._execution_progress.render(final=True)
+                    result = (
+                        ctx.result_holder[0]
+                        if getattr(ctx, "result_holder", None)
+                        else None
+                    )
+                    if isinstance(result, dict) and result.get("interrupted"):
+                        outcome = "interrupted"
+                    elif isinstance(result, dict) and (
+                        result.get("failed") or result.get("error")
+                    ):
+                        outcome = "failed"
+                    elif isinstance(result, dict) and (
+                        result.get("completed") is True
+                        or bool(str(result.get("final_response") or "").strip())
+                    ):
+                        outcome = "success"
+                    else:
+                        outcome = None
+                    final_progress = self._execution_progress.render(
+                        final=True, outcome=outcome
+                    )
                     if final_progress:
                         progress_lines = [_redact_gateway_user_facing_secrets(final_progress)]
                 if can_edit and progress_lines and progress_msg_id:
@@ -5543,6 +5582,15 @@ class TurnRunner:
 
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
+                return
+            # Preserve the stream boundary for text that is already visible.
+            # Structured Codex commentary arrives with already_streamed=False
+            # and is absorbed by the semantic progress snapshot below.
+            if already_streamed:
+                if _stream_consumer is not None:
+                    _stream_consumer.on_segment_break()
+                return
+            if self.progress_commentary(text):
                 return
             display_text = text
             if _stream_consumer is not None:

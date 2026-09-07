@@ -8,37 +8,129 @@ import pytest
 from gateway.telegram_execution_progress import ExecutionProgress
 
 
-def plan(total=2, done=1):
+def plan(total=3, done=1):
     return json.dumps({"todos": [
         {"content": "Проверить источники", "status": "completed"},
         {"content": "Сравнить результаты", "status": "in_progress"},
+        {"content": "Проверить live-поведение", "status": "pending"},
     ], "summary": {"total": total, "completed": done}})
 
 
-def test_plan_stage_and_elapsed():
+def test_plan_renders_truthful_bar_semantic_stage_next_and_elapsed():
     now = [1.0]
     p = ExecutionProgress(clock=lambda: now[0])
     assert p.render(final=True) is None
     text = p.update("tool.completed", "todo", result=plan())
-    assert "1/2" in text and "50%" in text and "Сравнить результаты" in text
-    now[0] = 13.5
-    assert "12.5 с" in p.render(final=True)
+    assert "🧭 Работаю · 33%" in text
+    assert "███░░░░░░░ 1/3" in text
+    assert "Сейчас: Сравнить результаты" in text
+    assert "Дальше: Проверить live-поведение" in text
+    assert "Обрабатываю результат" not in text
+    now[0] = 103.0
+    assert "⏱ 1:42" in p.render(final=True)
 
 
-@pytest.mark.parametrize("total,done", [(2.0, 1), ("2", 1), (True, 1), (2, 3), (0, 0), (3, 1)])
+@pytest.mark.parametrize("total,done", [(3.0, 1), ("3", 1), (True, 1), (3, 4), (0, 0), (2, 1)])
 def test_invalid_plan_has_no_percentage(total, done):
     assert "%" not in ExecutionProgress().update("tool.completed", "todo", result=plan(total, done))
+
+
+def test_multiple_active_plan_items_have_no_percentage():
+    result = json.dumps({
+        "todos": [
+            {"content": "Готово", "status": "completed"},
+            {"content": "Первый активный", "status": "in_progress"},
+            {"content": "Второй активный", "status": "in_progress"},
+        ],
+        "summary": {"total": 3, "completed": 1},
+    })
+    assert "%" not in ExecutionProgress().update("tool.completed", "todo", result=result)
 
 
 def test_error_invalidates_old_plan_and_never_claims_success():
     p = ExecutionProgress()
     p.update("tool.completed", "todo", result=plan())
     text = p.update("tool.completed", "todo", result=plan(), is_error=True)
-    assert "%" not in text and "ошибка" in text
+    assert "%" not in text and "ошиб" in text
     assert p.update("tool.started", "clarify") is None
-    assert "SECRET" not in p.update("tool.completed", "terminal", result="SECRET")
+    secret_result = p.update("tool.completed", "terminal", result="SECRET")
+    assert secret_result is None or "SECRET" not in secret_result
     p.update("tool.completed", "todo", result=plan())
     assert "%" not in p.update("tool.completed", "terminal", is_error=True)
+
+
+def test_successful_tool_completion_does_not_overwrite_useful_stage():
+    p = ExecutionProgress()
+    p.update("tool.completed", "todo", result=plan())
+    started = p.update("tool.started", "terminal")
+    assert "Сейчас: Сравнить результаты" in started
+    assert p.update("tool.completed", "terminal", result="SECRET") is None
+    assert "Обрабатываю результат" not in p.render()
+
+
+def test_safe_commentary_updates_same_semantic_snapshot():
+    p = ExecutionProgress()
+    p.update("tool.completed", "todo", result=plan())
+    p.update("tool.completed", "web_extract", result="ignored")
+    text = p.update_commentary("Найдено: Источники расходятся; проверяю первичный документ.")
+    assert "Найдено: Источники расходятся; проверяю первичный документ." in text
+    assert "Дальше: Проверить live-поведение" in text
+    assert "reasoning" not in text.lower()
+
+
+def test_commentary_is_bounded_and_explicit_labels_are_understood():
+    p = ExecutionProgress()
+    text = p.update_commentary(
+        "Сейчас: проверяю конфигурацию\n"
+        "Найдено: конфликт подтверждён\n"
+        "Дальше: запускаю транспортный тест\n" + "x" * 500
+    )
+    assert "Сейчас: проверяю конфигурацию" in text
+    assert "Найдено: конфликт подтверждён" in text
+    assert "Дальше: запускаю транспортный тест" in text
+    assert len(text) < 500
+    text = p.update_commentary("Результат: конфликт подтверждён")
+    assert "Результат: конфликт подтверждён" in text
+    text = p.update_commentary("Дальше: запускаю транспортный тест")
+    assert "Дальше: запускаю транспортный тест" in text
+
+
+def test_pending_only_plan_uses_first_pending_step_as_current():
+    result = json.dumps({
+        "todos": [
+            {"content": "Проверить конфиг", "status": "pending"},
+            {"content": "Запустить smoke", "status": "pending"},
+        ],
+        "summary": {"total": 2, "completed": 0},
+    })
+    text = ExecutionProgress().update("tool.completed", "todo", result=result)
+    assert "Сейчас: Проверить конфиг" in text
+    assert "Дальше: Запустить smoke" in text
+    assert "Завершаю ответ" not in text
+
+
+def test_future_intent_after_tool_completion_is_current_not_finding():
+    p = ExecutionProgress()
+    p.update("tool.started", "web_extract")
+    p.update("tool.completed", "web_extract")
+    text = p.update_commentary("Сейчас проверю первичный источник")
+    assert "Сейчас: Сейчас проверю первичный источник" in text
+    assert "Найдено: Сейчас проверю" not in text
+
+
+@pytest.mark.parametrize(
+    "outcome, heading",
+    [
+        (None, "⏹ Статус завершения неизвестен"),
+        ("failed", "⚠️ Не завершено"),
+        ("interrupted", "⏹ Остановлено"),
+        ("success", "✅ Ответ готов"),
+    ],
+)
+def test_final_heading_reflects_real_outcome(outcome, heading):
+    p = ExecutionProgress()
+    p.update("tool.started", "terminal")
+    assert heading in p.render(final=True, outcome=outcome)
 
 
 def context():
@@ -51,7 +143,29 @@ def context():
         agent_holder=[SimpleNamespace(is_interrupted=False)], _native_slack_task_cards=False,
         _progress_metadata={"thread_id": "topic"}, _progress_reply_to="anchor",
         _cleanup_progress=False, last_progress_msg=[None], repeat_count=[0],
+        _thinking_enabled=False,
+        result_holder=[{"final_response": "done", "failed": False}],
     )
+
+
+def test_real_callback_routes_interim_commentary_into_snapshot_queue():
+    from gateway.run import TurnRunner
+    ctx = context()
+    turn = TurnRunner(None, ctx)
+    assert turn.progress_commentary("Проверяю настройки Gateway") is True
+    marker, text = ctx.progress_queue.get_nowait()
+    assert marker == "__snapshot__"
+    assert "Сейчас: Проверяю настройки Gateway" in text
+
+
+def test_real_commentary_callback_reuses_secret_redaction_rail():
+    from gateway.run import TurnRunner
+    ctx = context()
+    turn = TurnRunner(None, ctx)
+    secret = "sk-proj-" + "X" * 40
+    assert turn.progress_commentary(f"Сейчас: проверяю {secret}") is True
+    _, text = ctx.progress_queue.get_nowait()
+    assert secret not in text
 
 
 def test_real_callback_filters_clarify_interrupt_and_stale():
@@ -60,9 +174,14 @@ def test_real_callback_filters_clarify_interrupt_and_stale():
     turn = TurnRunner(None, ctx)
     turn.progress_callback("tool.started", "clarify")
     assert ctx.progress_queue.empty()
+    turn.progress_callback("_thinking", "raw reasoning must stay hidden")
+    assert ctx.progress_queue.empty()
+    ctx._thinking_enabled = True
+    turn.progress_callback("reasoning.available", "_thinking", "raw reasoning")
+    assert ctx.progress_queue.empty()
     turn.progress_callback("tool.completed", "todo", result=plan())
     marker, text = ctx.progress_queue.get_nowait()
-    assert marker == "__snapshot__" and "50%" in text
+    assert marker == "__snapshot__" and "33%" in text
     ctx.agent_holder[0].is_interrupted = True
     turn.progress_callback("tool.started", "terminal")
     assert ctx.progress_queue.empty()
@@ -100,6 +219,7 @@ async def test_real_sender_keeps_one_bubble_across_stream_reset():
     turn.progress_callback("tool.started", "terminal")
     task = asyncio.create_task(turn.send_progress_messages())
     await asyncio.wait_for(adapter.visible.wait(), timeout=5)
+    assert turn.progress_commentary("Проверяю настройки Gateway") is True
     ctx.progress_queue.put(("__reset__",))
     turn.progress_callback("tool.completed", "todo", result=plan())
     task.cancel()
@@ -107,6 +227,6 @@ async def test_real_sender_keeps_one_bubble_across_stream_reset():
     assert len(adapter.sent) == 1
     assert adapter.sent[0][1:] == ("anchor", {"thread_id": "topic"})
     assert adapter.edits[-1][0] == "one"
-    assert "50%" in adapter.edits[-1][1]
-    assert "Время обработки" in adapter.edits[-1][1]
+    assert "33%" in adapter.edits[-1][1]
+    assert "⏱" in adapter.edits[-1][1]
     assert adapter.edits[-1][2]["metadata"] == {"thread_id": "topic"}
