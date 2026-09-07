@@ -737,6 +737,16 @@ class TestPromptBuilderConstants:
             assert "do not use markdown" not in hint.lower()
             assert "markdown" in hint.lower()
 
+    def test_telegram_hint_requires_human_todo_for_long_multistep_work(self):
+        hint = PLATFORM_HINTS["telegram"]
+        lowered = hint.lower()
+        assert "native `todo`" in hint
+        assert "3+ meaningful" in hint
+        assert "user-facing steps" in lowered
+        assert "shell commands" in lowered
+        assert "quick one-step" in lowered
+
+
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
         # gateway platforms. On the CLI they render as literal text and

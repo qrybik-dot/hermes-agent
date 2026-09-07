@@ -911,7 +911,12 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
         "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        "URLs in markdown format ![alt](url) and they will be sent as native photos. "
+        "For foreground work likely to take over a minute or requiring 3+ meaningful "
+        "stages, initialize the native `todo` tool before substantive tool work with "
+        "3-6 short outcome-oriented user-facing steps, then update it as stages finish. "
+        "Todo text must describe user goals, never shell commands, file paths, APIs, or "
+        "internal tool names. Do not create a todo for quick one-step work."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "
