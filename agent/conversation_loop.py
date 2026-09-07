@@ -118,6 +118,83 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 )
 
 
+_TELEGRAM_TODO_NUDGE_RESULT = (
+    "Deferred before execution: this Telegram turn has become multi-step. "
+    "First initialize the native todo tool with 3-6 short outcome-oriented "
+    "user-facing steps. Todo text must describe goals/stages, not shell "
+    "commands, file paths, APIs, or internal tool names. Then retry the "
+    "deferred action(s)."
+)
+
+_TELEGRAM_TODO_EXEMPT_TOOLS = frozenset({
+    "todo", "memory", "session_search", "skill", "skill_view",
+    "skill_manage", "clarify",
+})
+
+
+def _should_nudge_telegram_todo(agent: Any, tool_calls: Any, *, now: Optional[float] = None) -> bool:
+    """Ask the same model to create native todo once a Telegram turn is truly multi-step.
+
+    This is deliberately not a planner. We only observe actual tool behaviour:
+    three substantive tool calls in the turn, or >60s elapsed with more work.
+    The model still authors the plan via the existing ``todo`` tool. At most
+    two nudges are allowed so a model that ignores the steer can never loop.
+    """
+    if str(getattr(agent, "platform", "") or "").strip().casefold() != "telegram":
+        return False
+    valid = set(getattr(agent, "valid_tool_names", ()) or ())
+    if "todo" not in valid:
+        return False
+    store = getattr(agent, "_todo_store", None)
+    if store is None:
+        return False
+    try:
+        existing_todos = store.read()
+        if any(
+            str(item.get("status", "")).casefold() in {"pending", "in_progress"}
+            for item in existing_todos
+            if isinstance(item, dict)
+        ):
+            return False
+    except Exception:
+        return False
+
+    names = [
+        str(getattr(getattr(tc, "function", None), "name", "") or "")
+        for tc in (tool_calls or [])
+    ]
+    # A durable task is already using the correct execution primitive; do not
+    # force a foreground todo on top of Kanban coordination.
+    if any(name.startswith("kanban_") for name in names):
+        return False
+    if "todo" in names:
+        return False
+
+    substantive = [
+        name for name in names
+        if name and name not in _TELEGRAM_TODO_EXEMPT_TOOLS
+    ]
+    if not substantive:
+        return False
+
+    seen = int(getattr(agent, "_telegram_todo_substantive_calls", 0) or 0)
+    projected = seen + len(substantive)
+    agent._telegram_todo_substantive_calls = projected
+
+    attempts = int(getattr(agent, "_telegram_todo_nudge_attempts", 0) or 0)
+    if attempts >= 2:
+        return False
+
+    started = float(getattr(agent, "_inflight_turn_started", 0.0) or 0.0)
+    current = time.time() if now is None else float(now)
+    elapsed = max(0.0, current - started) if started > 0 else 0.0
+    if projected < 3 and elapsed < 60.0:
+        return False
+
+    agent._telegram_todo_nudge_attempts = attempts + 1
+    return True
+
+
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
 
@@ -7268,6 +7345,45 @@ def run_conversation(
                         tc for tc in assistant_message.tool_calls
                         if tc.function.name in agent.valid_tool_names
                     ]
+
+                if _should_nudge_telegram_todo(agent, assistant_message.tool_calls):
+                    # Keep provider role/tool-call pairing valid, but do not execute
+                    # the deferred calls yet. The next model turn sees a normal tool
+                    # result asking it to author the plan through native todo, then
+                    # retry the same work. No progress/error callback is emitted for
+                    # these synthetic deferrals, so Telegram stays quiet.
+                    for tc in assistant_message.tool_calls:
+                        append_message(messages, {
+                            "role": "tool",
+                            "name": tc.function.name,
+                            "tool_call_id": tc.id,
+                            "content": _TELEGRAM_TODO_NUDGE_RESULT,
+                        })
+                    try:
+                        _nudge_persisted = agent._flush_messages_to_session_db(
+                            messages, conversation_history
+                        )
+                    except Exception as exc:
+                        _nudge_persisted = False
+                        from hermes_state import classify_persistence_error
+                        agent._last_persistence_error_cause = classify_persistence_error(exc)
+                        logger.warning(
+                            "Telegram todo-nudge persistence failed (session=%s): %s",
+                            agent.session_id or "none", exc,
+                        )
+                    if _nudge_persisted is False:
+                        if getattr(agent, "_last_persistence_error_cause", None) is None:
+                            agent._last_persistence_error_cause = "unknown"
+                        _turn_exit_reason = "session_persistence_failed"
+                        final_response = ""
+                        failed = True
+                        break
+                    logger.info(
+                        "Telegram todo nudge deferred substantive tools (attempt=%d, count=%d)",
+                        int(getattr(agent, "_telegram_todo_nudge_attempts", 0) or 0),
+                        int(getattr(agent, "_telegram_todo_substantive_calls", 0) or 0),
+                    )
+                    continue
 
                 _tool_turn_persisted = None
                 try:

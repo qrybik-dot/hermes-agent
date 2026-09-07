@@ -1310,6 +1310,11 @@ def build_turn_context(
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
     agent._pre_verify_nudges = 0
+    # Telegram progress planning guard is per foreground turn. It observes
+    # actual substantive tool calls and asks the model for native todo only
+    # after the work truly becomes multi-step/long.
+    agent._telegram_todo_substantive_calls = 0
+    agent._telegram_todo_nudge_attempts = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.
