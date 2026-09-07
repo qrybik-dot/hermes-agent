@@ -88,6 +88,21 @@ def test_commentary_is_bounded_and_explicit_labels_are_understood():
     assert "Сейчас: проверяю конфигурацию" in text
     assert "Найдено: конфликт подтверждён" in text
     assert "Дальше: запускаю транспортный тест" in text
+
+
+def test_completion_commentary_cannot_run_ahead_of_todo_percentage():
+    p = ExecutionProgress()
+    p.update("tool.completed", "todo", result=plan())
+    text = p.update_commentary(
+        "Сейчас: завершён пункт 2\n"
+        "Найдено: Linux\n"
+        "Дальше: итог"
+    )
+    assert "🧭 Работаю · 33%" in text
+    assert "Сейчас: Сравнить результаты" in text
+    assert "Сейчас: завершён пункт 2" not in text
+    assert "Найдено: Linux" in text
+    assert "Дальше: итог" in text
     assert len(text) < 500
     text = p.update_commentary("Результат: конфликт подтверждён")
     assert "Результат: конфликт подтверждён" in text

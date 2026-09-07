@@ -88,7 +88,19 @@ class ExecutionProgress:
                 if lowered.startswith(prefix):
                     payload = self._short_text(value[len(prefix):])
                     if payload:
-                        setattr(self, field, payload)
+                        # The provider can emit ``Сейчас: пункт N завершён`` a
+                        # moment before the authoritative todo update advances
+                        # completed/total.  Keeping that sentence beside the
+                        # old percentage produces a briefly contradictory
+                        # snapshot.  Until todo confirms it, retain the
+                        # plan-derived current step and accept the finding/next
+                        # lines only.
+                        if not (
+                            field == "current"
+                            and self.plan
+                            and self._is_completion_claim(payload)
+                        ):
+                            setattr(self, field, payload)
                         if label:
                             self.finding_label = label
                         labelled = True
@@ -112,6 +124,15 @@ class ExecutionProgress:
         else:
             self.current = value
         return self.render()
+
+    @staticmethod
+    def _is_completion_claim(value):
+        lowered = str(value or "").casefold().lstrip()
+        return lowered.startswith((
+            "завершён", "завершен", "завершена", "завершено", "завершены",
+            "выполнен", "выполнена", "выполнено", "выполнены", "готово",
+            "completed", "finished", "done",
+        ))
 
     @staticmethod
     def _plan(result):

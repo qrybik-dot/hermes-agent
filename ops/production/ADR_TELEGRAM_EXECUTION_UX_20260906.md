@@ -102,3 +102,10 @@ answer uses the normal one-shot final-delivery path. Other platforms and
 Telegram turns without execution progress retain their streaming behavior.
 This is narrower than adding a second controller or changing provider event
 semantics, and it makes the one-bubble invariant directly testable.
+
+The same smoke showed that provider commentary can announce a completed step
+just before the authoritative todo snapshot advances its counter. To avoid a
+brief text/bar contradiction, a completion-shaped `Сейчас:` line no longer
+overrides the plan-derived current step while a valid todo snapshot exists;
+`Найдено:` and `Дальше:` remain visible, and the next todo update advances the
+bar normally.
