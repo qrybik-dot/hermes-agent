@@ -14,8 +14,12 @@ Config (``~/.hermes/config.yaml``)::
 Available fields:
     model        — bare model id, vendor prefix dropped (``gpt-5.4``)
     context_pct  — last-call context occupancy as a percent (``5%``)
-    latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
+    latency      — compact wall-clock duration (``22s``, ``1m05s``)
+    answer_time  — user-facing total duration (``⏱ Выполнено за 1:05``)
     cwd          — home-relative working dir (``~``)
+
+``min_seconds`` optionally suppresses the whole footer for shorter turns.
+Default 0 preserves legacy behaviour.
 
 ``latency`` is opt-in: it is NOT in the default field set, so a footer whose
 ``fields`` are unset renders exactly as before.
@@ -73,7 +77,7 @@ def resolve_footer_config(
         2. ``display.runtime_footer``
         3. ``display.platforms.<platform_key>.runtime_footer``
     """
-    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
+    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS), "min_seconds": 0.0}
     cfg = (user_config or {}).get("display") or {}
 
     global_cfg = cfg.get("runtime_footer")
@@ -82,6 +86,8 @@ def resolve_footer_config(
             resolved["enabled"] = bool(global_cfg.get("enabled"))
         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
+        if isinstance(global_cfg.get("min_seconds"), (int, float)):
+            resolved["min_seconds"] = max(0.0, float(global_cfg["min_seconds"]))
 
     if platform_key:
         platforms = cfg.get("platforms") or {}
@@ -93,6 +99,8 @@ def resolve_footer_config(
                     resolved["enabled"] = bool(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
+                if isinstance(plat_footer.get("min_seconds"), (int, float)):
+                    resolved["min_seconds"] = max(0.0, float(plat_footer["min_seconds"]))
 
     return resolved
 
@@ -106,6 +114,15 @@ def _format_latency(seconds: float) -> str:
         return f"{total}s"
     m, sec = divmod(total, 60)
     return f"{m}m{sec:02d}s"
+
+
+def _format_answer_time(seconds: float) -> str:
+    """User-facing total turn time for long tasks."""
+    total = max(0, int(round(seconds)))
+    minutes, sec = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    elapsed = f"{hours}:{minutes:02d}:{sec:02d}" if hours else f"{minutes}:{sec:02d}"
+    return f"⏱ Выполнено за {elapsed}"
 
 
 def format_runtime_footer(
@@ -137,6 +154,9 @@ def format_runtime_footer(
             # timing (call sites that don't measure) or the value is negative.
             if turn_seconds is not None and turn_seconds >= 0:
                 parts.append(_format_latency(turn_seconds))
+        elif field == "answer_time":
+            if turn_seconds is not None and turn_seconds >= 0:
+                parts.append(_format_answer_time(turn_seconds))
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
@@ -170,6 +190,9 @@ def build_footer_line(
     """
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
+        return ""
+    min_seconds = float(cfg.get("min_seconds") or 0.0)
+    if min_seconds > 0 and (turn_seconds is None or turn_seconds < min_seconds):
         return ""
     return format_runtime_footer(
         model=model,

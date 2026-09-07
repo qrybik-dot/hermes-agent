@@ -47,17 +47,18 @@ def test_multiple_active_plan_items_have_no_percentage():
     assert "%" not in ExecutionProgress().update("tool.completed", "todo", result=result)
 
 
-def test_error_invalidates_old_plan_and_never_claims_success():
+def test_tool_error_is_quiet_and_todo_error_invalidates_percentage():
     p = ExecutionProgress()
     p.update("tool.completed", "todo", result=plan())
-    text = p.update("tool.completed", "todo", result=plan(), is_error=True)
-    assert "%" not in text and "ошиб" in text
-    assert p.update("tool.started", "clarify") is None
-    secret_result = p.update("tool.completed", "terminal", result="SECRET")
-    assert secret_result is None or "SECRET" not in secret_result
-    p.update("tool.completed", "todo", result=plan())
-    assert "%" not in p.update("tool.completed", "terminal", is_error=True)
+    assert p.update("tool.completed", "terminal", is_error=True) is None
+    still_working = p.render()
+    assert "33%" in still_working
+    assert "ошиб" not in still_working.casefold()
 
+    assert p.update("tool.completed", "todo", result=plan(), is_error=True) is None
+    assert "%" not in p.render()
+    assert "ошиб" not in p.render().casefold()
+    assert p.update("tool.started", "clarify") is None
 
 def test_successful_tool_completion_does_not_overwrite_useful_stage():
     p = ExecutionProgress()
@@ -70,22 +71,35 @@ def test_successful_tool_completion_does_not_overwrite_useful_stage():
 
 
 
-def test_no_plan_tool_stage_uses_concrete_redacted_preview():
+def test_no_plan_tool_stage_is_human_and_hides_raw_command():
     p = ExecutionProgress()
+    command = "find /srv/hermes-call-processing -name '*.md'"
     text = p.update(
-        "tool.started", "terminal",
-        preview="git status --short",
-        args={"command": "git status --short"},
+        "tool.started", "terminal", preview=command, args={"command": command},
     )
-    assert "Сейчас: Проверяю командой: git status --short" in text
-    assert "следующий шаг" not in text.casefold()
+    assert "Сейчас: Проверяю сохранённые звонки" in text
+    assert command not in text
+    assert "/srv/" not in text
 
-    p2 = ExecutionProgress()
-    text2 = p2.update(
-        "tool.started", "web_search",
-        args={"query": "музеи Москвы для детей"},
+    generic = ExecutionProgress().update(
+        "tool.started", "terminal", args={"command": "python3 -c 'print(1)'"},
     )
-    assert "Сейчас: Ищу: музеи Москвы для детей" in text2
+    assert "Сейчас: Проверяю нужные данные" in generic
+    assert "python3" not in generic
+
+    search = ExecutionProgress().update(
+        "tool.started", "web_search", args={"query": "музеи Москвы для детей"},
+    )
+    assert "Сейчас: Ищу информацию: музеи Москвы для детей" in search
+
+
+def test_unknown_tool_never_falls_back_to_useless_action_or_raw_preview():
+    text = ExecutionProgress().update(
+        "tool.started", "some_plugin_tool", preview="/secret/technical/path --flag",
+    )
+    assert "Сейчас: Проверяю текущий этап" in text
+    assert "Выполняю действие" not in text
+    assert "/secret/" not in text
 
 def test_safe_commentary_updates_same_semantic_snapshot():
     p = ExecutionProgress()

@@ -28,10 +28,36 @@ class ExecutionProgress:
         return text
 
     @classmethod
+    def _scope_from_text(cls, value):
+        """Classify technical identifiers into a small user-facing domain."""
+        text = cls._short_text(value).casefold()
+        if not text:
+            return ""
+        if any(marker in text for marker in (
+            "hermes-call-processing", "call_processing", "call-processing",
+            "call-record", "call_record", "transcript",
+        )):
+            return "calls"
+        if any(marker in text for marker in (
+            "/srv/hermes-memory/vault", "knowledge", "knowledge_mcp",
+        )):
+            return "knowledge"
+        if any(marker in text for marker in (
+            "kanban", "production-lease", "release-transition",
+        )):
+            return "kanban"
+        if any(marker in text for marker in (
+            "hermes-gateway", "systemctl", "journalctl",
+        )):
+            return "service"
+        if text.startswith("git ") or "/.git" in text or " git " in text:
+            return "code"
+        return ""
+
+    @classmethod
     def _tool_stage(cls, name, preview=None, args=None):
-        """Return a concrete, redacted user-facing description of a tool action."""
+        """Return a human status; never expose raw commands/paths as progress."""
         args = args if isinstance(args, dict) else {}
-        preview = cls._short_text(preview)
 
         def _arg(*keys):
             for key in keys:
@@ -40,36 +66,66 @@ class ExecutionProgress:
                     return cls._short_text(value)
             return ""
 
+        def _check_scope(scope):
+            return {
+                "calls": "Проверяю сохранённые звонки",
+                "knowledge": "Проверяю базу знаний",
+                "kanban": "Проверяю фоновые задачи",
+                "service": "Проверяю состояние Hermes",
+                "code": "Проверяю изменения в коде",
+            }.get(scope)
+
         if name == "terminal":
-            value = preview or _arg("command", "cmd")
-            return f"Проверяю командой: {value}" if value else "Проверяю через команду"
+            command = _arg("command", "cmd") or cls._short_text(preview)
+            scoped = _check_scope(cls._scope_from_text(command))
+            if scoped:
+                return scoped
+            lowered = command.casefold().lstrip()
+            if lowered.startswith(("find ", "ls ", "grep ", "rg ", "sqlite3 ", "python ", "python3 ")):
+                return "Проверяю нужные данные"
+            if lowered.startswith(("curl ", "wget ")) or "http://" in lowered or "https://" in lowered:
+                return "Проверяю внешний сервис"
+            return "Проверяю текущий этап"
+
         if name == "web_search":
-            value = _arg("query", "q") or preview
-            return f"Ищу: {value}" if value else "Ищу источники"
+            value = _arg("query", "q")
+            return f"Ищу информацию: {value}" if value else "Ищу нужную информацию"
         if name == "web_extract":
-            value = _arg("url") or preview
-            return f"Проверяю источник: {value}" if value else "Проверяю источник"
+            return "Проверяю найденный источник"
         if name == "read_file":
-            value = _arg("path", "file_path") or preview
-            return f"Читаю файл: {value}" if value else "Читаю файл"
+            scope = cls._scope_from_text(_arg("path", "file_path"))
+            return _check_scope(scope) or "Проверяю нужные данные"
         if name in {"write_file", "patch", "edit_file"}:
-            value = _arg("path", "file_path") or preview
-            return f"Сохраняю изменения: {value}" if value else "Сохраняю изменения"
+            scope = cls._scope_from_text(_arg("path", "file_path"))
+            return {
+                "calls": "Обновляю данные сохранённых звонков",
+                "knowledge": "Обновляю базу знаний",
+                "kanban": "Обновляю фоновую задачу",
+                "code": "Сохраняю изменения в коде",
+            }.get(scope, "Сохраняю изменения")
         if name == "delegate_task":
-            value = _arg("task", "prompt", "description") or preview
-            return f"Запускаю подзадачу: {value}" if value else "Запускаю подзадачу"
+            return "Выполняю ограниченную подзадачу"
         if name == "kanban_create":
-            value = _arg("title") or preview
-            return f"Ставлю фоновую задачу: {value}" if value else "Ставлю фоновую задачу"
+            return "Запускаю фоновую работу"
         if name == "todo":
             return "Уточняю план"
-        if preview:
-            return f"Выполняю: {preview}"
-        return {
-            "kanban_show": "Проверяю фоновую задачу",
-            "kanban_list": "Проверяю фоновые задачи",
-            "kanban_cancel": "Останавливаю фоновую задачу",
-        }.get(name, "Выполняю действие")
+
+        lowered_name = str(name or "").casefold()
+        if "knowledge" in lowered_name:
+            return "Проверяю базу знаний"
+        if "call" in lowered_name or "transcript" in lowered_name:
+            return "Проверяю сохранённые звонки"
+        if "kanban" in lowered_name:
+            return {
+                "kanban_show": "Проверяю фоновую задачу",
+                "kanban_list": "Проверяю фоновые задачи",
+                "kanban_cancel": "Останавливаю фоновую задачу",
+            }.get(name, "Работаю с фоновой задачей")
+        if "search" in lowered_name or "find" in lowered_name:
+            return "Ищу нужные данные"
+        if "status" in lowered_name or "health" in lowered_name:
+            return "Проверяю состояние сервиса"
+        return "Проверяю текущий этап"
 
     def update(self, event, name, *, result=None, is_error=False, preview=None, args=None):
         if name in {None, "clarify", "_thinking"} or event not in {
@@ -86,13 +142,15 @@ class ExecutionProgress:
             return self.render()
 
         if is_error:
-            self.finding_label = "Результат"
-            self.finding = "Действие завершилось ошибкой"
-            # The last todo snapshot may now be stale. Drop its percentage
-            # rather than imply that the failed step still advances the plan.
-            self.plan = None
-            self.next = None
-            return self.render()
+            # A single tool failure is an implementation detail when the agent
+            # can recover and continue. Do not alarm the user with a transient
+            # "action failed" line. Only a failed todo update invalidates the
+            # authoritative progress fraction; terminal turn outcome is rendered
+            # later by the finalizer if the overall task really failed/partial.
+            if name == "todo":
+                self.plan = None
+                self.next = None
+            return None
 
         if name != "todo":
             # Successful tool completion is not a semantic state transition.

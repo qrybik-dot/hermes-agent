@@ -246,6 +246,51 @@ def test_build_footer_line_threads_turn_seconds(monkeypatch):
     assert out == "gpt-5.4 · 22s"
 
 
+
+
+def test_answer_time_field_is_user_facing():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        turn_seconds=125.0, fields=("answer_time",),
+    )
+    assert out == "⏱ Выполнено за 2:05"
+
+
+def test_footer_min_seconds_suppresses_short_turn_and_keeps_long_turn():
+    user = {
+        "display": {
+            "platforms": {
+                "telegram": {
+                    "runtime_footer": {
+                        "enabled": True,
+                        "fields": ["answer_time"],
+                        "min_seconds": 60,
+                    }
+                }
+            }
+        }
+    }
+    common = dict(
+        user_config=user, platform_key="telegram", model="m",
+        context_tokens=0, context_length=None, cwd="",
+    )
+    assert build_footer_line(**common, turn_seconds=59.9) == ""
+    assert build_footer_line(**common, turn_seconds=60.0) == "⏱ Выполнено за 1:00"
+
+
+def test_platform_min_seconds_override_wins():
+    user = {
+        "display": {
+            "runtime_footer": {"enabled": True, "min_seconds": 10},
+            "platforms": {
+                "telegram": {"runtime_footer": {"min_seconds": 60}},
+            },
+        }
+    }
+    assert resolve_footer_config(user, "telegram")["min_seconds"] == 60.0
+    assert resolve_footer_config(user, "discord")["min_seconds"] == 10.0
+
+
 # ---------------------------------------------------------------------------
 # Byte-stability: `latency` is opt-in, so the DEFAULT footer is unchanged.
 #
