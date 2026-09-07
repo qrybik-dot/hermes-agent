@@ -68,6 +68,25 @@ def test_successful_tool_completion_does_not_overwrite_useful_stage():
     assert "Обрабатываю результат" not in p.render()
 
 
+
+
+def test_no_plan_tool_stage_uses_concrete_redacted_preview():
+    p = ExecutionProgress()
+    text = p.update(
+        "tool.started", "terminal",
+        preview="git status --short",
+        args={"command": "git status --short"},
+    )
+    assert "Сейчас: Проверяю командой: git status --short" in text
+    assert "следующий шаг" not in text.casefold()
+
+    p2 = ExecutionProgress()
+    text2 = p2.update(
+        "tool.started", "web_search",
+        args={"query": "музеи Москвы для детей"},
+    )
+    assert "Сейчас: Ищу: музеи Москвы для детей" in text2
+
 def test_safe_commentary_updates_same_semantic_snapshot():
     p = ExecutionProgress()
     p.update("tool.completed", "todo", result=plan())
@@ -137,6 +156,7 @@ def test_future_intent_after_tool_completion_is_current_not_finding():
     "outcome, heading",
     [
         (None, "⏹ Статус завершения неизвестен"),
+        ("partial", "⚠️ Частично"),
         ("failed", "⚠️ Не завершено"),
         ("interrupted", "⏹ Остановлено"),
         ("success", "✅ Ответ готов"),
@@ -245,3 +265,44 @@ async def test_real_sender_keeps_one_bubble_across_stream_reset():
     assert "33%" in adapter.edits[-1][1]
     assert "⏱" in adapter.edits[-1][1]
     assert adapter.edits[-1][2]["metadata"] == {"thread_id": "topic"}
+
+
+@pytest.mark.asyncio
+async def test_snapshot_timer_refreshes_without_new_tool_events():
+    from gateway.config import Platform, PlatformConfig
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    from gateway.run import TurnRunner
+
+    class Adapter(BasePlatformAdapter):
+        def __init__(self):
+            super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+            self.sent, self.edits = [], []
+            self.visible = asyncio.Event()
+        async def connect(self): return True
+        async def disconnect(self): pass
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            self.sent.append(content)
+            self.visible.set()
+            return SendResult(success=True, message_id="timer")
+        async def edit_message(self, chat_id, message_id, content, **kwargs):
+            self.edits.append(content)
+            return SendResult(success=True, message_id=message_id)
+        async def send_typing(self, chat_id, metadata=None): pass
+        async def get_chat_info(self, chat_id): return {}
+
+    ctx, adapter = context(), Adapter()
+    turn = TurnRunner(SimpleNamespace(_adapter_for_source=lambda s: adapter), ctx)
+    base = turn._execution_progress.started
+    clocks = [base]
+    turn._execution_progress.clock = lambda: clocks[0]
+    turn.progress_callback(
+        "tool.started", "terminal", preview="sleep 30", args={"command": "sleep 30"}
+    )
+    task = asyncio.create_task(turn.send_progress_messages())
+    await asyncio.wait_for(adapter.visible.wait(), timeout=5)
+    # Advance only the render clock; wait just past the 5s timer cadence.
+    clocks[0] = base + 6
+    await asyncio.sleep(5.3)
+    ctx._run_still_current = lambda: False
+    await asyncio.wait_for(task, timeout=2)
+    assert any("⏱ 0:06" in text for text in adapter.edits)

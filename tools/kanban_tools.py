@@ -1641,6 +1641,42 @@ def _handle_unblock(args: dict, **kw) -> str:
         return tool_error(f"kanban_unblock: {e}")
 
 
+def _handle_cancel(args: dict, **kw) -> str:
+    """Cancel durable work only on an explicit user/operator stop request."""
+    delegated_err = _reject_delegated_child_mutation("kanban_cancel")
+    if delegated_err:
+        return delegated_err
+    guard = _require_orchestrator_tool("kanban_cancel")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    reason = redact_sensitive_text(
+        str(args.get("reason") or "cancelled by user"), force=True
+    )
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            result = kb.cancel_task(conn, str(tid), reason=reason)
+            if result.get("missing"):
+                return tool_error(f"could not cancel {tid} (unknown id)")
+            return _ok(
+                task_id=str(tid),
+                status="archived" if result.get("archived") else "already_terminal",
+                archived=result.get("archived") or [],
+                terminated_pids=result.get("terminated_pids") or [],
+            )
+        finally:
+            conn.close()
+    except (ValueError, RuntimeError) as e:
+        return tool_error(f"kanban_cancel: {e}")
+    except Exception as e:
+        logger.exception("kanban_cancel failed")
+        return tool_error(f"kanban_cancel: {e}")
+
+
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
     delegated_err = _reject_delegated_child_mutation("kanban_link")
@@ -2330,6 +2366,31 @@ KANBAN_UNBLOCK_SCHEMA = {
     },
 }
 
+KANBAN_CANCEL_SCHEMA = {
+    "name": "kanban_cancel",
+    "description": (
+        "Stop an existing durable Kanban task because the USER/OPERATOR "
+        "explicitly asked to cancel/stop that work. Safely terminates any "
+        "owned running worker, then archives the unfinished task subtree so "
+        "the dispatcher cannot resume it. Never use this as automatic error "
+        "recovery; use kanban_block for a blocker and kanban_complete for "
+        "finished work."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Durable task id to stop."},
+            "reason": {
+                "type": "string",
+                "description": "Short user/operator reason for cancelling the work.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
+
 KANBAN_LINK_SCHEMA = {
     "name": "kanban_link",
     "description": (
@@ -2468,6 +2529,15 @@ registry.register(
     handler=_handle_unblock,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="▶",
+)
+
+registry.register(
+    name="kanban_cancel",
+    toolset="kanban",
+    schema=KANBAN_CANCEL_SCHEMA,
+    handler=_handle_cancel,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="⏹",
 )
 
 registry.register(

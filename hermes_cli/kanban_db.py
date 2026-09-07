@@ -3393,11 +3393,11 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency fast path. The authoritative duplicate check is repeated
+    # INSIDE the write transaction below: SQLite serialises writers there, so
+    # two concurrent creators with the same key cannot both pass the check and
+    # insert. Keep this pre-check only to avoid taking a write lock on ordinary
+    # retry/webhook replays where the task already exists.
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
@@ -3438,6 +3438,19 @@ def create_task(
             # compose create_task calls under one outer commit so the
             # dispatcher can never observe a partially constructed graph.
             with write_txn(conn, allow_nested=True):
+                # Atomic idempotency check. This MUST live under the same write
+                # transaction as the INSERT; the pre-check above is only an
+                # optimisation and is racy by definition.
+                if idempotency_key:
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if existing:
+                        return existing["id"]
+
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -7539,6 +7552,111 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     return True
 
 
+def cancel_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str = "cancelled by user",
+) -> dict[str, Any]:
+    """Safely stop a task and its unfinished descendant work.
+
+    Cancellation deliberately reuses the existing irreversible ``archived``
+    terminal state instead of adding a parallel lifecycle. Before any DB state
+    is committed, every host-local running worker in the subtree is terminated
+    with the same bounded SIGTERM→SIGKILL helper used by reclaim. If a live
+    worker cannot be proven local/terminated, cancellation aborts and the DB is
+    left unchanged — we never claim "stopped" while code may still execute.
+
+    Completed descendants are historical evidence and remain ``done``. Every
+    non-terminal node in the target subtree is archived, so cancelling a parent
+    cannot accidentally promote or leave a dependent child running.
+    """
+    reason = str(reason or "cancelled by user").strip()[:500]
+    archived: list[str] = []
+    terminated: list[int] = []
+
+    with write_txn(conn):
+        rows = conn.execute(
+            """
+            WITH RECURSIVE subtree(id) AS (
+                SELECT ?
+                UNION
+                SELECT l.child_id
+                FROM task_links l
+                JOIN subtree s ON s.id = l.parent_id
+            )
+            SELECT t.id, t.status, t.worker_pid, t.claim_lock, t.current_run_id
+            FROM subtree s
+            JOIN tasks t ON t.id = s.id
+            ORDER BY CASE WHEN t.id = ? THEN 0 ELSE 1 END, t.id
+            """,
+            (task_id, task_id),
+        ).fetchall()
+        if not rows:
+            return {"task_id": task_id, "archived": [], "terminated_pids": [], "missing": True}
+
+        # Kill first while the write transaction excludes dispatcher state
+        # transitions. The new archived state becomes visible only after every
+        # live worker we own has actually stopped.
+        for row in rows:
+            if row["status"] in {"done", "archived"}:
+                continue
+            pid = int(row["worker_pid"]) if row["worker_pid"] else None
+            if not pid:
+                continue
+            termination = _terminate_reclaimed_worker(pid, row["claim_lock"])
+            if not termination.get("host_local"):
+                raise RuntimeError(
+                    f"cannot safely cancel {row['id']}: worker pid {pid} is not owned by this host"
+                )
+            if not termination.get("terminated"):
+                raise RuntimeError(
+                    f"cannot safely cancel {row['id']}: worker pid {pid} survived termination"
+                )
+            terminated.append(pid)
+
+        for row in rows:
+            prior = row["status"]
+            if prior in {"done", "archived"}:
+                continue
+            run_id = None
+            if row["current_run_id"] is not None:
+                run_id = _end_run(
+                    conn,
+                    row["id"],
+                    outcome="reclaimed",
+                    status="archived",
+                    summary=f"cancelled: {reason}",
+                )
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'archived', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, current_run_id = NULL "
+                "WHERE id = ? AND status = ?",
+                (row["id"], prior),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(
+                    f"task {row['id']} changed state during cancellation; refusing partial cancel"
+                )
+            _append_event(
+                conn,
+                row["id"],
+                "archived",
+                {"reason": "cancelled", "detail": reason, "previous_status": prior},
+                run_id=run_id,
+            )
+            archived.append(row["id"])
+
+    for tid in archived:
+        _cleanup_workspace(conn, tid)
+    return {
+        "task_id": task_id,
+        "archived": archived,
+        "terminated_pids": terminated,
+        "missing": False,
+    }
+
+
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Permanently remove an already-archived task and its related rows.
 
@@ -9213,6 +9331,12 @@ def _record_task_failure(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
+            return False
+        # A late turn-finalizer must not append a failure after another path
+        # already completed/archived the task. release_claim/end_run callers
+        # own only an in-flight claim; once the task is terminal they are a
+        # strict no-op (including NO timed_out/crashed event).
+        if release_claim and row["status"] not in {"running", "ready", "review"}:
             return False
         retry_status = (
             _retry_status_for_run(conn, task_id, row["current_run_id"])

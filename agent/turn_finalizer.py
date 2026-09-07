@@ -503,6 +503,8 @@ def finalize_turn(
     else:
         logger.info(_diag_msg, *_diag_args)
 
+    _failed_file_mutations = {}
+
     # File-mutation verifier footer.
     # If one or more ``write_file`` / ``patch`` calls failed during this
     # turn and were never superseded by a successful write to the same
@@ -521,6 +523,7 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
+            _failed_file_mutations = dict(_failed)
             if _failed and agent._file_mutation_verifier_enabled():
                 footer = agent._format_file_mutation_failure_footer(_failed)
                 if footer:
@@ -699,7 +702,10 @@ def finalize_turn(
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
-        "partial": False,  # True only when stopped due to invalid tool calls
+        # A requested file write that did not land is a partial outcome even
+        # when the model produced fluent prose. This lets gateway progress and
+        # machine callers refuse to present the turn as fully successful.
+        "partial": bool(_failed_file_mutations),
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
         "pre_transform_response": _pre_transform_response,
@@ -726,6 +732,9 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if _failed_file_mutations:
+        result["file_mutation_failures"] = len(_failed_file_mutations)
+        result.setdefault("failure_reason", "file_mutation_failed")
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True + an explanation in

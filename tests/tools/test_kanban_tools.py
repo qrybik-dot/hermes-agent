@@ -1134,3 +1134,35 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_cancel_handler_archives_task_for_orchestrator(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setattr(kt, "_require_orchestrator_tool", lambda _name: None)
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="cancel-me", assignee="worker")
+    finally:
+        conn.close()
+
+    out = kt._handle_cancel({"task_id": tid, "reason": "user asked to stop"})
+    data = json.loads(out)
+    assert data.get("ok") is True, out
+    assert data["status"] == "archived"
+    assert tid in data["archived"]
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "archived"
+    finally:
+        conn.close()
+
+
+def test_cancel_handler_is_orchestrator_only(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_cancel({"task_id": worker_env, "reason": "stop"})
+    data = json.loads(out)
+    assert "error" in data

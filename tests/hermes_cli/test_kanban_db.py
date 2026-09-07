@@ -1614,3 +1614,74 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_idempotency_key_is_atomic_across_concurrent_creators(kanban_home):
+    key = "atomic-key"
+
+    def create_one(i):
+        with kb.connect() as conn:
+            return kb.create_task(
+                conn, title=f"creator-{i}", assignee="worker", idempotency_key=key
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        tids = list(pool.map(create_one, range(2)))
+
+    assert tids[0] == tids[1]
+    with kb.connect() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE idempotency_key = ? AND status != 'archived'",
+            (key,),
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_late_release_claim_failure_is_noop_after_done(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="done first", assignee="worker")
+        assert kb.claim_task(conn, tid) is not None
+        assert kb.complete_task(conn, tid, summary="done")
+        before = [(e.kind, e.id) for e in kb.list_events(conn, tid)]
+        blocked = kb._record_task_failure(
+            conn, tid, error="late timeout", outcome="timed_out",
+            release_claim=True, end_run=True,
+        )
+        after = [(e.kind, e.id) for e in kb.list_events(conn, tid)]
+        task = kb.get_task(conn, tid)
+    assert blocked is False
+    assert after == before
+    assert task.status == "done"
+    assert task.consecutive_failures == 0
+    assert task.last_failure_error is None
+
+
+def test_cancel_archives_unfinished_subtree(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="root", assignee="worker")
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[root])
+        result = kb.cancel_task(conn, root, reason="user changed goal")
+        assert set(result["archived"]) == {root, child}
+        assert kb.get_task(conn, root).status == "archived"
+        assert kb.get_task(conn, child).status == "archived"
+
+
+def test_cancel_requires_worker_termination_before_archiving(kanban_home, monkeypatch):
+    seen = []
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="running", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        task = kb.get_task(conn, tid)
+        kb._set_worker_pid(conn, tid, 424242)
+        monkeypatch.setattr(
+            kb, "_terminate_reclaimed_worker",
+            lambda pid, lock: seen.append((pid, lock)) or {
+                "prev_pid": pid, "host_local": True,
+                "termination_attempted": True, "terminated": True, "sigkill": False,
+            },
+        )
+        result = kb.cancel_task(conn, tid, reason="stop")
+        assert result["terminated_pids"] == [424242]
+        assert kb.get_task(conn, tid).status == "archived"
+    assert seen and seen[0][0] == 424242

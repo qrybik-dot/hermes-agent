@@ -144,6 +144,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
+    r"|iteration\s+budget\s+exhausted.*asking\s+model\s+to\s+summari[sz]e"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
     r")",
@@ -4346,6 +4347,7 @@ class TurnRunner:
             snapshot = self._execution_progress.update(
                 event_type, tool_name, result=kwargs.get("result"),
                 is_error=kwargs.get("is_error", False),
+                preview=preview, args=args,
             )
             if snapshot:
                 ctx.progress_queue.put(("__snapshot__", _redact_gateway_user_facing_secrets(snapshot)))
@@ -4853,7 +4855,13 @@ class TurnRunner:
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
+        _last_timer_refresh_ts = 0.0
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+        # Refresh only the elapsed timer while a snapshot is visible. Five
+        # seconds feels live without turning one long task into 60 Telegram
+        # edits/minute. This reuses the existing per-turn progress coroutine;
+        # no daemon/controller is added.
+        _SNAPSHOT_TIMER_REFRESH_INTERVAL = 5.0
 
         _progress_len_fn = (
             adapter.message_len_fn
@@ -5136,6 +5144,7 @@ class TurnRunner:
                             ctx._cleanup_msg_ids.append(str(result.message_id))
 
                 _last_edit_ts = time.monotonic()
+                _last_timer_refresh_ts = _last_edit_ts
 
                 # Restore typing indicator
                 await asyncio.sleep(0.3)
@@ -5143,6 +5152,31 @@ class TurnRunner:
                     await adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
 
             except queue.Empty:
+                # Snapshot-mode timer refresh: no model/tool work is performed;
+                # only re-render the already-visible bubble from monotonic time.
+                # Tool/commentary events remain the sole source of semantic
+                # progress and percentages.
+                if (
+                    snapshot_mode and can_edit and progress_msg_id is not None
+                    and ctx._run_still_current()
+                ):
+                    _now = time.monotonic()
+                    if (
+                        _now - _last_timer_refresh_ts >= _SNAPSHOT_TIMER_REFRESH_INTERVAL
+                        and _now - _last_edit_ts >= _PROGRESS_EDIT_INTERVAL
+                    ):
+                        refreshed = self._execution_progress.render()
+                        if refreshed:
+                            refreshed = _redact_gateway_user_facing_secrets(refreshed)
+                            if progress_lines != [refreshed]:
+                                try:
+                                    result = await _edit_progress_message(progress_msg_id, refreshed)
+                                    if getattr(result, "success", False):
+                                        progress_lines = [refreshed]
+                                        _last_edit_ts = _now
+                                        _last_timer_refresh_ts = _now
+                                except Exception:
+                                    logger.debug("snapshot timer refresh failed", exc_info=True)
                 await asyncio.sleep(0.3)
             except asyncio.CancelledError:
                 # Drain remaining queued messages
@@ -5194,6 +5228,8 @@ class TurnRunner:
                         result.get("failed") or result.get("error")
                     ):
                         outcome = "failed"
+                    elif isinstance(result, dict) and result.get("partial"):
+                        outcome = "partial"
                     elif isinstance(result, dict) and (
                         result.get("completed") is True
                         or bool(str(result.get("final_response") or "").strip())

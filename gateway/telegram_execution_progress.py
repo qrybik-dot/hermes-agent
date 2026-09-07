@@ -27,7 +27,51 @@ class ExecutionProgress:
             text = text[: cls._TEXT_LIMIT - 1].rstrip() + "…"
         return text
 
-    def update(self, event, name, *, result=None, is_error=False):
+    @classmethod
+    def _tool_stage(cls, name, preview=None, args=None):
+        """Return a concrete, redacted user-facing description of a tool action."""
+        args = args if isinstance(args, dict) else {}
+        preview = cls._short_text(preview)
+
+        def _arg(*keys):
+            for key in keys:
+                value = args.get(key)
+                if isinstance(value, str) and value.strip():
+                    return cls._short_text(value)
+            return ""
+
+        if name == "terminal":
+            value = preview or _arg("command", "cmd")
+            return f"Проверяю командой: {value}" if value else "Проверяю через команду"
+        if name == "web_search":
+            value = _arg("query", "q") or preview
+            return f"Ищу: {value}" if value else "Ищу источники"
+        if name == "web_extract":
+            value = _arg("url") or preview
+            return f"Проверяю источник: {value}" if value else "Проверяю источник"
+        if name == "read_file":
+            value = _arg("path", "file_path") or preview
+            return f"Читаю файл: {value}" if value else "Читаю файл"
+        if name in {"write_file", "patch", "edit_file"}:
+            value = _arg("path", "file_path") or preview
+            return f"Сохраняю изменения: {value}" if value else "Сохраняю изменения"
+        if name == "delegate_task":
+            value = _arg("task", "prompt", "description") or preview
+            return f"Запускаю подзадачу: {value}" if value else "Запускаю подзадачу"
+        if name == "kanban_create":
+            value = _arg("title") or preview
+            return f"Ставлю фоновую задачу: {value}" if value else "Ставлю фоновую задачу"
+        if name == "todo":
+            return "Уточняю план"
+        if preview:
+            return f"Выполняю: {preview}"
+        return {
+            "kanban_show": "Проверяю фоновую задачу",
+            "kanban_list": "Проверяю фоновые задачи",
+            "kanban_cancel": "Останавливаю фоновую задачу",
+        }.get(name, "Выполняю действие")
+
+    def update(self, event, name, *, result=None, is_error=False, preview=None, args=None):
         if name in {None, "clarify", "_thinking"} or event not in {
             "tool.started", "tool.completed",
         }:
@@ -36,14 +80,7 @@ class ExecutionProgress:
         self.seen = True
         self._last_tool_event = event
         if event == "tool.started":
-            fallback = {
-                "terminal": "Проверяю через команду",
-                "todo": "Уточняю план",
-                "web_search": "Ищу источники",
-                "web_extract": "Проверяю источник",
-                "read_file": "Проверяю файл",
-                "delegate_task": "Проверяю подзадачи",
-            }.get(name, "Выполняю следующий шаг")
+            fallback = self._tool_stage(name, preview=preview, args=args)
             active = self.plan[2] if self.plan else ""
             self.current = active or fallback
             return self.render()
@@ -195,6 +232,8 @@ class ExecutionProgress:
                 lines.append("✅ Готово · 100%")
             elif final and outcome == "success":
                 lines.append(f"✅ Ответ готов · {percent}% по плану")
+            elif final and outcome == "partial":
+                lines.append(f"⚠️ Частично · {percent}% по плану")
             elif final and outcome == "failed":
                 lines.append(f"⚠️ Не завершено · {percent}% по плану")
             elif final and outcome == "interrupted":
@@ -210,6 +249,8 @@ class ExecutionProgress:
                 lines.append("🧭 Работаю")
             elif outcome == "success":
                 lines.append("✅ Ответ готов")
+            elif outcome == "partial":
+                lines.append("⚠️ Частично")
             elif outcome == "failed":
                 lines.append("⚠️ Не завершено")
             elif outcome == "interrupted":
