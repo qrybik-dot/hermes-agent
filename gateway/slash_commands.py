@@ -33,6 +33,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
+from gateway.context_performance import context_latency_zone
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
@@ -725,6 +726,10 @@ class GatewaySlashCommandsMixin:
             )
         elif context_used:
             context_line = t("gateway.status.context_used", used=f"{context_used:,}")
+        if context_used and context_line:
+            context_line += " · " + t(
+                f"gateway.context.latency_{context_latency_zone(context_used)}"
+            )
 
         lines = [
             t("gateway.status.header"),
@@ -888,6 +893,10 @@ class GatewaySlashCommandsMixin:
                     used=f"{used:,}",
                     total=f"{context_length:,}",
                     pct=f"{pct:.0f}",
+                ),
+                t(
+                    "gateway.context.performance",
+                    zone=t(f"gateway.context.latency_{context_latency_zone(used)}"),
                 ),
                 t("gateway.context.bar", bar=bar),
                 t("gateway.context.headroom", headroom=f"{headroom:,}"),

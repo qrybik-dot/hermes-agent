@@ -20850,6 +20850,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
+            # Context-size latency notice. This is deliberately based on a
+            # boundary crossing, not a persistent warning flag: normal turns do
+            # not spam the user, while a real post-compression re-entry can warn
+            # again. The notice is kept out of the transcript/model context.
+            _context_latency_notice = ""
+            try:
+                from agent.i18n import t as _context_t
+                from gateway.context_performance import crossed_context_latency_zone
+
+                _previous_context_tokens = int(
+                    getattr(session_entry, "last_prompt_tokens", 0) or 0
+                )
+                _current_context_tokens = int(
+                    agent_result.get("last_prompt_tokens", 0) or 0
+                )
+                _crossed_context_zone = crossed_context_latency_zone(
+                    _previous_context_tokens, _current_context_tokens
+                )
+                if (
+                    _crossed_context_zone in {"large", "slow"}
+                    and response
+                    and not _intentional_silence
+                ):
+                    _context_latency_notice = _context_t(
+                        f"gateway.context.notice_{_crossed_context_zone}",
+                        used=f"{_current_context_tokens:,}",
+                    )
+            except Exception as _context_notice_err:
+                logger.debug("context latency notice build failed: %s", _context_notice_err)
+
             await self.async_session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
@@ -20922,21 +20952,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
-                # Streaming already delivered the body text, but the footer was
-                # intentionally held back (see the `not already_sent` gate above).
-                # Send it now as a small trailing message so Telegram/Discord/etc.
-                # still surface the runtime metadata on the final reply.
-                if _footer_line:
+                # Streaming already delivered the body text. Runtime footer and
+                # context-latency notice are intentionally held back so neither
+                # contaminates the model transcript. Deliver them together as one
+                # small trailing message rather than creating extra chat noise.
+                _trailing_runtime_parts = [
+                    part for part in (_footer_line, _context_latency_notice) if part
+                ]
+                if _trailing_runtime_parts:
                     try:
                         _foot_adapter = self._adapter_for_source(source)
                         if _foot_adapter:
                             await _foot_adapter.send(
                                 source.chat_id,
-                                _footer_line,
+                                "\n\n".join(_trailing_runtime_parts),
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
                             )
                     except Exception as _e:
-                        logger.debug("trailing footer send failed: %s", _e)
+                        logger.debug("trailing runtime metadata send failed: %s", _e)
                 # This branch returns None so the adapter does not send the
                 # body twice. /loop and /goal hooks in _handle_message read
                 # the return value, so stash the delivered text on the event
@@ -20947,6 +20980,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
                 return None
 
+            if _context_latency_notice and response and not _intentional_silence:
+                response = f"{response}\n\n{_context_latency_notice}"
             return response
             
         except Exception as e:

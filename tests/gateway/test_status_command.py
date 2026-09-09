@@ -589,3 +589,107 @@ async def test_context_all_appends_expanded_listings():
     assert "hermes-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result
+
+
+@pytest.mark.asyncio
+async def test_status_context_shows_latency_zone():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-latency-status",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._running_agents[session_entry.session_key] = SimpleNamespace(
+        model="gemini-3.8-flash-high",
+        provider="custom",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=120_000,
+            context_length=1_048_576,
+        ),
+        interrupt=MagicMock(),
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "120,000 / 1,048,576" in result
+    assert "🟡" in result
+
+
+@pytest.mark.asyncio
+async def test_context_command_shows_slow_latency_zone():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-latency-context",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    agent = _stub_agent()
+    agent.context_compressor.last_prompt_tokens = 185_000
+    agent.context_compressor.context_length = 1_048_576
+    runner._running_agents[session_entry.session_key] = agent
+
+    result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "185,000 / 1,048,576" in result
+    assert "🟠" in result
+
+
+@pytest.mark.asyncio
+async def test_context_latency_notice_only_on_boundary_crossing(monkeypatch):
+    import gateway.run as gateway_run
+    from agent.i18n import reset_language_cache
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    reset_language_cache()
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-latency-notice",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_entry.last_prompt_tokens = 99_000
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "earlier"}
+    ]
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "done",
+            "messages": [],
+            "tools": [],
+            "history_offset": 1,
+            "last_prompt_tokens": 105_000,
+            "context_length": 1_048_576,
+            "input_tokens": 105_000,
+            "output_tokens": 1,
+            "model": "gemini-3.8-flash-high",
+            "provider": "custom",
+        }
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "test"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 1_048_576,
+    )
+
+    result = await runner._handle_message(_make_event("continue"))
+
+    assert result.startswith("done")
+    assert "🟡" in result
+    assert "105,000" in result
+    # The warning is delivery metadata, not model/transcript content.
+    persisted_assistant = [
+        call.args[1].get("content", "")
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) > 1 and call.args[1].get("role") == "assistant"
+    ]
+    assert all("🟡" not in content for content in persisted_assistant)
+    reset_language_cache()
