@@ -1,0 +1,40 @@
+[Unit]
+Description=Hermes Telegram personal-account read-only gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telegram-ro
+Group=hermes-telegram-ro
+ExecStart=/opt/hermes-telegram-ro/venv/bin/python /opt/hermes-telegram-ro/service.py
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+RuntimeDirectory=hermes-telegram-ro
+RuntimeDirectoryMode=0770
+StateDirectory=hermes-telegram-ro
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/run/hermes-telegram-ro /var/lib/hermes-telegram-ro
+MemoryMax=160M
+TasksMax=32
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target
