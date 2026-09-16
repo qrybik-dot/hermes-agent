@@ -11,13 +11,21 @@ import socket
 import struct
 from urllib.parse import urlparse
 
+try:
+    from .read_api import ReadApiError, message_payload, parse_chat_ref, resolve_peer, run_search
+except ImportError:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from read_api import ReadApiError, message_payload, parse_chat_ref, resolve_peer, run_search
+
 SOCKET_PATH = Path("/run/hermes-telegram-ro/telegram-ro.sock")
 STATE_DIR = Path("/var/lib/hermes-telegram-ro")
 CONFIG_PATH = STATE_DIR / "config.json"
 SESSION_BASE = STATE_DIR / "account"
-MAX_REQUEST = 16 * 1024
+MAX_REQUEST = 32 * 1024
 MAX_MEDIA_BYTES = 2 * 1024 * 1024 * 1024
-ALLOWED_ACTIONS = frozenset({"health", "message", "download"})
+ALLOWED_ACTIONS = frozenset({"health", "message", "download", "search", "history"})
+TELEGRAM_LOCK = asyncio.Lock()
 
 
 class RequestError(Exception):
@@ -79,7 +87,13 @@ async def _open_client():
     from telethon import TelegramClient
 
     cfg = _load_config()
-    client = TelegramClient(str(SESSION_BASE), cfg["api_id"], cfg["api_hash"])
+    client = TelegramClient(
+        str(SESSION_BASE),
+        cfg["api_id"],
+        cfg["api_hash"],
+        receive_updates=False,
+        flood_sleep_threshold=20,
+    )
     await client.connect()
     if not await client.is_user_authorized():
         await client.disconnect()
@@ -87,49 +101,32 @@ async def _open_client():
     return client
 
 
-async def _resolve_peer(client, peer_ref: str):
-    if peer_ref.startswith("-100") and peer_ref[4:].isdigit():
-        target_id = int(peer_ref[4:])
-        try:
-            return await client.get_entity(int(peer_ref))
-        except Exception:
-            async for dialog in client.iter_dialogs():
-                entity = dialog.entity
-                if int(getattr(entity, "id", 0) or 0) == target_id:
-                    return entity
-            raise RequestError("chat_not_accessible")
+async def _resolve_url_peer(client, peer_ref: str):
     try:
-        return await client.get_entity(peer_ref)
-    except Exception as exc:
-        raise RequestError("chat_not_accessible") from exc
+        return await resolve_peer(client, peer_ref)
+    except ReadApiError as exc:
+        raise RequestError(str(exc)) from exc
 
 
-def _message_payload(message, source_url: str) -> dict:
-    file_obj = getattr(message, "file", None)
-    filename = getattr(file_obj, "name", None) if file_obj else None
-    ext = getattr(file_obj, "ext", None) if file_obj else None
-    if not filename and ext:
-            filename = f'telegram-{message.id}{ext or ".bin"}'
-    return {
-        "id": int(message.id),
-        "date": message.date.isoformat() if getattr(message, "date", None) else None,
-        "sender_id": getattr(message, "sender_id", None),
-        "text": getattr(message, "message", None) or "",
-        "has_media": bool(getattr(message, "media", None)),
-        "media": {
-            "filename": filename,
-            "mime_type": getattr(file_obj, "mime_type", None) if file_obj else None,
-            "size": getattr(file_obj, "size", None) if file_obj else None,
-            "ext": ext,
-        } if getattr(message, "media", None) else None,
-        "source_url": source_url,
-        "read_only": True,
-    }
-
-
-async def _fetch_message(client, url: str):
-    peer_ref, message_id = parse_message_url(url)
-    peer = await _resolve_peer(client, peer_ref)
+async def _fetch_message(client, request: dict):
+    url = str(request.get("url") or "").strip()
+    if url:
+        peer_ref, message_id = parse_message_url(url)
+        peer = await _resolve_url_peer(client, peer_ref)
+    else:
+        try:
+            peer_ref = parse_chat_ref(request.get("peer"))
+            message_id = int(request.get("message_id"))
+        except ReadApiError as exc:
+            raise RequestError(str(exc)) from exc
+        except Exception as exc:
+            raise RequestError("message_id_required") from exc
+        if message_id <= 0:
+            raise RequestError("invalid_message_id")
+        try:
+            peer = await resolve_peer(client, peer_ref)
+        except ReadApiError as exc:
+            raise RequestError(str(exc)) from exc
     message = await client.get_messages(peer, ids=message_id)
     if message is None:
         raise RequestError("message_not_found")
@@ -139,6 +136,17 @@ async def _fetch_message(client, url: str):
 async def _write_json(writer: asyncio.StreamWriter, payload: dict) -> None:
     writer.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
     await writer.drain()
+
+
+def _downloadable_media(message):
+    media = getattr(message, "media", None)
+    if media is None:
+        raise RequestError("message_has_no_media")
+    if int(getattr(media, "ttl_seconds", 0) or 0) > 0:
+        raise RequestError("expiring_media_download_disabled")
+    if type(media).__name__ == "MessageMediaPaidMedia":
+        raise RequestError("paid_media_download_disabled")
+    return media
 
 
 async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -166,49 +174,53 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
                 "session_present": (STATE_DIR / "account.session").exists(),
                 "allowed_actions": sorted(ALLOWED_ACTIONS),
                 "read_only": True,
+                "telegram_side_effects": "none_intended",
             })
             return
 
-        url = str(request.get("url") or "").strip()
-        if not url:
-            raise RequestError("url_required")
-        parse_message_url(url)
-        client = await _open_client()
-        message = await _fetch_message(client, url)
+        async with TELEGRAM_LOCK:
+            client = await _open_client()
+            if action == "message":
+                message = await _fetch_message(client, request)
+                await _write_json(writer, {"ok": True, "message": message_payload(message, preview=False)})
+                return
+            if action in {"search", "history"}:
+                try:
+                    payload = await run_search(client, request, history=(action == "history"))
+                except ReadApiError as exc:
+                    raise RequestError(str(exc)) from exc
+                await _write_json(writer, {"ok": True, **payload})
+                return
 
-        if action == "message":
-            await _write_json(writer, {"ok": True, "message": _message_payload(message, url)})
-            return
-
-        media = getattr(message, "media", None)
-        if media is None:
-            raise RequestError("message_has_no_media")
-        file_obj = getattr(message, "file", None)
-        size = getattr(file_obj, "size", None) if file_obj else None
-        if size is not None and int(size) > MAX_MEDIA_BYTES:
-            raise RequestError("media_too_large")
-        filename = getattr(file_obj, "name", None) if file_obj else None
-        ext = getattr(file_obj, "ext", None) if file_obj else None
-        if not filename:
-            filename = f'telegram-{message.id}{ext or ".bin"}'
-        await _write_json(writer, {
-            "ok": True,
-            "media": {
-                "message_id": int(message.id),
-                "filename": filename,
-                "mime_type": getattr(file_obj, "mime_type", None) if file_obj else None,
-                "size": size,
-                "read_only": True,
-            },
-        })
-        binary_started = True
-        sent = 0
-        async for chunk in client.iter_download(media, request_size=512 * 1024):
-            sent += len(chunk)
-            if sent > MAX_MEDIA_BYTES:
+            message = await _fetch_message(client, request)
+            media = _downloadable_media(message)
+            file_obj = getattr(message, "file", None)
+            size = getattr(file_obj, "size", None) if file_obj else None
+            if size is not None and int(size) > MAX_MEDIA_BYTES:
                 raise RequestError("media_too_large")
-            writer.write(chunk)
-            await writer.drain()
+            filename = getattr(file_obj, "name", None) if file_obj else None
+            ext = getattr(file_obj, "ext", None) if file_obj else None
+            if not filename:
+                filename = f"telegram-{message.id}{ext or '.bin'}"
+            await _write_json(writer, {
+                "ok": True,
+                "media": {
+                    "message_id": int(message.id),
+                    "peer_ref": str(getattr(message, "chat_id", None) or ""),
+                    "filename": filename,
+                    "mime_type": getattr(file_obj, "mime_type", None) if file_obj else None,
+                    "size": size,
+                    "read_only": True,
+                },
+            })
+            binary_started = True
+            sent = 0
+            async for chunk in client.iter_download(media, request_size=512 * 1024):
+                sent += len(chunk)
+                if sent > MAX_MEDIA_BYTES:
+                    raise RequestError("media_too_large")
+                writer.write(chunk)
+                await writer.drain()
     except RequestError as exc:
         if not binary_started:
             try:

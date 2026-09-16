@@ -1,8 +1,10 @@
 name: telegram_ro
-version: 1.0.0
-description: "Strict read-only access to the user Telegram account through an isolated local service. Exposes only message read and media download; no send/edit/delete/forward/reaction/join/raw MTProto operations exist."
+version: 1.1.0
+description: "Strict zero-side-effect read/search/history/media access to the user Telegram account through an isolated local service; no mutation or raw MTProto operation is exposed."
 author: Hermes local
 kind: backend
 provides_tools:
+  - telegram_ro_search
+  - telegram_ro_history
   - telegram_ro_read
   - telegram_ro_download
