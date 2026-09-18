@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Any, Optional
 
-from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter, classify_send_error
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -525,6 +525,25 @@ class StreamTransportMixin:
             self._egress_declined = True
             self._edit_supported = False
             return False
+        error_kind = getattr(result, "error_kind", None) or classify_send_error(
+            None, str(getattr(result, "error", "") or "")
+        )
+        if error_kind == "not_found":
+            # The editable preview is confirmed gone. No prefix remains visible:
+            # fallback must send the COMPLETE accumulated answer, not only the
+            # unseen tail. Keep the parent chat eligible for the fresh send.
+            self._fallback_prefix = ""
+            self._fallback_final_send = True
+            self._edit_supported = False
+            self._already_sent = False
+            self._message_id = None
+            self._message_created_ts = None
+            self._last_sent_text = ""
+            self._final_response_sent = False
+            self._final_content_delivered = False
+            self._delivered_final_text = None
+            return False
+
         turn_final = finalize and is_turn_final
         if (turn_final and self.cfg.cursor and self._last_sent_text.endswith(self.cfg.cursor)
                 and self._visible_prefix() == text):
