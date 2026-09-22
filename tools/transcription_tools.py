@@ -25,7 +25,8 @@ from tools.transcription_common import (
     DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV, _error_result,
     _get_stt_section, _ok_result)
 from tools.transcription_audio import (
-    _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
+    _cloud_audio_is_effectively_silent, _convert_caf_to_wav, _prepare_audio_for_transcription,
+    _trim_silence_for_cloud_stt,
     _validate_audio_file, _validate_audio_file_size, _validate_audio_source_file)
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
@@ -414,6 +415,8 @@ def _transcribe_prepared_audio(
     # Best-effort pre-upload silence trim for built-in cloud providers.
     trim_cleanup_dir: Optional[str] = None
     if provider in CLOUD_STT_PROVIDERS:
+        if _cloud_audio_is_effectively_silent(file_path, stt_config):
+            return _ok_result("", provider)
         trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
         if trimmed:
             file_path = trimmed

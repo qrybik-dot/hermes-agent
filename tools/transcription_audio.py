@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -186,9 +187,10 @@ def _convert_caf_to_wav(file_path: str) -> Optional[str]:
 # is paid for twice (upload + per-minute billing) and cloud Whisper hallucinates on
 # it. Before uploading to a built-in cloud provider we collapse long pauses with
 # ffmpeg's silenceremove, keeping ``stt.cloud_trim_keep_ms`` of each pause so word
-# boundaries survive. Purely best-effort — ANY of these uploads the original:
+# boundaries survive. A separate conservative volume guard rejects proven
+# no-speech clips before this trim runs. Purely best-effort — ANY of these uploads the original:
 # ``stt.cloud_trim_silence: false``, ffmpeg/ffprobe missing, trim failure/timeout, a
-# ~empty result (the provider, not a dB heuristic, decides "no speech"), or <10%
+# ~empty trim result (the earlier volume guard already handled proven silence), or <10%
 # saving. Command-type and plugin providers are NOT trimmed: they may wrap local
 # CLIs that want the original bytes.
 
@@ -199,6 +201,14 @@ _CLOUD_TRIM_MIN_RESULT_SECONDS = 0.3  # all-silence guard floor: never upload ~e
 # Below this the trim can't pay for itself (several providers bill a 10s minimum)
 # and the encode would sit on the synchronous voice-note path.
 _CLOUD_TRIM_MIN_INPUT_SECONDS = 12.0
+
+# Groq/Whisper can return confident-looking text for pure silence and very quiet
+# background noise.  Reject only clips whose loudest decoded sample stays below
+# this conservative ceiling.  Real voice notes normally peak many dB above it;
+# failures to inspect the audio are fail-open so a local ffmpeg problem never
+# turns into lost speech.  The guard is opt-in to avoid changing unrelated profiles.
+_CLOUD_NO_SPEECH_MAX_VOLUME_DB_DEFAULT = -35.0
+_MAX_VOLUME_RE = re.compile(r"max_volume:\s*(?P<value>-inf|[-+]?\d+(?:\.\d+)?)\s*dB", re.IGNORECASE)
 
 
 def _probe_audio_duration(file_path: str) -> Optional[float]:
@@ -224,6 +234,52 @@ def _cloud_trim_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int]:
     threshold_db = _config_number(cfg, "cloud_trim_threshold_db", _CLOUD_TRIM_THRESHOLD_DB_DEFAULT, int)
     keep_ms = _config_number(cfg, "cloud_trim_keep_ms", _CLOUD_TRIM_KEEP_MS_DEFAULT, int)
     return enabled, threshold_db, max(keep_ms, 0)
+
+
+def _cloud_no_speech_settings(stt_config: Dict[str, Any]) -> tuple[bool, float]:
+    """Resolve the conservative pre-upload no-speech guard settings."""
+    cfg = stt_config if isinstance(stt_config, dict) else {}
+    enabled = is_truthy_value(cfg.get("cloud_no_speech_guard", False), default=False)
+    max_volume_db = _config_number(
+        cfg, "cloud_no_speech_max_volume_db", _CLOUD_NO_SPEECH_MAX_VOLUME_DB_DEFAULT, float)
+    return enabled, max_volume_db
+
+
+def _cloud_audio_is_effectively_silent(file_path: str, stt_config: Dict[str, Any]) -> bool:
+    """Return True only when ffmpeg proves the whole clip stays below the volume ceiling.
+
+    The check is deliberately conservative and fail-open.  It prevents known cloud
+    Whisper silence hallucinations without treating a decoder/probe failure as silence.
+    """
+    enabled, max_volume_db = _cloud_no_speech_settings(stt_config)
+    if not enabled:
+        return False
+    ffmpeg = _find_ffmpeg_binary()
+    if not ffmpeg:
+        logger.debug("Cloud STT no-speech guard skipped: ffmpeg not found")
+        return False
+    try:
+        result = _run_quiet(
+            [ffmpeg, "-hide_banner", "-nostats", "-i", file_path,
+             "-af", "volumedetect", "-f", "null", "-"],
+            timeout=120,
+        )
+        match = _MAX_VOLUME_RE.search(result.stderr or "")
+        if not match:
+            logger.debug("Cloud STT no-speech guard skipped for %s: max_volume unavailable", file_path)
+            return False
+        raw_value = match.group("value").lower()
+        observed_db = float("-inf") if raw_value == "-inf" else float(raw_value)
+        if observed_db <= max_volume_db:
+            logger.info(
+                "Cloud STT no-speech guard rejected %s (max_volume=%.1fdB, ceiling=%.1fdB)",
+                Path(file_path).name, observed_db, max_volume_db,
+            )
+            return True
+        return False
+    except Exception as exc:  # noqa: BLE001 - inspection is best-effort/fail-open
+        logger.debug("Cloud STT no-speech guard failed for %s: %s", file_path, exc)
+        return False
 
 
 def _trim_silence_for_cloud_stt(file_path: str, stt_config: Dict[str, Any]) -> Optional[str]:

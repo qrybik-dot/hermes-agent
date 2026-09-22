@@ -1927,13 +1927,40 @@ class GatewayInboundMixin:
         agent_path = to_agent_visible_cache_path(os.path.abspath(path))
         return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
 
+    @staticmethod
+    def _failed_closed_audio_note() -> str:
+        return (
+            "[The voice message could not be transcribed reliably. Do not infer or act on "
+            "its contents; ask the user to resend it or type the request.]"
+        )
+
+    @staticmethod
+    def _stt_local_fallback_enabled() -> bool:
+        """Compatibility default is on; production profiles may explicitly fail closed."""
+        try:
+            from tools.transcription_tools import _load_stt_config
+            from utils import is_truthy_value
+            return is_truthy_value(
+                _load_stt_config().get("gateway_local_fallback", True), default=True)
+        except Exception:
+            return True
+
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> Tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
         result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
         if not result.get("success"):
+            if not self._stt_local_fallback_enabled():
+                logger.warning(
+                    "Configured STT failed closed for %s: %s",
+                    path, result.get("error", "unknown error"),
+                )
+                return None, self._failed_closed_audio_note()
             fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
             if fallback.get("success"):
-                logger.info("Configured STT failed for %s; recovered with local STT", path)
+                logger.warning(
+                    "Configured STT failed for %s; recovered with provider=%s",
+                    path, fallback.get("provider", "local"),
+                )
                 result = fallback
         if not result["success"]:
             logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
@@ -1949,6 +1976,10 @@ class GatewayInboundMixin:
                 "words. Do not guess at the content; ask the user "
                 "to resend or type it out.]"
             )
+        logger.info(
+            "Voice transcription accepted for %s via provider=%s",
+            path, result.get("provider", "unknown"),
+        )
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
         # and made the LLM comment on voice mode instead.
         return transcript, f'"{transcript}"'

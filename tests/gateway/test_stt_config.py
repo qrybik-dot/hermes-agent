@@ -1,7 +1,7 @@
 """Gateway STT config tests — honor stt.enabled: false from config.yaml."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -94,4 +94,36 @@ async def test_enrich_message_with_transcription_guards_empty_transcript():
     assert '""' not in result
     assert transcripts == []
 
+
+@pytest.mark.asyncio
+async def test_gateway_can_fail_closed_without_hidden_local_fallback():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    primary = MagicMock(return_value={"success": False, "transcript": "", "error": "cloud down"})
+    fallback = MagicMock(return_value={"success": True, "transcript": "weak local guess", "provider": "local"})
+
+    with patch("tools.transcription_tools._load_stt_config",
+               return_value={"gateway_local_fallback": False}):
+        transcript, note = await runner._transcribe_one_clip("/tmp/voice.ogg", primary, fallback)
+
+    assert transcript is None
+    assert "Do not infer or act" in note
+    fallback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_local_fallback_remains_compatibility_default():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    primary = MagicMock(return_value={"success": False, "transcript": "", "error": "cloud down"})
+    fallback = MagicMock(return_value={"success": True, "transcript": "local text", "provider": "local"})
+
+    with patch("tools.transcription_tools._load_stt_config", return_value={}):
+        transcript, note = await runner._transcribe_one_clip("/tmp/voice.ogg", primary, fallback)
+
+    assert transcript == "local text"
+    assert note == '"local text"'
+    fallback.assert_called_once_with("/tmp/voice.ogg")
 
