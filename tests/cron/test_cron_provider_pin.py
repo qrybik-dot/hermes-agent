@@ -180,6 +180,22 @@ class TestCreateJobSnapshot:
         assert job["provider"] is None
         assert job["provider_snapshot"] == "openrouter"
 
+    def test_named_custom_provider_snapshot_preserves_requested_identity(self, monkeypatch):
+        jobs = self._isolate_storage(monkeypatch)
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "provider": "custom",
+                "requested_provider": "custom:hermes-cli-proxy",
+                "base_url": "http://127.0.0.1:8317/v1",
+            },
+        ):
+            job = jobs.create_job(prompt="do a thing", schedule="every 1 hour")
+
+        assert job["provider"] is None
+        assert job["provider_snapshot"] == "custom:hermes-cli-proxy"
+
     def test_pinned_job_skips_snapshot(self, monkeypatch):
         jobs = self._isolate_storage(monkeypatch)
 

@@ -1644,6 +1644,7 @@ def _compute_provider_model_snapshots(
     if normalized_provider is None:
         with contextlib.suppress(Exception):
             from hermes_cli.runtime_provider import resolve_runtime_provider
+            from hermes_cli.fallback_config import effective_runtime_provider
 
             runtime_kwargs = {"requested": None}
             # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop, which honors
@@ -1653,7 +1654,9 @@ def _compute_provider_model_snapshots(
             if normalized_base_url:
                 runtime_kwargs["explicit_base_url"] = normalized_base_url
             snap = resolve_runtime_provider(**runtime_kwargs)
-            provider_snapshot = str(snap.get("provider") or "").strip().lower() or None
+            provider_snapshot = (
+                effective_runtime_provider(None, snap).strip().lower() or None
+            )
     if normalized_model is None:
         with contextlib.suppress(Exception):
             model_snapshot = _resolve_default_model_snapshot() or None
