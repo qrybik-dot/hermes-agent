@@ -18,13 +18,13 @@ RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messa
 MAX_RETRIES = 3
 
 
-def _apply(agent, flag: str, restart_count: int):
+def _apply(agent, flag: str, restart_count: int, max_retries: int = MAX_RETRIES):
     _retry = TurnRetryState()
     setattr(_retry, flag, True)
     return apply_retry_restarts(
         agent, _retry=_retry, response=None, interrupted=False, messages=[],
         conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
-        final_response=None, retry_count=0, max_retries=MAX_RETRIES, api_call_count=1,
+        final_response=None, retry_count=0, max_retries=max_retries, api_call_count=1,
         restart_count=restart_count, length_continue_retries=0,
         _preflight_compression_blocked=True, _turn_exit_reason="unknown",
     )
@@ -64,3 +64,32 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def test_rebuilt_restart_allows_each_configured_fallback_with_low_api_retry_budget():
+    """api_max_retries=1 must not make fallback #2 unreachable.
+
+    Each activated fallback gets exactly one rebuilt-message re-issue; a third re-arm
+    still trips the runaway guard once the two-entry chain has been consumed.
+    """
+    agent = _agent()
+    agent._fallback_chain = [
+        {"provider": "openai-codex", "model": "gpt-5.6-terra"},
+        {"provider": "custom:proxy", "model": "gpt-oss-120b-medium"},
+    ]
+    first = _apply(agent, "restart_with_rebuilt_messages", 0, max_retries=1)
+    second = _apply(agent, "restart_with_rebuilt_messages", first.restart_count, max_retries=1)
+    third = _apply(agent, "restart_with_rebuilt_messages", second.restart_count, max_retries=1)
+    assert [first.action, second.action, third.action] == ["continue", "continue", "break"]
+    assert agent.iteration_budget.refunds == 2
+    assert third._turn_exit_reason == "rebuilt_restart_limit_exceeded"
+
+
+def test_redirect_restart_limit_does_not_expand_with_fallback_chain():
+    """Fallback allowance must not weaken the user-redirect loop guard."""
+    agent = _agent()
+    agent._fallback_chain = [{"provider": "a", "model": "1"}, {"provider": "b", "model": "2"}]
+    first = _apply(agent, "restart_with_redirected_messages", 0, max_retries=1)
+    second = _apply(agent, "restart_with_redirected_messages", first.restart_count, max_retries=1)
+    assert [first.action, second.action] == ["continue", "break"]
+    assert agent.iteration_budget.refunds == 1

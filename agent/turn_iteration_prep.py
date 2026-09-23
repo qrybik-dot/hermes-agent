@@ -471,15 +471,18 @@ def apply_retry_restarts(
 
     if _retry.restart_with_rebuilt_messages:
         restart_count += 1
-        if restart_count > max_retries:
-            # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
-            # iteration budget and re-issuing, or a runaway turn holds the turn lease
-            # indefinitely (rebuilt restarts previously had no bound).
+        fallback_count = len(getattr(agent, "_fallback_chain", []) or [])
+        rebuilt_restart_limit = max(max_retries, fallback_count)
+        if restart_count > rebuilt_restart_limit:
+            # Every successful fallback activation needs one rebuilt-message re-issue before
+            # that provider can make its first request.  Bounding this path by max_retries
+            # alone made chain entries after the first unreachable when api_max_retries=1.
+            # Keep the runaway guard, but budget at least one restart per configured fallback.
             _turn_exit_reason = "rebuilt_restart_limit_exceeded"
             logger.warning(
                 "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
                 "refunding the iteration budget indefinitely.",
-                max_retries,
+                rebuilt_restart_limit,
             )
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the

@@ -322,3 +322,63 @@ class TestPostRecoveryResetDoesNotBreakHappyPath:
         assert agent._fallback_activated is False
         # Gate still open for a future 429.
         assert agent._fallback_index < len(agent._fallback_chain)
+
+
+def test_two_level_rate_limit_chain_reaches_second_fallback():
+    """api_max_retries=1 must still let every configured fallback receive one request.
+
+    Regression for the rebuilt-message restart guard: primary 429 activates fallback #1,
+    fallback #1 429 activates fallback #2, and fallback #2 must be called rather than
+    terminating the turn because ``restart_count`` exceeded ``api_max_retries``.
+    """
+    fb_chain = [
+        {"provider": "zai", "model": "glm-fallback-1", "base_url": "https://fb1.example/v1"},
+        {"provider": "deepseek", "model": "deepseek-fallback-2", "base_url": "https://fb2.example/v1"},
+    ]
+    agent = _make_agent_with_fallback(fb_chain)
+    agent._api_max_retries = 1
+    calls = []
+
+    def fake_api_call(api_kwargs):
+        calls.append((agent.provider, agent.model))
+        if agent.model in {"glm-5.1", "glm-fallback-1"}:
+            raise RateLimitError()
+        return _mock_response("Reached second fallback")
+
+    fb1 = MagicMock()
+    fb1.api_key = "fake-fb1"
+    fb1.base_url = "https://fb1.example/v1"
+    fb1._custom_headers = None
+    fb1.default_headers = None
+    fb2 = MagicMock()
+    fb2.api_key = "fake-fb2"
+    fb2.base_url = "https://fb2.example/v1"
+    fb2._custom_headers = None
+    fb2.default_headers = None
+
+    with (
+        patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=[(fb1, "glm-fallback-1"), (fb2, "deepseek-fallback-2")],
+        ),
+        patch(
+            "hermes_cli.model_normalize.normalize_model_for_provider",
+            side_effect=lambda model, provider: model,
+        ),
+        patch("agent.model_metadata.get_model_context_length", return_value=200000),
+    ):
+        result = agent.run_conversation("hello")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Reached second fallback"
+    assert calls == [
+        ("zai", "glm-5.1"),
+        ("zai", "glm-fallback-1"),
+        ("deepseek", "deepseek-fallback-2"),
+    ]
+    assert agent._fallback_index == 2
+    assert agent.model == "deepseek-fallback-2"
