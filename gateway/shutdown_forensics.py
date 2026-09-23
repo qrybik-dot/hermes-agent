@@ -197,15 +197,23 @@ def check_systemd_timing_alignment(
     """
     if not os.environ.get("INVOCATION_ID"):
         return None  # Not running under systemd (or at least not directly)
-    # /proc/self/cgroup: "0::/user.slice/.../hermes-gateway.service"
+    # /proc/self/cgroup identifies both the unit name and which systemd manager owns it.
+    # Querying the wrong manager is unsafe: ``systemctl --user show missing.service`` may exit 0
+    # and report manager defaults (notably TimeoutStopUSec=90s) even though LoadState=not-found.
     unit_name: Optional[str] = None
+    unit_scope: Optional[str] = None
     with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8") as fh:
         for line in fh:
-            parts = reversed(line.strip().split("/"))
+            cgroup_path = line.strip().split(":", 2)[-1]
+            parts = reversed(cgroup_path.split("/"))
             unit_name = next((p for p in parts if p.endswith(".service")), None)
             if unit_name:
+                if "/system.slice/" in f"{cgroup_path}/":
+                    unit_scope = "system"
+                elif "/user.slice/" in f"{cgroup_path}/":
+                    unit_scope = "user"
                 break
-    if (timeout_us := _systemd_timeout_stop_us(unit_name) if unit_name else None) is None:
+    if (timeout_us := _systemd_timeout_stop_us(unit_name, scope=unit_scope) if unit_name else None) is None:
         return None
     timeout_stop_sec = timeout_us / 1_000_000.0
     expected = float(resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout))
@@ -214,23 +222,37 @@ def check_systemd_timing_alignment(
             "mismatch": timeout_stop_sec < expected}
 
 
-def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
-    for flag in (["--user"], []):
+def _systemd_timeout_stop_us(unit_name: str, *, scope: Optional[str] = None) -> Optional[int]:
+    """Return loaded unit's ``TimeoutStopUSec`` in microseconds.
+
+    ``scope`` should be ``"system"`` or ``"user"`` when cgroup ownership is known.
+    With unknown ownership both managers are probed, but only a genuinely loaded unit is accepted;
+    systemd otherwise exposes manager defaults for missing units and can create false warnings.
+    """
+    flags = ([[]] if scope == "system" else [["--user"]] if scope == "user" else [["--user"], []])
+    for flag in flags:
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                [
+                    "systemctl", *flag, "show", unit_name,
+                    "--property=LoadState", "--property=TimeoutStopUSec",
+                ],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+        if result.returncode != 0:
+            continue
+        props = dict(
+            line.split("=", 1) for line in result.stdout.splitlines()
+            if "=" in line
+        )
+        if props.get("LoadState") != "loaded":
+            continue
+        value = props.get("TimeoutStopUSec", "").strip()
+        timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+        if timeout_us is not None:
+            return timeout_us
     return None
 
 

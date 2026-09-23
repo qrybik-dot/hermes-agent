@@ -7,6 +7,7 @@ import os
 import signal
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,6 +132,9 @@ class TestParseSystemdDuration:
     def test_minutes(self):
         assert sf.parse_systemd_duration_to_us("3min") == 180 * 1_000_000
 
+    def test_compound_minutes_seconds(self):
+        assert sf.parse_systemd_duration_to_us("3min 30s") == 210 * 1_000_000
+
 
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
@@ -146,3 +150,60 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+
+class TestSystemdTimeoutLookup:
+    def test_system_scope_queries_only_system_manager(self, monkeypatch):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(
+                returncode=0, stdout="LoadState=loaded\nTimeoutStopUSec=3min 30s\n"
+            )
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service", scope="system") == 210_000_000
+        assert len(calls) == 1
+        assert "--user" not in calls[0]
+
+    def test_unknown_scope_rejects_not_found_manager_defaults(self, monkeypatch):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if "--user" in args:
+                return SimpleNamespace(
+                    returncode=0, stdout="LoadState=not-found\nTimeoutStopUSec=1min 30s\n"
+                )
+            return SimpleNamespace(
+                returncode=0, stdout="LoadState=loaded\nTimeoutStopUSec=3min 30s\n"
+            )
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210_000_000
+        assert len(calls) == 2
+
+    def test_cgroup_scope_selects_system_manager(self, monkeypatch):
+        from io import StringIO
+        import builtins
+
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/self/cgroup":
+                return StringIO("0::/system.slice/hermes-gateway.service\n")
+            return real_open(path, *args, **kwargs)
+
+        captured = {}
+
+        def fake_lookup(unit_name, *, scope=None):
+            captured.update(unit=unit_name, scope=scope)
+            return 210_000_000
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        monkeypatch.setattr(sf, "_systemd_timeout_stop_us", fake_lookup)
+        result = sf.check_systemd_timing_alignment(180.0, 30.0)
+        assert captured == {"unit": "hermes-gateway.service", "scope": "system"}
+        assert result is not None and result["mismatch"] is False
