@@ -435,7 +435,7 @@ def on_post_api_request(*, turn_id: str = "", session_id: str = "", api_call_cou
         state["updated_mono"] = time.monotonic()
 
 
-def on_session_end(*, turn_id: str = "", session_id: str = "", task_id: str = "",
+def on_turn_complete(*, turn_id: str = "", session_id: str = "", task_id: str = "",
                    completed: bool = False, failed: bool = False, interrupted: bool = False,
                    turn_exit_reason: str = "", model: str = "", platform: str = "") -> None:
     key = _turn_key(turn_id, session_id)
@@ -514,7 +514,7 @@ def register(ctx) -> None:
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("post_api_request", on_post_api_request)
-    ctx.register_hook("on_session_end", on_session_end)
+    ctx.register_hook("on_turn_complete", on_turn_complete)
     # v2 intentionally does NOT register select_tools_for_request: this release measures only.
     ctx.register_command("jev-shadow", handler=_handle_slash,
                          description="Show TypeSafe Jev v2 shadow evaluator status.")

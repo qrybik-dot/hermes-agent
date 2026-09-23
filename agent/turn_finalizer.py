@@ -524,6 +524,22 @@ def finalize_turn(
     except Exception as exc:
         logger.warning("on_turn_complete notification failed: %s", exc)
 
+    # Plugin observation seam for turn-level telemetry. Return values are ignored: this hook
+    # cannot transform the response, mutate tool authority, or affect control flow.
+    try:
+        from hermes_cli.lifecycle import invoke_hook as _invoke_plugin_hook
+        _invoke_plugin_hook(
+            "on_turn_complete",
+            session_id=getattr(agent, "session_id", "") or "",
+            task_id=effective_task_id, turn_id=turn_id, platform=_platform,
+            model=getattr(agent, "model", "") or "",
+            provider=getattr(agent, "provider", "") or "",
+            api_call_count=api_call_count, completed=completed,
+            interrupted=interrupted, failed=failed, turn_exit_reason=_turn_exit_reason,
+        )
+    except Exception as exc:
+        logger.warning("plugin on_turn_complete notification failed: %s", exc)
+
     # Surrogate chokepoint: RAW SDK text with a lone UTF-16 surrogate crashes downstream
     # consumers (stdout, Telegram ``utf16_len``, JSON); scrub once where it leaves the loop.
     # Class-level surrogate chokepoint (#80366, #55143, #55309, #19819): ``final_response`` is often the RAW

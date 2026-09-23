@@ -127,7 +127,7 @@ VALID_HOOKS: Set[str] = {
     # "should_rotate_credential"/"should_fallback": bool, "message": str, "error_context": dict}.
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
-    "transform_api_error_classification", "on_session_start", "on_session_end",
+    "transform_api_error_classification", "on_session_start", "on_session_end", "on_turn_complete",
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",

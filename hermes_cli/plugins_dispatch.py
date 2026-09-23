@@ -42,7 +42,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "select_tools_for_request",
     "pre_api_request", "post_api_request", "api_request_error",
-    "pre_verify", "on_session_start", "on_session_end",
+    "pre_verify", "on_session_start", "on_session_end", "on_turn_complete",
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).

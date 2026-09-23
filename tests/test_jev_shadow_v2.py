@@ -53,7 +53,7 @@ def test_outcome_collects_objective_turn_evidence(monkeypatch, tmp_path):
     m.on_post_api_request(turn_id="turn-1", session_id="session-1", api_call_count=2,
                           api_duration=0.25, usage={"input_tokens": 100, "output_tokens": 20},
                           model="model-a", provider="proxy")
-    m.on_session_end(turn_id="turn-1", session_id="session-1", task_id="task-1",
+    m.on_turn_complete(turn_id="turn-1", session_id="session-1", task_id="task-1",
                      completed=True, failed=False, interrupted=False,
                      turn_exit_reason="text_response(stop)", model="model-a", platform="telegram")
     rows = [json.loads(line) for line in (tmp_path / "logs" / "jev-shadow.jsonl").read_text().splitlines()]
@@ -74,7 +74,7 @@ def test_plugin_registers_observers_but_not_active_selector():
         def register_hook(self, name, callback): hooks.append(name)
         def register_command(self, *args, **kwargs): pass
     m.register(Ctx())
-    assert hooks == ["pre_llm_call", "post_tool_call", "post_api_request", "on_session_end"]
+    assert hooks == ["pre_llm_call", "post_tool_call", "post_api_request", "on_turn_complete"]
     assert "select_tools_for_request" not in hooks
 
 
@@ -93,3 +93,8 @@ def test_jev_exception_is_logged_and_never_raised(monkeypatch, tmp_path):
     assert rows[-1]["event"] == "decision"
     assert rows[-1]["status"] == "exception"
     assert rows[-1]["error_type"] == "TimeoutError"
+
+
+def test_turn_complete_is_a_supported_plugin_hook():
+    import hermes_cli.plugins as plugins
+    assert "on_turn_complete" in plugins.VALID_HOOKS
