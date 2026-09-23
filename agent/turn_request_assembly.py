@@ -107,6 +107,7 @@ def assemble_api_request(
     agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
     _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
     original_user_message: Any, pending_moa_prepared_request: Any, request_logger: Any,
+    effective_task_id: Any, turn_id: Any,
 ) -> AssembledRequest:
     """Assemble the request in the original order. ORDER IS LOAD-BEARING: cache breakpoints
     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
@@ -189,6 +190,23 @@ def assemble_api_request(
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
     tools_for_api = agent.tools
+    # Request-local semantic routing seam. It is deliberately subset-only and fail-open:
+    # plugins cannot grant a tool the session did not already have, and agent.tools stays
+    # canonical/unchanged. With no selector hook registered this is a cheap no-op.
+    try:
+        from hermes_cli.plugins import select_tools_for_request
+        tools_for_api = select_tools_for_request(
+            tools_for_api,
+            session_id=getattr(agent, "session_id", "") or "",
+            task_id=str(effective_task_id or ""), turn_id=str(turn_id or ""),
+            platform=getattr(agent, "platform", "") or "",
+            model=getattr(agent, "model", "") or "",
+            provider=getattr(agent, "provider", "") or "",
+            user_message=original_user_message,
+        )
+    except Exception:
+        logger.debug("request-local tool selection failed; keeping canonical tools", exc_info=True)
+        tools_for_api = agent.tools
     if agent._use_prompt_caching and agent.provider != "moa":
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
 

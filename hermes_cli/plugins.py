@@ -109,6 +109,10 @@ VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # select_tools_for_request: request-local, subset-only tool selection. Plugins receive
+    # names only and may only narrow the already-authorized set; invalid/expanding results
+    # are ignored fail-open. The host always keeps the tool-discovery escape hatch.
+    "select_tools_for_request",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
@@ -1731,6 +1735,84 @@ def has_hook(hook_name: str) -> bool:
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
     """Return a stable snapshot of callbacks registered for a hook."""
     return get_plugin_manager().iter_hook_callbacks(hook_name)
+
+
+_REQUEST_TOOL_ESCAPE_HATCH = frozenset({"tool_search", "tool_describe", "tool_call"})
+
+
+def select_tools_for_request(
+    tool_defs: Any, *, session_id: str = "", task_id: str = "", turn_id: str = "",
+    platform: str = "", model: str = "", provider: str = "", user_message: Any = None,
+) -> Any:
+    """Apply request-local plugin tool selection without granting authority.
+
+    Plugins see only the names already authorized for this session and may return
+    ``{"tool_names": [...]}``. Every accepted result must be a subset of the original
+    names. Multiple valid selectors intersect. Invalid results, expansion attempts,
+    exceptions, and an empty final selection all fail open to *tool_defs*. Tool Search
+    bridge tools are retained when originally present so a bad semantic prediction can
+    recover by re-discovery on a later iteration. The canonical ``agent.tools`` list is
+    never mutated.
+    """
+    if not isinstance(tool_defs, list) or not tool_defs:
+        return tool_defs
+    manager = _delivery_manager()
+    if not manager.has_hook("select_tools_for_request"):
+        return tool_defs
+
+    names: list[str] = []
+    for item in tool_defs:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function")
+        name = fn.get("name") if isinstance(fn, dict) else None
+        if isinstance(name, str) and name:
+            names.append(name)
+    if not names:
+        return tool_defs
+
+    original = frozenset(names)
+    selected = set(original)
+    applied = False
+    try:
+        results = manager.invoke_hook(
+            "select_tools_for_request",
+            available_tool_names=tuple(names),
+            session_id=session_id, task_id=task_id, turn_id=turn_id,
+            platform=platform, model=model, provider=provider,
+            # Current-turn text only; callbacks with narrow signatures do not receive it.
+            user_message=user_message,
+        )
+    except Exception as exc:
+        logger.debug("request-local tool selector dispatch failed; keeping all tools: %s", exc)
+        return tool_defs
+
+    for result in results:
+        if not isinstance(result, dict) or "tool_names" not in result:
+            continue
+        raw = result.get("tool_names")
+        if not isinstance(raw, (list, tuple)) or not all(isinstance(x, str) for x in raw):
+            logger.warning("Ignoring invalid request-local tool selection result: %r", result)
+            continue
+        requested = set(raw)
+        if not requested.issubset(original):
+            logger.warning(
+                "Ignoring request-local tool expansion attempt: requested=%s unauthorized=%s",
+                sorted(requested), sorted(requested - original),
+            )
+            continue
+        selected.intersection_update(requested | (_REQUEST_TOOL_ESCAPE_HATCH & original))
+        applied = True
+
+    if not applied:
+        return tool_defs
+    filtered = [
+        item for item in tool_defs
+        if isinstance(item, dict)
+        and isinstance(item.get("function"), dict)
+        and item["function"].get("name") in selected
+    ]
+    return filtered or tool_defs
 
 
 def fire_pre_command_hook(
