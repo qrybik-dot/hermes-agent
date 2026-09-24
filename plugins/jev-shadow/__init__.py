@@ -25,12 +25,23 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
+_PROVIDERS = {
+    "typesafe": {
+        "endpoint": "https://api.typesafe.ai/v1/systemone",
+        "key_env": "TYPESAFE_API_KEY",
+        "model": "jev-latest",
+    },
+    "opencode": {
+        "endpoint": "https://opencode.ai/zen/v1/systemone",
+        "key_env": "OPENCODE_ZEN_API_KEY",
+        "model": "jev-1.13-free",
+    },
+}
 _POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jev-shadow")
 _SLOTS = threading.BoundedSemaphore(2)
 _LOG_LOCK = threading.Lock()
 _STATE_LOCK = threading.Lock()
-_CLIENT: httpx.Client | None = None
+_CLIENTS: dict[str, httpx.Client] = {}
 _SEEN: dict[str, float] = {}
 _HOURLY: deque[float] = deque()
 _DAILY: deque[float] = deque()
@@ -110,17 +121,64 @@ def _append_log(record: dict[str, Any]) -> None:
         logger.debug("jev-shadow log write failed: %s", type(exc).__name__)
 
 
-def _client() -> httpx.Client:
-    global _CLIENT
+def _client(backend: str) -> httpx.Client:
     with _STATE_LOCK:
-        if _CLIENT is None:
+        client = _CLIENTS.get(backend)
+        if client is None:
             timeout = _env_float("HERMES_JEV_TIMEOUT_S", 5.0, 1.0, 15.0)
-            _CLIENT = httpx.Client(
+            headers = {"Content-Type": "application/json", "Accept": "application/json"}
+            if backend == "opencode":
+                # OpenCode/Cloudflare rejects Python's default client signature (1010).
+                # A curl-compatible User-Agent is known-good from the VPS canary.
+                headers["User-Agent"] = "curl/8.5.0"
+            client = httpx.Client(
                 timeout=httpx.Timeout(timeout, connect=min(3.0, timeout)),
                 limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
-                headers={"Content-Type": "application/json"},
+                headers=headers,
             )
-        return _CLIENT
+            _CLIENTS[backend] = client
+        return client
+
+
+def _read_env_file_value(path: str, name: str) -> str:
+    try:
+        for raw in Path(path).read_text(encoding="utf-8").splitlines():
+            if raw.startswith(name + "="):
+                return raw.split("=", 1)[1].strip()
+    except (OSError, UnicodeError):
+        pass
+    return ""
+
+
+def _provider_config(backend: str) -> dict[str, str] | None:
+    backend = (backend or "").strip().lower()
+    base = _PROVIDERS.get(backend)
+    if base is None:
+        return None
+    key_env = str(base["key_env"])
+    key = os.getenv(key_env, "").strip()
+    if not key and backend == "opencode":
+        key = _read_env_file_value(
+            os.getenv("HERMES_JEV_OPENCODE_ENV_FILE", "/etc/hermes/opencode.env"), key_env
+        )
+    model_env = "HERMES_JEV_MODEL" if backend == "typesafe" else "HERMES_JEV_OPENCODE_MODEL"
+    endpoint_env = "HERMES_JEV_TYPESAFE_ENDPOINT" if backend == "typesafe" else "HERMES_JEV_OPENCODE_ENDPOINT"
+    return {
+        "backend": backend,
+        "endpoint": os.getenv(endpoint_env, str(base["endpoint"])).strip(),
+        "key": key,
+        "model": os.getenv(model_env, str(base["model"])).strip(),
+    }
+
+
+def _provider_order() -> list[str]:
+    primary = os.getenv("HERMES_JEV_BACKEND", "typesafe").strip().lower()
+    fallback = os.getenv("HERMES_JEV_FALLBACK_BACKEND", "").strip().lower()
+    order: list[str] = []
+    for name in (primary, fallback):
+        if name in _PROVIDERS and name not in order:
+            order.append(name)
+    return order or ["typesafe"]
 
 
 def _allowed_platform(platform: str) -> bool:
@@ -296,30 +354,57 @@ def _evaluate_shadow(*, user_message: str, session_id: str, task_id: str, turn_i
         "current_provider": provider or "",
     }
     try:
-        key = os.getenv("TYPESAFE_API_KEY", "").strip()
-        if not key:
-            _append_log({**base, "status": "skipped_no_key"})
-            return
         max_chars = _env_int("HERMES_JEV_MAX_STATE_CHARS", 2400, 256, 6000)
-        payload = {
+        base_payload = {
             "state": {
                 "request": _redact(user_message)[:max_chars],
                 "platform": platform or "unknown",
                 "current_model": model or "unknown",
                 "is_first_turn": bool(is_first_turn),
             },
-            "model": os.getenv("HERMES_JEV_MODEL", "jev-latest"),
             "questions": _question_set(),
         }
-        response = _client().post(
-            _ENDPOINT, headers={"Authorization": f"Bearer {key}"}, json=payload
-        )
+        body: dict[str, Any] | None = None
+        used_backend = ""
+        attempts: list[dict[str, Any]] = []
+        for backend in _provider_order():
+            cfg = _provider_config(backend)
+            if not cfg or not cfg.get("key"):
+                attempts.append({"backend": backend, "status": "missing_key"})
+                continue
+            payload = {**base_payload, "model": cfg["model"]}
+            attempt_t0 = time.perf_counter()
+            try:
+                response = _client(backend).post(
+                    cfg["endpoint"], headers={"Authorization": f"Bearer {cfg['key']}"}, json=payload
+                )
+                attempt_ms = round((time.perf_counter() - attempt_t0) * 1000)
+                if response.status_code != 200:
+                    attempts.append({
+                        "backend": backend, "status": "http_error",
+                        "http_status": response.status_code, "latency_ms": attempt_ms,
+                    })
+                    continue
+                parsed = response.json()
+            except Exception as exc:
+                attempts.append({
+                    "backend": backend, "status": "exception",
+                    "error_type": type(exc).__name__,
+                    "latency_ms": round((time.perf_counter() - attempt_t0) * 1000),
+                })
+                continue
+            if not isinstance(parsed, dict):
+                attempts.append({"backend": backend, "status": "invalid_json", "latency_ms": attempt_ms})
+                continue
+            body = parsed
+            used_backend = backend
+            attempts.append({"backend": backend, "status": "ok", "latency_ms": attempt_ms})
+            break
         latency_ms = round((time.perf_counter() - t0) * 1000)
-        if response.status_code != 200:
-            _append_log({**base, "status": "http_error",
-                         "http_status": response.status_code, "latency_ms": latency_ms})
+        if body is None:
+            _append_log({**base, "status": "provider_error", "latency_ms": latency_ms,
+                         "provider_attempts": attempts})
             return
-        body = response.json()
         answers = body.get("answers") if isinstance(body, dict) else {}
         usage = body.get("usage") if isinstance(body, dict) else {}
         compact = {name: _compact_answer(answer) for name, answer in (answers or {}).items()}
@@ -331,10 +416,12 @@ def _evaluate_shadow(*, user_message: str, session_id: str, task_id: str, turn_i
                     "prediction_ready": True, "decisions": compact,
                     "predicted_bundles": bundles,
                     "derived_model_tier": _derive_model_tier(answers or {}),
+                    "jev_backend": used_backend,
                     "jev_latency_ms": latency_ms, "updated_mono": time.monotonic(),
                 })
         _append_log({
             **base, "status": "ok", "api_model": body.get("model"),
+            "jev_backend": used_backend, "provider_attempts": attempts,
             "latency_ms": latency_ms,
             "input_tokens": (usage or {}).get("input_tokens"), "decisions": compact,
             "predicted_bundles": bundles,
@@ -497,6 +584,7 @@ def _status() -> str:
     return (
         "Jev shadow v2: enabled=" + str(_env_bool("HERMES_JEV_SHADOW_ENABLED", True)).lower()
         + f", platforms={os.getenv('HERMES_JEV_PLATFORMS', 'telegram')}"
+        + f", backends={'->'.join(_provider_order())}"
         + f"\nlast1000_events={counts or {}}"
         + f"\ndecision_ok={decision_ok}, outcomes={outcomes}, avg_latency_ms={avg if avg is not None else 'n/a'}"
         + f"\ndiscovery_calls={discovery}, tool_errors={errors}, api_calls={api_calls}"
@@ -517,4 +605,4 @@ def register(ctx) -> None:
     ctx.register_hook("on_turn_complete", on_turn_complete)
     # v2 intentionally does NOT register select_tools_for_request: this release measures only.
     ctx.register_command("jev-shadow", handler=_handle_slash,
-                         description="Show TypeSafe Jev v2 shadow evaluator status.")
+                         description="Show Jev v2 shadow evaluator status and backend order.")

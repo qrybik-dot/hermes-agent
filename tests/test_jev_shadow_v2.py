@@ -84,17 +84,91 @@ def test_jev_exception_is_logged_and_never_raised(monkeypatch, tmp_path):
     monkeypatch.setenv("TYPESAFE_API_KEY", "dummy")
     class BrokenClient:
         def post(self, *args, **kwargs): raise TimeoutError("simulated timeout")
-    monkeypatch.setattr(m, "_client", lambda: BrokenClient())
+    monkeypatch.setattr(m, "_client", lambda _backend: BrokenClient())
     m._evaluate_shadow(
         user_message="research current docs", session_id="s", task_id="t", turn_id="turn-fault",
         platform="telegram", model="model-a", provider="proxy", is_first_turn=True,
     )
     rows = [json.loads(line) for line in (tmp_path / "logs" / "jev-shadow.jsonl").read_text().splitlines()]
     assert rows[-1]["event"] == "decision"
-    assert rows[-1]["status"] == "exception"
-    assert rows[-1]["error_type"] == "TimeoutError"
+    assert rows[-1]["status"] == "provider_error"
+    assert rows[-1]["provider_attempts"][0]["status"] == "exception"
+    assert rows[-1]["provider_attempts"][0]["error_type"] == "TimeoutError"
 
 
 def test_turn_complete_is_a_supported_plugin_hook():
     import hermes_cli.plugins as plugins
     assert "on_turn_complete" in plugins.VALID_HOOKS
+
+
+def test_provider_order_defaults_to_typesafe(monkeypatch):
+    m = _load_plugin()
+    monkeypatch.delenv("HERMES_JEV_BACKEND", raising=False)
+    monkeypatch.delenv("HERMES_JEV_FALLBACK_BACKEND", raising=False)
+    assert m._provider_order() == ["typesafe"]
+
+
+def test_opencode_provider_reads_dedicated_key_file(monkeypatch, tmp_path):
+    m = _load_plugin()
+    env_file = tmp_path / "opencode.env"
+    env_file.write_text("OPENCODE_ZEN_API_KEY=test-key\n", encoding="utf-8")
+    monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
+    monkeypatch.setenv("HERMES_JEV_OPENCODE_ENV_FILE", str(env_file))
+    cfg = m._provider_config("opencode")
+    assert cfg is not None
+    assert cfg["key"] == "test-key"
+    assert cfg["model"] == "jev-1.13-free"
+    assert cfg["endpoint"] == "https://opencode.ai/zen/v1/systemone"
+
+
+def test_opencode_client_uses_cloudflare_compatible_user_agent():
+    m = _load_plugin()
+    m._CLIENTS.clear()
+    client = m._client("opencode")
+    try:
+        assert client.headers["user-agent"] == "curl/8.5.0"
+    finally:
+        client.close()
+        m._CLIENTS.clear()
+
+
+def test_provider_falls_back_after_primary_http_error(monkeypatch, tmp_path):
+    m = _load_plugin()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_JEV_BACKEND", "opencode")
+    monkeypatch.setenv("HERMES_JEV_FALLBACK_BACKEND", "typesafe")
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "oc-key")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-key")
+
+    class Response:
+        def __init__(self, code, body=None):
+            self.status_code = code
+            self._body = body or {}
+        def json(self):
+            return self._body
+
+    class Client:
+        def __init__(self, response):
+            self.response = response
+        def post(self, *args, **kwargs):
+            return self.response
+
+    clients = {
+        "opencode": Client(Response(403)),
+        "typesafe": Client(Response(200, {
+            "model": "jev-1.13.0",
+            "answers": {"needs_web": {"type": "noul", "noul": 0.9}},
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        })),
+    }
+    monkeypatch.setattr(m, "_client", lambda backend: clients[backend])
+    m._evaluate_shadow(
+        user_message="check current docs", session_id="s", task_id="t", turn_id="turn-fallback",
+        platform="telegram", model="model-a", provider="proxy", is_first_turn=True,
+    )
+    rows = [json.loads(line) for line in (tmp_path / "logs" / "jev-shadow.jsonl").read_text().splitlines()]
+    row = rows[-1]
+    assert row["status"] == "ok"
+    assert row["jev_backend"] == "typesafe"
+    assert [a["backend"] for a in row["provider_attempts"]] == ["opencode", "typesafe"]
+    assert row["provider_attempts"][0]["http_status"] == 403
