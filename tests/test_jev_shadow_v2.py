@@ -101,11 +101,11 @@ def test_turn_complete_is_a_supported_plugin_hook():
     assert "on_turn_complete" in plugins.VALID_HOOKS
 
 
-def test_provider_order_defaults_to_typesafe(monkeypatch):
+def test_provider_order_defaults_to_opencode_then_typesafe(monkeypatch):
     m = _load_plugin()
     monkeypatch.delenv("HERMES_JEV_BACKEND", raising=False)
     monkeypatch.delenv("HERMES_JEV_FALLBACK_BACKEND", raising=False)
-    assert m._provider_order() == ["typesafe"]
+    assert m._provider_order() == ["opencode", "typesafe"]
 
 
 def test_opencode_provider_reads_dedicated_key_file(monkeypatch, tmp_path):

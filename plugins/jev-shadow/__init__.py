@@ -172,13 +172,13 @@ def _provider_config(backend: str) -> dict[str, str] | None:
 
 
 def _provider_order() -> list[str]:
-    primary = os.getenv("HERMES_JEV_BACKEND", "typesafe").strip().lower()
-    fallback = os.getenv("HERMES_JEV_FALLBACK_BACKEND", "").strip().lower()
+    primary = os.getenv("HERMES_JEV_BACKEND", "opencode").strip().lower()
+    fallback = os.getenv("HERMES_JEV_FALLBACK_BACKEND", "typesafe").strip().lower()
     order: list[str] = []
     for name in (primary, fallback):
         if name in _PROVIDERS and name not in order:
             order.append(name)
-    return order or ["typesafe"]
+    return order or ["opencode", "typesafe"]
 
 
 def _allowed_platform(platform: str) -> bool:
