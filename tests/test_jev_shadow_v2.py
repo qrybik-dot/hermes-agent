@@ -172,3 +172,16 @@ def test_provider_falls_back_after_primary_http_error(monkeypatch, tmp_path):
     assert row["jev_backend"] == "typesafe"
     assert [a["backend"] for a in row["provider_attempts"]] == ["opencode", "typesafe"]
     assert row["provider_attempts"][0]["http_status"] == 403
+
+
+def test_typesafe_provider_reads_dedicated_key_file(monkeypatch, tmp_path):
+    m = _load_plugin()
+    env_file = tmp_path / "typesafe.env"
+    env_file.write_text("TYPESAFE_API_KEY=test-ts-key\n", encoding="utf-8")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("HERMES_JEV_TYPESAFE_ENV_FILE", str(env_file))
+    cfg = m._provider_config("typesafe")
+    assert cfg is not None
+    assert cfg["key"] == "test-ts-key"
+    assert cfg["model"] == "jev-latest"
+    assert cfg["endpoint"] == "https://api.typesafe.ai/v1/systemone"

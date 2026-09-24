@@ -157,10 +157,10 @@ def _provider_config(backend: str) -> dict[str, str] | None:
         return None
     key_env = str(base["key_env"])
     key = os.getenv(key_env, "").strip()
-    if not key and backend == "opencode":
-        key = _read_env_file_value(
-            os.getenv("HERMES_JEV_OPENCODE_ENV_FILE", "/etc/hermes/opencode.env"), key_env
-        )
+    if not key:
+        env_file_var = "HERMES_JEV_OPENCODE_ENV_FILE" if backend == "opencode" else "HERMES_JEV_TYPESAFE_ENV_FILE"
+        default_env_file = "/etc/hermes/opencode.env" if backend == "opencode" else "/etc/hermes/typesafe.env"
+        key = _read_env_file_value(os.getenv(env_file_var, default_env_file), key_env)
     model_env = "HERMES_JEV_MODEL" if backend == "typesafe" else "HERMES_JEV_OPENCODE_MODEL"
     endpoint_env = "HERMES_JEV_TYPESAFE_ENDPOINT" if backend == "typesafe" else "HERMES_JEV_OPENCODE_ENDPOINT"
     return {

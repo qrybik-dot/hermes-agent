@@ -1,5 +1,5 @@
 name: jev-shadow
-version: 0.3.1
+version: 0.3.2
 description: "Fail-open Jev v2 shadow evaluator with TypeSafe/OpenCode backends. Measures semantic routing decisions against actual Hermes outcomes without changing behavior."
 hooks:
   - pre_llm_call
