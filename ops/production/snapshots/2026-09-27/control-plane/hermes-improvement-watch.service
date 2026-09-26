@@ -1,0 +1,18 @@
+[Unit]
+Description=Hermes Improvement Pending Dispatcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes/hermes-improvement-lab/workspaces
+ExecStart=/bin/bash /opt/hermes-vps-admin-mcp/workspace/improvement-auto-dispatch.sh
+NoNewPrivileges=yes
+PrivateTmp=yes
+KillMode=control-group
+TimeoutStartSec=120
+TimeoutStopSec=15
+MemoryMax=192M
+Nice=5
