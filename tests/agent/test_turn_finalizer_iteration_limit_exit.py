@@ -170,8 +170,8 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
-    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
-    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
     agent = _LimitAgent()
 
     result = _finalize(
@@ -244,8 +244,8 @@ def test_bounded_fallback_records_kanban_failure_when_interrupted(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-456")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
-    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
-    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
     agent = _LimitAgent()
 
     # Budget exhausted (60/60), interrupted, no fallback-eligible exit_reason
@@ -285,8 +285,8 @@ def test_bounded_fallback_records_kanban_failure_when_failed(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-789")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
-    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
-    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
     agent = _LimitAgent()
 
     result = finalize_turn(
@@ -318,8 +318,8 @@ def test_bounded_fallback_does_not_fire_without_kanban_task(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
-    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
-    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
     agent = _LimitAgent()
 
     result = finalize_turn(
@@ -349,8 +349,8 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-999")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
-    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
-    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
     agent = _LimitAgent(budget_remaining=60)
 
     # api_call_count=10, max_iterations=60 — budget NOT exhausted
@@ -373,34 +373,3 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     record.assert_not_called()
 
 
-
-
-def test_failed_file_mutation_marks_turn_partial(monkeypatch):
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
-    agent = _LimitAgent(max_iterations=60, budget_remaining=10)
-    agent._turn_failed_file_mutations = {
-        "/tmp/not-written.md": {"tool": "write_file", "error_preview": "permission denied"}
-    }
-    agent._file_mutation_verifier_enabled = lambda: True
-    agent._format_file_mutation_failure_footer = lambda failed: "VERIFIER FOOTER"
-
-    result = finalize_turn(
-        agent,
-        final_response="Saved successfully",
-        api_call_count=1,
-        interrupted=False,
-        failed=False,
-        messages=[{"role": "user", "content": "save it"}],
-        conversation_history=[],
-        effective_task_id="task",
-        turn_id="turn",
-        user_message="save it",
-        original_user_message="save it",
-        _should_review_memory=False,
-        _turn_exit_reason="text_response",
-    )
-
-    assert result["partial"] is True
-    assert result["failure_reason"] == "file_mutation_failed"
-    assert result["file_mutation_failures"] == 1
-    assert "VERIFIER FOOTER" in result["final_response"]

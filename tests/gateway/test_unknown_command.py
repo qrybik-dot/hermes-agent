@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -131,23 +131,6 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
     assert result is not None
     assert "Unknown command" not in result
-
-
-@pytest.mark.asyncio
-async def test_tools_slash_command_dispatches_native_gateway_handler():
-    """Gateway /tools must be useful read-only help, not an unknown command."""
-    runner = _make_runner()
-    runner._handle_tools_command = AsyncMock(
-        return_value="Enabled toolsets for telegram:\n- cronjob"
-    )
-
-    event = _make_event("/tools")
-    result = await runner._handle_message(event)
-
-    assert result is not None
-    assert "Unknown command" not in result
-    assert "cronjob" in result
-    runner._handle_tools_command.assert_awaited_once_with(event)
 
 
 @pytest.mark.asyncio

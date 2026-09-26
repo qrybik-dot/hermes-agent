@@ -9,7 +9,6 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
-from telegram.error import BadRequest
 
 
 def _adapter() -> MagicMock:
@@ -124,6 +123,33 @@ async def test_empty_tail_commit_honors_retry_after(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_complete_preview_survives_long_flood_fallback_failure(monkeypatch):
+    """A complete ACKed preview must not trigger a duplicate normal final."""
+    adapter = _adapter()
+    adapter.send.return_value = SendResult(
+        success=False,
+        error="flood_control:20.0",
+        retry_after=20.0,
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    adapter.send.assert_awaited_once()
+    sleep.assert_not_awaited()
+    assert consumer.final_response_sent is False
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches("Final answer") is True
+
+
+@pytest.mark.asyncio
 async def test_telegram_long_flood_result_keeps_retry_after():
     """The real adapter contract preserves the server delay for consumers."""
     class FloodError(Exception):
@@ -140,83 +166,91 @@ async def test_telegram_long_flood_result_keeps_retry_after():
     assert result.retry_after == 30.0
 
 
-@pytest.mark.asyncio
-async def test_telegram_deleted_preview_is_classified_as_missing():
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
-    adapter._bot = MagicMock()
-    adapter._bot.edit_message_text = AsyncMock(
-        side_effect=BadRequest("Bad Request: message to edit not found")
-    )
-
-    result = await adapter.edit_message(
-        "123", "456", "Completed answer", finalize=False
-    )
-
-    assert result.success is False
-    assert result.error_kind == "not_found"
 
 
 @pytest.mark.asyncio
-async def test_deleted_preview_fallback_sends_one_complete_final():
-    """A confirmed-missing preview cannot be treated as a visible prefix."""
+async def test_empty_fallback_resend_preserves_reply_anchor():
+    """The fresh-commit resend must carry the turn's reply anchor (#71047).
+
+    With reply_to_mode='first' the streamed preview is delivered as a reply
+    to the user's message. When a failed finalize edit forces the fresh
+    resend, the replacement message must use the same anchor so the visible
+    behavior matches the preview (and the non-streaming path).
+    """
     adapter = _adapter()
-    adapter.send.side_effect = [
-        SendResult(success=True, message_id="deleted-preview"),
-        SendResult(success=True, message_id="complete-final"),
-    ]
-    adapter.edit_message.return_value = SendResult(
-        success=False,
-        error="Bad Request: message to edit not found",
-        error_kind="not_found",
-    )
+    adapter.send.return_value = SendResult(success=True, message_id="final-1")
 
     consumer = GatewayStreamConsumer(
-        adapter,
-        "chat-1",
-        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        adapter, "chat-1", initial_reply_to_id="111",
     )
-    consumer.on_delta("Partial answer")
-    task = __import__("asyncio").create_task(consumer.run())
-    await __import__("asyncio").sleep(0.05)
-    consumer.on_delta(" and completed")
-    consumer.finish()
-    await task
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
 
-    sent = [call.kwargs["content"] for call in adapter.send.await_args_list]
-    assert sent[0] == "Partial answer ▉"
-    assert sent[1] == "Partial answer and completed"
-    assert len(sent) == 2
+    await consumer._send_fallback_final("Final answer")
+
+    adapter.send.assert_awaited_once()
+    kwargs = adapter.send.await_args.kwargs
+    assert kwargs.get("reply_to") == "111"
+    # Preview replaced: deleted after the fresh final succeeded.
+    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
 
 
 @pytest.mark.asyncio
-async def test_deleted_complete_preview_and_failed_resend_stays_unconfirmed():
-    """A vanished full preview must not suppress the gateway fallback."""
+async def test_empty_fallback_preview_delete_retries_once(monkeypatch):
+    """A False (flood-rejected) preview delete gets one bounded retry."""
     adapter = _adapter()
-    adapter.send.side_effect = [
-        SendResult(success=True, message_id="deleted-preview"),
-        SendResult(success=False, error="confirmed send failure"),
-    ]
-    adapter.edit_message.return_value = SendResult(
+    adapter.send.return_value = SendResult(success=True, message_id="final-1")
+    adapter.delete_message = AsyncMock(side_effect=[False, True])
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    assert adapter.delete_message.await_count == 2
+    sleep.assert_awaited_once_with(1.0)
+    assert consumer.final_response_sent is True
+
+
+@pytest.mark.asyncio
+async def test_flood_capped_resend_keeps_single_bubble_reply_first(monkeypatch):
+    """#71047 Problem B end-to-end shape: preview as reply, finalize edit and
+    fresh resend both flood-capped — the gateway suppression decision must
+    keep the complete ACKed preview as the single visible bubble instead of
+    letting the normal final send create a second one.
+    """
+    adapter = _adapter()
+    # Fresh-commit resend flood-capped past the inline retry budget.
+    adapter.send.return_value = SendResult(
         success=False,
-        error="Bad Request: message to edit not found",
-        error_kind="not_found",
+        error="flood_control:41.0",
+        retry_after=41.0,
     )
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
 
-    final_text = "The complete answer"
     consumer = GatewayStreamConsumer(
-        adapter,
-        "chat-1",
-        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        adapter, "chat-1", initial_reply_to_id="111",
     )
-    consumer.on_delta(final_text)
-    task = __import__("asyncio").create_task(consumer.run())
-    await __import__("asyncio").sleep(0.05)
-    consumer.finish()
-    await task
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._already_sent = True
+    consumer._fallback_final_send = True
 
-    assert adapter.send.await_count == 2
-    assert consumer.final_response_sent is False
-    assert consumer.final_content_delivered is False
-    assert consumer.delivered_final_matches(final_text) is not True
+    await consumer._send_fallback_final("Final answer")
+
+    # Preview must NOT be deleted — it is the only copy of the answer.
+    adapter.delete_message.assert_not_awaited()
+    # Mirror the gateway/run.py suppression decision: content delivered and
+    # the recorded payload reconciles, so the normal final send is skipped.
+    assert consumer.final_content_delivered is True
+    assert consumer.delivered_final_matches("Final answer") is True

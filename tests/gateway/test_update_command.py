@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -47,20 +47,47 @@ class TestHandleUpdateCommand:
     """Tests for GatewayRunner._handle_update_command."""
 
     @pytest.mark.asyncio
-    async def test_no_git_directory_not_required_for_safe_broker(self, tmp_path):
-        """Immutable runtime releases can start the external safe broker."""
+    async def test_no_git_directory(self, tmp_path):
+        """Returns an error when .git does not exist."""
         runner = _make_runner()
         event = _make_event()
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        with patch("gateway.run._hermes_home", hermes_home), \
-             patch("subprocess.Popen") as popen:
-            result = await runner._handle_update_command(event)
-        assert "Safe Hermes update started" in result
-        cmd = popen.call_args[0][0]
-        assert cmd[1].endswith("safe_update_broker.py")
-        assert cmd[-2:] == ["--hermes-home", str(hermes_home)]
-        assert popen.call_args.kwargs.get("start_new_session") is True
+        # Point _hermes_home to tmp_path and project_root to a dir without .git
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("gateway.run.Path") as MockPath:
+            # Path(__file__).parent.parent.resolve() -> fake_root
+            MockPath.return_value = MagicMock()
+            MockPath.__truediv__ = Path.__truediv__
+            # Easier: just patch the __file__ resolution in the method
+            pass
+
+        # Simpler approach — mock at method level using a wrapper
+        runner = _make_runner()
+
+        with patch("gateway.run._hermes_home", tmp_path):
+            # The handler does Path(__file__).parent.parent.resolve()
+            # We need to make project_root / '.git' not exist.
+            # Since Path(__file__) resolves to the real gateway/run.py,
+            # project_root will be the real hermes-agent dir (which HAS .git).
+            # Patch Path to control this.
+            original_path = Path
+
+            class FakePath(type(Path())):
+                pass
+
+            # Actually, simplest: just patch the specific file attr.
+            # The _handle_update_command handler lives in gateway/slash_commands.py
+            # (extracted from run.py in the god-file decomposition); it resolves
+            # project_root via Path(__file__).parent.parent, so fake that file.
+            fake_file = str(fake_root / "gateway" / "slash_commands.py")
+            (fake_root / "gateway").mkdir(parents=True)
+            (fake_root / "gateway" / "slash_commands.py").touch()
+
+            with patch("gateway.slash_commands.__file__", fake_file):
+                result = await runner._handle_update_command(event)
+
+        assert "Not a git repository" in result
 
 
     @pytest.mark.asyncio
@@ -111,20 +138,44 @@ class TestHandleUpdateCommand:
 
 
     @pytest.mark.asyncio
-    async def test_spawns_broker_detached_without_shell_wrapper(self, tmp_path):
+    async def test_fallback_when_no_setsid(self, tmp_path):
+        """Falls back to start_new_session=True when setsid is not available."""
         runner = _make_runner()
         event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
+
         mock_popen = MagicMock()
+
+        def which_no_setsid(x):
+            if x == "hermes":
+                return "/usr/bin/hermes"
+            if x == "setsid":
+                return None
+            return None
+
         with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
-        cmd = mock_popen.call_args[0][0]
-        assert cmd[1].endswith("safe_update_broker.py")
-        assert "--hermes-home" in cmd
-        assert mock_popen.call_args.kwargs.get("start_new_session") is True
-        assert "Safe Hermes update started" in result
+
+        # Verify plain bash -c fallback (no nohup, no setsid)
+        call_args = mock_popen.call_args[0][0]
+        assert call_args[0] == "bash"
+        assert "nohup" not in call_args[2]
+        assert ".update_exit_code" in call_args[2]
+        # start_new_session=True should be in kwargs
+        call_kwargs = mock_popen.call_args[1]
+        assert call_kwargs.get("start_new_session") is True
+        assert "Starting Hermes update" in result
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +487,7 @@ class TestSendUpdateNotification:
         assert "ok before" in sent_text
         assert "invalid byte" in sent_text
         assert "continued after" in sent_text
-        assert "Hermes safe update finished" in sent_text
+        assert "Hermes update finished" in sent_text
         assert not pending_path.exists()
         assert not output_path.exists()
         assert not exit_code_path.exists()
@@ -452,13 +503,18 @@ class TestUpdateInHelp:
 
 
     def test_update_is_known_command(self):
-        """The /update command is in the help text (proxy for _known_commands)."""
-        # _known_commands is local to _handle_message, so we verify by
-        # checking the help output includes it.
+        """/update dispatches through the gateway's plain-command handler table.
+
+        (Was an inspect.getsource() check for the literal '"update"' in
+        _handle_message — a banned source-reading test. The if-chain was
+        replaced by _gateway_plain_command_handlers(), so assert the real
+        dispatch contract: the table maps "update" to the update handler.)
+        """
         from gateway.run import GatewayRunner
-        import inspect
-        source = inspect.getsource(GatewayRunner._handle_message)
-        assert '"update"' in source
+
+        runner = object.__new__(GatewayRunner)
+        handlers = runner._gateway_plain_command_handlers()
+        assert handlers.get("update") == runner._handle_update_command
 
 class TestWatchUpdateProgress:
     @pytest.mark.asyncio
@@ -486,5 +542,5 @@ class TestWatchUpdateProgress:
         sent = "\n".join(call.args[1] for call in mock_adapter.send.call_args_list)
         assert "ok before" in sent
         assert "continued after" in sent
-        assert "Hermes safe update finished" in sent
+        assert "Hermes update finished" in sent
         assert not (hermes_home / ".update_pending.json").exists()

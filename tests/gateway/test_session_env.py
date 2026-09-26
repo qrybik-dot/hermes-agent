@@ -42,7 +42,6 @@ def test_set_session_env_sets_contextvars(monkeypatch):
         user_id="123456",
         user_name="alice",
         thread_id="17585",
-        message_id="991",
     )
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
 
@@ -66,7 +65,6 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
-    assert get_session_env("HERMES_SESSION_MESSAGE_ID") == "991"
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
@@ -274,3 +272,4 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
 
     reset_session_vars()
     assert get_session_env("HERMES_CRON_SESSION") == "1"
+

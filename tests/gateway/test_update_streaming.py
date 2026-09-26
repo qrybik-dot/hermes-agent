@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -78,7 +78,7 @@ class TestGatewayPrompt:
         thread.start()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            from hermes_cli.main import _gateway_prompt
+            from hermes_cli.update_cmd import _gateway_prompt
             result = _gateway_prompt("Restore? [Y/n]", "y", timeout=5.0)
 
         thread.join()
@@ -98,7 +98,7 @@ class TestRestoreStashWithInputFn:
 
     def test_uses_input_fn_when_provided(self, tmp_path):
         """When input_fn is provided, it's called instead of input()."""
-        from hermes_cli.main import _restore_stashed_changes
+        from hermes_cli.update_cmd import _restore_stashed_changes
 
         captured_args = []
 
@@ -130,22 +130,35 @@ class TestUpdateCommandGatewayFlag:
     """Verify the gateway spawns hermes update --gateway."""
 
     @pytest.mark.asyncio
-    async def test_spawns_safe_broker_with_profile_home(self, tmp_path):
-        """The gateway starts the external broker, never hermes update."""
+    async def test_spawns_with_gateway_flag(self, tmp_path):
+        """The spawned update command includes --gateway and PYTHONUNBUFFERED."""
         runner = _make_runner()
         event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
+
         mock_popen = MagicMock()
         with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
-        cmd = mock_popen.call_args[0][0]
-        assert cmd[1].endswith("safe_update_broker.py")
-        assert cmd[-2:] == ["--hermes-home", str(hermes_home)]
-        assert "update" not in cmd[1:-2]
-        assert mock_popen.call_args.kwargs.get("start_new_session") is True
-        assert "Safe Hermes update started" in result
+
+        # Check the bash command string contains --gateway and PYTHONUNBUFFERED
+        call_args = mock_popen.call_args[0][0]
+        cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
+        assert "--gateway" in cmd_string
+        assert "PYTHONUNBUFFERED" in cmd_string
+        assert "rc=$?" in cmd_string
+        assert "status=$?" not in cmd_string
+        assert "stream progress" in result
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +378,7 @@ class TestCmdUpdateGatewayMode:
 
     def test_gateway_flag_enables_gateway_prompt_for_stash(self, tmp_path):
         """With --gateway, stash restore uses _gateway_prompt instead of input()."""
-        from hermes_cli.main import _restore_stashed_changes
+        from hermes_cli.update_cmd import _restore_stashed_changes
 
         # Use input_fn to verify the gateway path is taken
         calls = []
