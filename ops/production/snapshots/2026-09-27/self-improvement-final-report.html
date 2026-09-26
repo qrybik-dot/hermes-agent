@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hermes Self-Improvement — Final DoD v2</title>
+<style>
+:root{color-scheme:dark}body{margin:0;background:#0b0f14;color:#d8e0e9;font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+main{max-width:900px;margin:auto;padding:28px 20px 52px}.card{background:#111821;border:1px solid #263241;border-radius:14px;padding:18px 20px;margin:14px 0}
+h1{font-size:26px;margin:0 0 6px;color:#fff}h2{font-size:18px;color:#fff;margin:0 0 10px}.muted{color:#8fa0b3}.ok{color:#62d394}.warn{color:#f3c969}.bad{color:#ff7b72}
+code{background:#18212c;color:#c9e1ff;padding:2px 6px;border-radius:6px}pre{background:#0a1119;border:1px solid #253446;border-radius:10px;padding:14px;overflow:auto;color:#cfe1f5}
+table{width:100%;border-collapse:collapse}td,th{padding:8px 6px;border-bottom:1px solid #263241;text-align:left;vertical-align:top}th{color:#9fb4c9}
+.tag{display:inline-block;border:1px solid #31516c;border-radius:99px;padding:3px 8px;margin:2px 4px 2px 0;color:#bdd7ef}
+</style></head><body><main>
+<h1>Hermes — Controlled Self-Improvement</h1>
+<div class="muted">Final DoD v2 • 26.09.2026 • autonomy + Iteration Budget fix</div>
+
+<div class="card"><h2>Итог</h2>
+<p><b class="ok">DoD: PASS.</b> Self-improvement теперь event-driven, protected и отделён от Hermes core. Проблема <code>Iteration budget exhausted</code> устранена в improvement-контуре не повышением лимита, а ограничением tool-surface и lifecycle.</p>
+<span class="tag">core untouched</span><span class="tag">persistent event-driven</span><span class="tag">no cron</span><span class="tag">no new daemon process</span><span class="tag">rollback ready</span>
+</div>
+
+<div class="card"><h2>Почему возникали 18/18</h2>
+<p>Выявлены две причины:</p>
+<table>
+<tr><th>Причина</th><th>Факт</th><th>Решение</th></tr>
+<tr><td>Слишком широкая свобода worker</td><td>Повторные find/grep/read уже известного контекста; полезный результат появлялся до исчерпания бюджета.</td><td>Restricted execution-worker: только workspace/file + автоматически injected Kanban lifecycle.</td></tr>
+<tr><td>Same-card <code>request_review</code></td><td>Upstream terminal-stop logic считает terminal только complete/block, поэтому после request_review worker мог продолжать.</td><td>Core не патчили. Improvement-loop больше не использует same-card request_review: implementer → complete → dependent reviewer.</td></tr>
+</table>
+<p>Глобальный <code>agent.max_turns</code> изменён 18 → 30 только как safety ceiling. Execution-worker ограничен отдельно; reviewer — ещё жёстче.</p>
+</div>
+
+<div class="card"><h2>До / после</h2>
+<table>
+<tr><th></th><th>До</th><th>После</th></tr>
+<tr><td>Implementer</td><td class="bad">18/18 и 30/30; до ~65 tool calls; blocked</td><td class="ok">75s / 11 tool calls → DONE; затем 59s → DONE; новый cycle №3 108s → DONE</td></tr>
+<tr><td>Reviewer</td><td class="bad">8/8 после успешного gate; не успевал complete</td><td class="ok">r7: 35s → APPROVE; cycle №3: 65s → APPROVE</td></tr>
+<tr><td>Поведение</td><td>широкий audit/search</td><td>execution-only / review-only contracts</td></tr>
+</table>
+</div>
+
+<div class="card"><h2>Финальная архитектура</h2>
+<pre>Hermes normal work
+      │
+skill_manage candidate
+      │
+skills.write_approval=true
+      ▼
+pending/skills/*.json
+      │
+persistent systemd.path
+      ▼
+control-plane oneshot dispatcher
+      │
+protected deterministic eval
+ ┌────┴──────────────┐
+ │                   │
+FAIL                PASS
+ │                   │
+restricted           restricted
+execution-worker     execution-worker
+fixes candidate      preserves candidate
+ │                   │
+ └────── kanban_complete
+              │
+              ▼
+dependent restricted reviewer
+              │
+control-plane review wrapper
+              │
+      APPROVE / REJECT
+              │
+      human/external promotion authority</pre>
+<p>Hermes не может менять protected runner/cases/thresholds. Reviewer не имеет file/web/MCP/skills; ему оставлен terminal для одного control-plane wrapper + Kanban lifecycle.</p>
+</div>
+
+<div class="card"><h2>Event-driven trigger</h2>
+<table>
+<tr><td>Unit</td><td><code>hermes-improvement-watch.path</code></td></tr>
+<tr><td>Состояние</td><td class="ok">enabled • active/waiting</td></tr>
+<tr><td>Service</td><td><code>hermes-improvement-watch.service</code> — oneshot, inactive/dead между событиями, MainPID=0</td></tr>
+<tr><td>Persistence</td><td class="ok">linked in /etc/systemd/system + WantedBy=multi-user.target; переживает reboot</td></tr>
+<tr><td>Resource guard</td><td><code>MemoryMax=192M</code>, TimeoutStartSec=120, NoNewPrivileges, PrivateTmp</td></tr>
+<tr><td>Smoke</td><td class="ok">PathChanged event → service Result=success → PID=0</td></tr>
+</table>
+</div>
+
+<div class="card"><h2>Проверки и доказательства</h2>
+<table>
+<tr><td>Повреждённый pending <code>1be8eac7</code></td><td class="ok">Structural hygiene → FAIL; production не изменился; Hermes исправил candidate; reviewer PASS.</td></tr>
+<tr><td>Новый staged <code>24811db3</code></td><td class="ok">Protected PASS → execution DONE → reviewer r7 APPROVE.</td></tr>
+<tr><td>Новый staged <code>96d8cdf8</code></td><td class="ok">Полный новый цикл → execution DONE → reviewer APPROVE.</td></tr>
+<tr><td>Idempotency</td><td class="ok">Повторный event: число карточек 5 → 5, дублей нет.</td></tr>
+<tr><td>Pending cleanup</td><td class="ok">Все три test/legacy pending отвергнуты штатным write-approval handler; pending=0.</td></tr>
+<tr><td>Kanban cleanup</td><td class="ok">10 superseded failed/todo карточек архивированы; успешные run сохранены.</td></tr>
+<tr><td>Normal Hermes</td><td class="ok"><code>HERMES_SMOKE_OK</code>.</td></tr>
+</table>
+</div>
+
+<div class="card"><h2>Конфигурация</h2>
+<table>
+<tr><td>Schema</td><td class="ok">44</td></tr>
+<tr><td>agent.max_turns</td><td>30 — safety ceiling, не основное лечение</td></tr>
+<tr><td>skills.write_approval</td><td class="ok">true</td></tr>
+<tr><td>auxiliary.background_review</td><td>false</td></tr>
+<tr><td>memory.memory_enabled</td><td>false</td></tr>
+<tr><td>memory.user_profile_enabled</td><td>false</td></tr>
+<tr><td>curator.enabled</td><td>false</td></tr>
+<tr><td>Current Kanban board</td><td class="ok">default</td></tr>
+</table>
+</div>
+
+<div class="card"><h2>Core / rollback / ресурсы</h2>
+<p>Release stable: current <code>d251f4446f72cff549e98cc258a1759a992ce81f</code>; previous <code>77710faa2443a628ab62c20ac012aaddafcac7d2</code>. Release manifest tree <code>7e425485b5a80df660526ebb1af6b71d4fc99325</code>. Core не патчен.</p>
+<p>Rollback v1→v2 проверен копированием backup: backup hash <code>8ef07de0…</code> совпал с test restore-copy; текущий production hash <code>852ba60e…</code>.</p>
+<p>Финальный snapshot: RAM available ≈ <b>275 MiB</b>; swap used ≈ <b>698 MiB</b>; disk <b>86%</b>. Gateway и CLI proxy активны.</p>
+</div>
+
+<div class="card"><h2>Known non-blocking issues</h2>
+<p><span class="warn">•</span> Telegram сеть периодически деградирует/reconnect; в логах есть отдельный <code>Event ... bound to a different event loop</code> на send retry. Gateway остаётся жив. Это отдельный network/runtime хвост, не вызван improvement-loop.</p>
+<p><span class="warn">•</span> Hermes CLI startup сам по себе может занимать несколько секунд; event-dispatcher поэтому не «мгновенный», но запускается только по изменению pending-директории.</p>
+<p><span class="warn">•</span> Upstream same-card <code>request_review</code> всё ещё не terminal в <code>kanban_stop.py</code>. Мы его не патчим: финальная схема архитектурно его не использует.</p>
+</div>
+
+<div class="card"><h2>DoD</h2>
+<table>
+<tr><td>18/18 не лечится простым увеличением лимита</td><td class="ok">PASS</td></tr>
+<tr><td>Worker handoff не доедает budget</td><td class="ok">PASS — complete → dependent reviewer</td></tr>
+<tr><td>Execution-only retry/context</td><td class="ok">PASS</td></tr>
+<tr><td>Staged skill → automatic improvement-card</td><td class="ok">PASS</td></tr>
+<tr><td>Protected deterministic eval auto-run</td><td class="ok">PASS</td></tr>
+<tr><td>FAIL → Hermes fix; PASS → independent review</td><td class="ok">PASS</td></tr>
+<tr><td>No auto-promotion before review</td><td class="ok">PASS</td></tr>
+<tr><td>No cron / no persistent worker daemon</td><td class="ok">PASS</td></tr>
+<tr><td>Corrupt pending cannot reach production</td><td class="ok">PASS</td></tr>
+<tr><td>2–3 control cycles without exhaustion</td><td class="ok">PASS</td></tr>
+<tr><td>Core/update safety</td><td class="ok">PASS</td></tr>
+<tr><td>Rollback / resource / normal-work smoke</td><td class="ok">PASS</td></tr>
+</table>
+</div>
+
+<div class="card"><h2>Эксплуатационное правило</h2>
+<p><b>Оставляем:</b> native Hermes learning → write-approval staging → event watch → protected eval → restricted execution → dependent review.</p>
+<p><b>Не добавляем:</b> второй brain, self-learning daemon, cron polling, тяжёлый lm-eval stack, прямую production mutation от Jev/eval-agent.</p>
+</div>
+</main></body></html>
