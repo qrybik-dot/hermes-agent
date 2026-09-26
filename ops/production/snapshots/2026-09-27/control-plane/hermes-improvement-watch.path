@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Hermes staged skill candidates
+
+[Path]
+PathChanged=/home/hermes/.hermes/profiles/hermes-native-core-canary/pending/skills
+Unit=hermes-improvement-watch.service
+
+[Install]
+WantedBy=multi-user.target
