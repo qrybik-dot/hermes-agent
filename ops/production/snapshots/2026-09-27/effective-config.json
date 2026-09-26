@@ -1,0 +1,36 @@
+{
+  "schema": 44,
+  "profile": "hermes-native-core-canary",
+  "model": {
+    "provider": "custom:hermes-cli-proxy",
+    "default": "gemini-3.8-flash-high",
+    "max_tokens": 8192
+  },
+  "agent": {
+    "max_turns": 30,
+    "gateway_timeout": 1800,
+    "api_max_retries": 1,
+    "task_completion_guidance": true,
+    "environment_probe": true,
+    "role_max_turns": {
+      "simple": 24,
+      "parser": 12,
+      "research": 28,
+      "planning": 30,
+      "coding": 30,
+      "long_context": 30,
+      "server_debug": 30,
+      "expert_analysis": 30
+    }
+  },
+  "skills": {
+    "write_approval": true,
+    "guard_agent_created": true
+  },
+  "auxiliary_background_review_enabled": false,
+  "memory": {
+    "memory_enabled": false,
+    "user_profile_enabled": false
+  },
+  "curator_enabled": false
+}

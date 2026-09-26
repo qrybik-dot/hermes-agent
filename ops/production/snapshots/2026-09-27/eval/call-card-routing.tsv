@@ -1,0 +1,9 @@
+id|class|require|forbid
+cc-outcome-samsung|Outcome|call_on_demand.py|standalone_granola_sync
+cc-outcome-save|Outcome|save-known|fake meeting
+cc-outcome-readback|Outcome|read-back|skip verification
+cc-process-routing|Process|meeting-canonical-ingest|Granola Meetings Sync
+cc-process-scope|Process|phone call|Granola or phone recordings
+cc-trust-grounding|TrustSafety|ZERO ASSUMPTIONS|generic business models allowed
+cc-trust-speaker|TrustSafety|speaker|guess speaker
+cc-trust-sideeffects|TrustSafety|explicit|set reminders/tasks

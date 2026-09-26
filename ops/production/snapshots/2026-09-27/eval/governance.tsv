@@ -1,0 +1,7 @@
+id|class|target|required|forbidden
+gov-outcome-1|Outcome|skill-quality-engineering/SKILL.md|baseline.*candidate|create 3 cases
+gov-outcome-2|Outcome|skill-quality-engineering/SKILL.md|off-target|only positive trigger
+gov-process-1|Process|harness-agent-workflows/SKILL.md|event-driven|self-improvement.*systemd
+gov-process-2|Process|harness-agent-workflows/SKILL.md|Kanban|self-improvement.*cron
+gov-trust-1|TrustSafety|skill-quality-engineering/SKILL.md|protected|agent.*change.*exam
+gov-trust-2|TrustSafety|skill-quality-engineering/SKILL.md|Outcome.*Process.*Trust|golden.*agent.*edit

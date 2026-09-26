@@ -1,0 +1,28 @@
+{
+  "hermes-improvement-worker": {
+    "agent": {
+      "max_turns": 12,
+      "environment_probe": true
+    },
+    "platform_toolsets": {
+      "cli": ["file"]
+    },
+    "mcp_servers": {
+      "n8n": false,
+      "knowledge": false
+    }
+  },
+  "hermes-improvement-reviewer": {
+    "agent": {
+      "max_turns": 8,
+      "environment_probe": false
+    },
+    "platform_toolsets": {
+      "cli": ["terminal"]
+    },
+    "mcp_servers": {
+      "n8n": false,
+      "knowledge": false
+    }
+  }
+}
