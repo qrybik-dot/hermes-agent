@@ -301,6 +301,12 @@ def _ensure_turn(*, turn_id: str, session_id: str, task_id: str, platform: str,
             "tools": [], "tool_families": [], "tool_errors": 0, "discovery_calls": 0,
             "tool_duration_ms": 0, "api_calls": 0, "api_duration_ms": 0,
             "input_tokens": 0, "output_tokens": 0, "prediction_ready": False,
+            # v3 trajectory shadow: compact local-only execution telemetry. Raw tool
+            # args/results are never persisted here or sent to Jev.
+            "tool_event_count": 0, "tool_events": [], "result_class_counts": {},
+            "blocker_group_counts": {}, "successful_mutations": 0,
+            "midturn_calls": 0, "midturn_generic_calls": 0, "midturn_boundary_calls": 0,
+            "last_midturn_tool_count": 0, "request_redacted": "",
         })
         state["updated_mono"] = now
         return key, dict(state)
@@ -325,6 +331,240 @@ def _tool_family(tool_name: str) -> str:
     if any(x in name for x in ("gmail", "calendar", "telegram", "slack", "discord", "message", "mail")):
         return "COMMUNICATION"
     return "OTHER"
+
+
+# Compact local classification for mid-turn trajectory evaluation. These classes are
+# intentionally coarse: the external classifier sees only these labels/counters, never raw
+# tool arguments or outputs.
+_RESULT_PATTERNS = (
+    ("PERMISSION_DENIED", re.compile(r"permission denied|operation not permitted|errno\s*13|\beacces\b", re.I)),
+    ("AUTH_REQUIRED", re.compile(r"sudo:.*password.*required|authentication required|not authorized|unauthorized|forbidden", re.I)),
+    ("APPROVAL_REQUIRED", re.compile(r"externalpublicationapproval|approval required|requires? (?:an? )?approval|confirmation required", re.I)),
+    ("RATE_LIMIT", re.compile(r"rate.?limit|too many requests|\b429\b", re.I)),
+    ("TIMEOUT", re.compile(r"timed? out|timeout|exit(?:_code)?[^0-9]*124", re.I)),
+    ("NETWORK", re.compile(r"connection (?:reset|refused|closed)|network is unreachable|temporary failure in name resolution|dns|tls handshake", re.I)),
+    ("NOT_FOUND", re.compile(r"no such file or directory|command not found|not found", re.I)),
+    ("INVALID_INPUT", re.compile(r"invalid (?:argument|input|option)|usage:", re.I)),
+)
+_BLOCKER_GROUP = {
+    "PERMISSION_DENIED": "PRIVILEGE_BOUNDARY",
+    "AUTH_REQUIRED": "PRIVILEGE_BOUNDARY",
+    "APPROVAL_REQUIRED": "APPROVAL_BOUNDARY",
+}
+_MUTATING_TOOLS = frozenset({
+    "write_file", "patch", "send_message", "cronjob_manage", "skill_manage", "memory",
+    "browser_click", "browser_type", "browser_press",
+})
+_TERMINAL_MUTATION_RE = re.compile(
+    r"(?:^|[;&|]\s*|\bsudo\s+)(?:rm\b|rmdir\b|mv\b|cp\b|install\b|chmod\b|chown\b|"
+    r"sed\s+-i\b|truncate\b|dd\b|git\s+(?:push|commit|reset|clean|checkout|merge|rebase)\b|"
+    r"systemctl\s+(?:start|stop|restart|reload|enable|disable)\b|"
+    r"managed_deploy\.py\s+(?:deploy|rollback|prune)\b)", re.I,
+)
+_GENERIC_FAILURE_RE = re.compile(r'"exit_code"\s*:\s*([1-9][0-9]*)|\bexit\s+([1-9][0-9]*)\b', re.I)
+
+
+def _result_text(result: Any) -> str:
+    if isinstance(result, str):
+        return result[:12000]
+    try:
+        return json.dumps(result, ensure_ascii=False, default=str)[:12000]
+    except Exception:
+        return str(result)[:12000]
+
+
+def _tool_effect(tool_name: str, args: Any) -> str:
+    name = (tool_name or "").strip().lower()
+    if name in _MUTATING_TOOLS:
+        return "mutation"
+    if name == "terminal":
+        command = ""
+        if isinstance(args, dict):
+            command = str(args.get("command") or args.get("cmd") or "")
+        if _TERMINAL_MUTATION_RE.search(command):
+            return "mutation"
+        return "unknown"
+    family = _tool_family(name)
+    if family in {"WEB", "FILES", "KNOWLEDGE", "OPS", "CODE", "DISCOVERY"}:
+        return "read"
+    return "unknown"
+
+
+def _classify_tool_result(tool_name: str, args: Any, result: Any, status: str) -> tuple[str, str, str]:
+    """Return (result_class, blocker_group, effect) without retaining raw result/args."""
+    text = _result_text(result)
+    normalized_status = (status or "").strip().lower()
+    explicit_ok = normalized_status in {"ok", "success"}
+    if explicit_ok:
+        effect = _tool_effect(tool_name, args)
+        if effect == "mutation":
+            return "SUCCESS_MUTATION", "", effect
+        if effect == "read":
+            return "SUCCESS_READ", "", effect
+        return "SUCCESS_OTHER", "", effect
+    for result_class, pattern in _RESULT_PATTERNS:
+        if pattern.search(text):
+            return result_class, _BLOCKER_GROUP.get(result_class, ""), _tool_effect(tool_name, args)
+    failed = bool(status and status.lower() not in {"ok", "success"}) or bool(_GENERIC_FAILURE_RE.search(text))
+    effect = _tool_effect(tool_name, args)
+    if failed:
+        return "OTHER_ERROR", "", effect
+    if effect == "mutation":
+        return "SUCCESS_MUTATION", "", effect
+    if effect == "read":
+        return "SUCCESS_READ", "", effect
+    return "SUCCESS_OTHER", "", effect
+
+
+def _trajectory_question_set() -> dict[str, Any]:
+    return {
+        "same_blocker": {"type": "noul", "instructions": "Do the compact recent execution events indicate the agent is still working around the same underlying blocker rather than making materially new progress?"},
+        "new_hypothesis": {"type": "noul", "instructions": "Do the most recent events represent a materially new, testable hypothesis or strategy that could plausibly advance the task?"},
+        "retry_useful": {"type": "noul", "instructions": "Given the compact execution state, is another autonomous retry likely to be useful rather than repetitive exploration?"},
+        "handoff_required": {"type": "noul", "instructions": "Does the compact execution state indicate that progress now requires an external capability, permission, approval, credential, or human/admin action unavailable to the current agent?"},
+    }
+
+
+def _trajectory_label(answers: dict[str, Any]) -> str:
+    same = _signal(answers, "same_blocker")
+    new = _signal(answers, "new_hypothesis")
+    retry = _signal(answers, "retry_useful")
+    handoff = _signal(answers, "handoff_required")
+    if handoff >= 0.75 and same >= 0.65 and new <= 0.40:
+        return "HANDOFF_CANDIDATE"
+    if same >= 0.75 and new <= 0.30 and retry <= 0.40:
+        return "STOP_EXPLORATION_CANDIDATE"
+    if new >= 0.60 and retry >= 0.60:
+        return "RETRY_CANDIDATE"
+    return "CONTINUE_CANDIDATE"
+
+
+def _midturn_trigger(state: dict[str, Any], latest: dict[str, Any]) -> str | None:
+    if not _env_bool("HERMES_JEV_MIDTURN_SHADOW_ENABLED", False):
+        return None
+    count = int(state.get("tool_event_count", 0))
+    result_class = str(latest.get("result_class") or "")
+    group = str(latest.get("blocker_group") or "")
+    groups = state.get("blocker_group_counts") or {}
+
+    # High-signal boundaries get a reserved evaluation. Generic checkpoints must never
+    # consume this slot before a real permission/auth/approval boundary becomes visible.
+    boundary_calls = int(state.get("midturn_boundary_calls", 0))
+    if boundary_calls < 1:
+        if result_class == "APPROVAL_REQUIRED":
+            return "approval_boundary"
+        if group and int(groups.get(group, 0)) >= 2:
+            return "repeated_blocker_group"
+
+    generic_calls = int(state.get("midturn_generic_calls", 0))
+    if generic_calls >= _env_int("HERMES_JEV_MIDTURN_MAX_GENERIC_CALLS", 2, 0, 6):
+        return None
+    last = int(state.get("last_midturn_tool_count", 0))
+    cooldown = _env_int("HERMES_JEV_MIDTURN_COOLDOWN_TOOLS", 4, 1, 20)
+    if last and count - last < cooldown:
+        return None
+    if int(state.get("tool_errors", 0)) >= 2 and count >= 4:
+        return "repeated_errors"
+    threshold = _env_int("HERMES_JEV_MIDTURN_TOOL_THRESHOLD", 8, 4, 30)
+    if count >= threshold and (not last or count - last >= cooldown):
+        return "tool_round_checkpoint"
+    return None
+
+
+def _trajectory_payload(snapshot: dict[str, Any], trigger: str) -> dict[str, Any]:
+    events = list(snapshot.get("tool_events") or [])[-10:]
+    return {
+        "state": {
+            "task_request": str(snapshot.get("request_redacted") or "")[:800],
+            "current_model": str(snapshot.get("current_model") or "unknown"),
+            "predicted_bundles": list(snapshot.get("predicted_bundles") or []),
+            "trigger": trigger,
+            "tool_event_count": int(snapshot.get("tool_event_count", 0)),
+            "tool_errors": int(snapshot.get("tool_errors", 0)),
+            "successful_mutations": int(snapshot.get("successful_mutations", 0)),
+            "result_class_counts": dict(snapshot.get("result_class_counts") or {}),
+            "blocker_group_counts": dict(snapshot.get("blocker_group_counts") or {}),
+            "recent_events": events,
+        },
+        "questions": _trajectory_question_set(),
+    }
+
+
+def _evaluate_trajectory_shadow(*, state_key: str, snapshot: dict[str, Any], trigger: str) -> None:
+    t0 = time.perf_counter()
+    base = {
+        "schema": 3, "ts": _now_iso(), "event": "trajectory_decision", "mode": "shadow",
+        "decision_id": snapshot.get("decision_id"), "turn": snapshot.get("turn"),
+        "session": snapshot.get("session"), "task": snapshot.get("task"),
+        "trigger": trigger, "tool_event_count": int(snapshot.get("tool_event_count", 0)),
+    }
+    try:
+        base_payload = _trajectory_payload(snapshot, trigger)
+        body: dict[str, Any] | None = None
+        used_backend = ""
+        attempts: list[dict[str, Any]] = []
+        for backend in _provider_order():
+            cfg = _provider_config(backend)
+            if not cfg or not cfg.get("key"):
+                attempts.append({"backend": backend, "status": "missing_key"})
+                continue
+            attempt_t0 = time.perf_counter()
+            try:
+                response = _client(backend).post(
+                    cfg["endpoint"], headers={"Authorization": f"Bearer {cfg['key']}"},
+                    json={**base_payload, "model": cfg["model"]},
+                )
+                attempt_ms = round((time.perf_counter() - attempt_t0) * 1000)
+                if response.status_code != 200:
+                    attempts.append({"backend": backend, "status": "http_error", "http_status": response.status_code, "latency_ms": attempt_ms})
+                    continue
+                parsed = response.json()
+            except Exception as exc:
+                attempts.append({"backend": backend, "status": "exception", "error_type": type(exc).__name__, "latency_ms": round((time.perf_counter() - attempt_t0) * 1000)})
+                continue
+            if not isinstance(parsed, dict):
+                attempts.append({"backend": backend, "status": "invalid_json", "latency_ms": attempt_ms})
+                continue
+            body, used_backend = parsed, backend
+            attempts.append({"backend": backend, "status": "ok", "latency_ms": attempt_ms})
+            break
+        latency_ms = round((time.perf_counter() - t0) * 1000)
+        if body is None:
+            _append_log({**base, "status": "provider_error", "latency_ms": latency_ms, "provider_attempts": attempts})
+            return
+        answers = body.get("answers") if isinstance(body, dict) else {}
+        compact = {name: _compact_answer(answer) for name, answer in (answers or {}).items()}
+        label = _trajectory_label(answers or {})
+        with _STATE_LOCK:
+            state = _TURNS.get(state_key)
+            if state is not None:
+                state["trajectory_decisions"] = compact
+                state["trajectory_label"] = label
+                state["trajectory_backend"] = used_backend
+                state["trajectory_latency_ms"] = latency_ms
+                state["updated_mono"] = time.monotonic()
+        _append_log({**base, "status": "ok", "api_model": body.get("model"), "jev_backend": used_backend,
+                     "provider_attempts": attempts, "latency_ms": latency_ms,
+                     "decisions": compact, "trajectory_label": label})
+    except Exception as exc:
+        _append_log({**base, "status": "exception", "error_type": type(exc).__name__,
+                     "latency_ms": round((time.perf_counter() - t0) * 1000)})
+
+
+def _schedule_midturn_shadow(state_key: str, snapshot: dict[str, Any], trigger: str) -> None:
+    if not _reserve_budget():
+        _append_log({"schema": 3, "ts": _now_iso(), "event": "trajectory_decision", "mode": "shadow",
+                     "status": "skipped_budget", "decision_id": snapshot.get("decision_id"), "trigger": trigger})
+        return
+    if not _SLOTS.acquire(blocking=False):
+        _append_log({"schema": 3, "ts": _now_iso(), "event": "trajectory_decision", "mode": "shadow",
+                     "status": "skipped_busy", "decision_id": snapshot.get("decision_id"), "trigger": trigger})
+        return
+    try:
+        future = _POOL.submit(_evaluate_trajectory_shadow, state_key=state_key, snapshot=snapshot, trigger=trigger)
+        future.add_done_callback(_release_slot)
+    except Exception:
+        _SLOTS.release()
 
 
 def _usage_int(usage: Any, *names: str) -> int:
@@ -452,10 +692,14 @@ def on_pre_llm_call(*, user_message: Any = None, session_id: str = "",
         return
     message = user_message.strip()
     request_hash = _hash(message)
-    _ensure_turn(
+    state_key, _ = _ensure_turn(
         turn_id=turn_id, session_id=session_id, task_id=task_id, platform=platform,
         model=model, request_hash=request_hash, request_chars=len(message),
     )
+    with _STATE_LOCK:
+        state = _TURNS.get(state_key)
+        if state is not None:
+            state["request_redacted"] = _redact(message)[:800]
     if not _dedupe(session_id + "\0" + turn_id, message):
         return
     if not _reserve_budget():
@@ -483,9 +727,12 @@ def on_pre_llm_call(*, user_message: Any = None, session_id: str = "",
         _SLOTS.release()
 
 
-def on_post_tool_call(*, tool_name: str = "", turn_id: str = "", session_id: str = "",
-                      status: str = "", duration_ms: int = 0) -> None:
+def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
+                      tool_call_id: str = "", turn_id: str = "", session_id: str = "",
+                      status: str = "", duration_ms: int = 0, **_extra: Any) -> None:
     key = _turn_key(turn_id, session_id)
+    trigger = None
+    snapshot: dict[str, Any] | None = None
     with _STATE_LOCK:
         state = _TURNS.get(key)
         if state is None:
@@ -502,7 +749,40 @@ def on_post_tool_call(*, tool_name: str = "", turn_id: str = "", session_id: str
         if status and status != "ok":
             state["tool_errors"] = int(state.get("tool_errors", 0)) + 1
         state["tool_duration_ms"] = int(state.get("tool_duration_ms", 0)) + max(0, int(duration_ms or 0))
+
+        result_class, blocker_group, effect = _classify_tool_result(tool_name, args, result, status)
+        state["tool_event_count"] = int(state.get("tool_event_count", 0)) + 1
+        classes = state.setdefault("result_class_counts", {})
+        classes[result_class] = int(classes.get(result_class, 0)) + 1
+        if blocker_group:
+            groups = state.setdefault("blocker_group_counts", {})
+            groups[blocker_group] = int(groups.get(blocker_group, 0)) + 1
+        if result_class == "SUCCESS_MUTATION":
+            state["successful_mutations"] = int(state.get("successful_mutations", 0)) + 1
+        event = {
+            "index": int(state["tool_event_count"]), "family": family,
+            "result_class": result_class, "blocker_group": blocker_group,
+            "effect": effect, "status": (status or "unknown")[:32],
+            "duration_bucket_ms": min(60000, (max(0, int(duration_ms or 0)) // 250) * 250),
+        }
+        events = state.setdefault("tool_events", [])
+        events.append(event)
+        del events[:-12]
         state["updated_mono"] = time.monotonic()
+        trigger = _midturn_trigger(state, event)
+        if trigger:
+            state["midturn_calls"] = int(state.get("midturn_calls", 0)) + 1
+            if trigger in {"approval_boundary", "repeated_blocker_group"}:
+                state["midturn_boundary_calls"] = int(state.get("midturn_boundary_calls", 0)) + 1
+            else:
+                state["midturn_generic_calls"] = int(state.get("midturn_generic_calls", 0)) + 1
+                state["last_midturn_tool_count"] = int(state.get("tool_event_count", 0))
+            snapshot = dict(state)
+            snapshot["tool_events"] = [dict(x) for x in events]
+            snapshot["result_class_counts"] = dict(classes)
+            snapshot["blocker_group_counts"] = dict(state.get("blocker_group_counts") or {})
+    if trigger and snapshot is not None:
+        _schedule_midturn_shadow(key, snapshot, trigger)
 
 
 def on_post_api_request(*, turn_id: str = "", session_id: str = "", api_call_count: int = 0,
@@ -543,6 +823,14 @@ def on_turn_complete(*, turn_id: str = "", session_id: str = "", task_id: str = 
         "discovery_calls": int(state.get("discovery_calls", 0)),
         "tool_errors": int(state.get("tool_errors", 0)),
         "tool_duration_ms": int(state.get("tool_duration_ms", 0)),
+        "tool_event_count": int(state.get("tool_event_count", 0)),
+        "result_class_counts": dict(state.get("result_class_counts") or {}),
+        "blocker_group_counts": dict(state.get("blocker_group_counts") or {}),
+        "successful_mutations": int(state.get("successful_mutations", 0)),
+        "midturn_calls": int(state.get("midturn_calls", 0)),
+        "midturn_generic_calls": int(state.get("midturn_generic_calls", 0)),
+        "midturn_boundary_calls": int(state.get("midturn_boundary_calls", 0)),
+        "trajectory_label": state.get("trajectory_label", ""),
         "api_calls": int(state.get("api_calls", 0)),
         "api_duration_ms": int(state.get("api_duration_ms", 0)),
         "input_tokens": int(state.get("input_tokens", 0)),
