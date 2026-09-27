@@ -1,6 +1,6 @@
 name: jev-shadow
-version: 0.3.2
-description: "Fail-open Jev v2 shadow evaluator with TypeSafe/OpenCode backends. Measures semantic routing decisions against actual Hermes outcomes without changing behavior."
+version: 0.4.0
+description: "Fail-open Jev v3 shadow evaluator with semantic routing and compact mid-turn trajectory classification. Advisory only; no behavior changes."
 hooks:
   - pre_llm_call
   - post_tool_call
